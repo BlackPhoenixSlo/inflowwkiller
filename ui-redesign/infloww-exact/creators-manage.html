@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Manage creators</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -417,12 +416,107 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="cm-css">
+  .dt-head,.dt-row{grid-template-columns:1.25fr 1fr .8fr 1.45fr .8fr 1.15fr 236px;gap:8px}
+  #cm-table.dtable{min-width:1200px}
+  .dt-row{height:auto;min-height:74px;padding-top:12px;padding-bottom:12px;font-size:14.5px}
+  .dt-head{font-size:14px}
+  select.fdrop{appearance:none;-webkit-appearance:none;height:44px;background:transparent;border:1px solid #2a2a2a;
+    border-radius:9px;color:#cfcfcf;font-family:inherit;font-size:14.5px;padding:0 34px 0 14px;cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237a7a7a' stroke-width='2'><path d='M6 9l6 6 6-6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 12px center;min-width:170px}
+  select.fdrop option{background:#1c1c1c;color:#e6e6e6}
+  select.pp{appearance:none;-webkit-appearance:none;height:34px;background:transparent;border:1px solid #2b2b2b;
+    border-radius:8px;color:#e6e6e6;font-family:inherit;font-size:14px;padding:0 28px 0 10px;cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%237a7a7a' stroke-width='2'><path d='M6 9l6 6 6-6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 8px center}
+  select.pp option{background:#1c1c1c;color:#e6e6e6}
+  .pager{gap:6px}
+  /* ---- health summary strip (friendlier lead) ---- */
+  .cm-summary{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+  .sm-chip{display:flex;align-items:center;gap:11px;background:#1a1a1a;border:1px solid #262626;
+    border-radius:11px;padding:12px 16px;min-width:150px}
+  .sm-chip .sm-ic{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .sm-chip .sm-v{font-size:22px;font-weight:700;color:#fff;line-height:1.1}
+  .sm-chip .sm-l{font-size:12.5px;color:#8a8a8a;margin-top:2px}
+  .sm-chip.skel .sm-v{color:#4a4a4a}
+  /* live/down probe dot in the session cell */
+  .hz{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:2px 8px;border-radius:9px}
+  .hz.live{background:rgba(62,196,106,.14);color:#5fd08a}
+  .hz.down{background:rgba(240,72,62,.15);color:#f0685e}
+  .hz.probe{background:#232323;color:#8a8a8a}
+  .hz .d{width:7px;height:7px;border-radius:50%;background:currentColor}
+  .ofname{font-size:12.5px;color:#8a8a8a;margin-top:4px}
+  .curbadge{display:inline-flex;align-items:center;gap:4px;background:rgba(65,102,246,.16);color:#8aa3ff;
+    font-size:11px;font-weight:700;padding:2px 7px;border-radius:8px;margin-left:8px;vertical-align:middle}
+  /* advanced toggle + recolor swatch */
+  .cm-adv{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 14px;border:1px solid #2a2a2a;
+    border-radius:9px;color:#8a8a8a;font-size:14.5px;cursor:pointer;background:transparent;font-family:inherit}
+  .cm-adv.on{color:#8aa3ff;border-color:#37477f}
+  .cellact.adv{padding-left:10px}
+  .swatch{width:34px;height:34px;border:1px solid #2b2b2b;border-radius:8px;display:none;align-items:center;justify-content:center;cursor:pointer;position:relative;overflow:hidden}
+  .cm-table-adv .swatch{display:flex}
+  .swatch input[type=color]{position:absolute;inset:0;opacity:0;cursor:pointer;border:0;padding:0}
+  .ib.cur{color:#8aa3ff;border-color:#37477f}
+  #cm-recheck svg{transition:transform .6s}
+  #cm-recheck.spin svg{transform:rotate(360deg)}
+  /* session-status pill: connected / dead / none (GET /admin/session/status + live probe) */
+  .hz.conn{background:rgba(62,196,106,.14);color:#5fd08a}
+  .hz.dead{background:rgba(240,72,62,.15);color:#f0685e}
+  .hz.none{background:rgba(240,72,62,.10);color:#e07a6e}
+  /* how the session was captured */
+  .cm-method{display:inline-flex;align-items:center;gap:4px;background:#20242f;color:#8aa3ff;
+    font-size:11px;font-weight:600;padding:1px 7px;border-radius:8px}
+  /* per-row session action buttons reuse .ib */
+  .ib.reload svg{transition:transform .55s}
+  .ib.reload.spin svg{transform:rotate(360deg)}
+  .ib.recap{color:#8aa3ff;border-color:#37477f}
+  /* ---- capture-session modal ---- */
+  .cm-back{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;
+    justify-content:center;z-index:200;backdrop-filter:blur(2px)}
+  .cm-back.open{display:flex}
+  .cm-modal{width:560px;max-width:92vw;max-height:88vh;overflow-y:auto;background:#1b1b1b;
+    border:1px solid #333;border-radius:16px;padding:26px 28px 24px;box-shadow:0 24px 70px rgba(0,0,0,.6)}
+  .cm-mh{display:flex;align-items:flex-start;gap:12px;margin-bottom:6px}
+  .cm-mh .cm-ic{width:42px;height:42px;border-radius:12px;background:rgba(65,102,246,.16);color:#8aa3ff;
+    display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .cm-mtitle{font-size:19px;font-weight:600;color:#fff}
+  .cm-msub{font-size:13.5px;color:#8a8a8a;margin-top:3px;line-height:1.5}
+  .cm-x{margin-left:auto;color:#8a8a8a;cursor:pointer;display:flex;padding:4px}
+  .cm-x:hover{color:#fff}
+  .cm-recap-note{display:none;align-items:center;gap:9px;background:rgba(65,102,246,.10);
+    border:1px solid rgba(65,102,246,.28);border-radius:10px;padding:10px 14px;margin:14px 0 4px;
+    color:#c9d3ff;font-size:13.5px}
+  .cm-recap-note.on{display:flex}
+  .cm-steps{margin:16px 0 6px;padding:14px 16px;background:#141414;border:1px solid #262626;border-radius:11px}
+  .cm-steps ol{margin:0;padding-left:20px;color:#c4c4c4;font-size:13px;line-height:1.75}
+  .cm-steps code{background:#232323;color:#8aa3ff;padding:1px 5px;border-radius:5px;font-size:12px}
+  .cm-field{margin-top:16px}
+  .cm-lbl{display:block;font-size:13px;font-weight:600;color:#cfcfcf;margin-bottom:7px}
+  .cm-lbl .req{color:#f0685e}
+  .cm-modal textarea{width:100%;height:130px;resize:vertical;background:#0f0f0f;border:1px solid #2a2a2a;
+    border-radius:10px;padding:11px 13px;color:#e6e6e6;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:12.5px;line-height:1.5;outline:none}
+  .cm-modal textarea:focus{border-color:#37477f}
+  .cm-modal input[type=text]{width:100%;height:44px;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:10px;
+    padding:0 13px;color:#e6e6e6;font-family:inherit;font-size:14px;outline:none}
+  .cm-modal input[type=text]:focus{border-color:#37477f}
+  .cm-modal input::placeholder,.cm-modal textarea::placeholder{color:#6a6a6a}
+  .cm-hint{font-size:12px;color:#7a7a7a;margin-top:6px}
+  .cm-check{display:flex;align-items:center;gap:10px;margin-top:16px;cursor:pointer;user-select:none}
+  .cm-check input{width:17px;height:17px;accent-color:#4166f6;cursor:pointer}
+  .cm-check span{font-size:13.5px;color:#cfcfcf}
+  .cm-safe{display:flex;align-items:flex-start;gap:8px;margin-top:16px;font-size:12px;color:#8a8a8a;line-height:1.5}
+  .cm-safe svg{flex:0 0 auto;margin-top:1px;color:#67d1ae}
+  .cm-foot{display:flex;align-items:center;gap:12px;margin-top:20px}
+  .cm-foot .sp{flex:1}
+  .cm-modal .btn-blue[disabled]{opacity:.45;cursor:not-allowed}
+</style>
 </head>
 <body>
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -499,7 +593,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -520,9 +614,63 @@
       </div>
       <div class="version">Version 5.7.14</div>
     </aside>
-    <main class="page"><div class="tblpage"><div class="tp-head"><div class="tp-title">Manage creators</div><div class="sp"></div><button class="btn-coral"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.4"/><path d="M3.5 19c.5-3.2 2.9-5 5.5-5s2.6.4 3.6 1.2" stroke-linecap="round"/><path d="M17 12v6M14 15h6" stroke-linecap="round"/></svg> Add creator</button></div><div class="filterbar"><input class="fx" placeholder="Creator name"><div class="fdrop">Platform<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="fdrop">Tag<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="fdrop">Connectivity status<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="fdrop">Employee<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="fdrop">Account status<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div><div class="dtable"><div class="dt-head"><div>Creator</div><div>Nickname</div><div class="gh">Tag <span class="g"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1L16.5 3h-4l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L6 10.9a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.6c.1-.3.1-.6.1-.9z" stroke-linejoin="round"/></svg></span></div><div>Account</div><div>Creator ID</div><div>Employees</div><div>Action</div></div><div class="dt-row"><div class="cellcreator"><span class="av"></span>Ava Rivers</div><div>Aurora Team</div><div></div><div class="cellof"><svg width="17" height="17" viewBox="0 0 28 28" fill="none"><circle cx="15" cy="14" r="7" stroke="#cfcfcf" stroke-width="3"/><circle cx="15" cy="14" r="2.3" fill="#cfcfcf"/><path d="M7.5 14H3" stroke="#cfcfcf" stroke-width="3" stroke-linecap="round"/></svg> OnlyFans</div><div>@ava_creator</div><div>Sam Rivera</div><div class="cellact"><span class="ib"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><path d="M14 7l3 3"/></svg></span><span class="ib"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5.5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="18.5" r="1.7"/></svg></span></div></div></div><div class="tp-foot"><span>Total: 1 creators</span><span class="pager"><span class="pb"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="pnum">1</span><span class="pb"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span><span class="perpage">Per page <span class="pp">10 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></div></div></main>
+    <main class="page"><div class="tblpage"><div class="tp-head"><div class="tp-title" id="cm-title">Manage creators</div><div class="sp"></div><button class="btn-outline" id="cm-recheck" style="height:46px;margin-right:12px" title="Re-probe every creator's live OnlyFans connection"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 11a8 8 0 1 0-.5 4" stroke-linecap="round"/><path d="M20 5v5h-5" stroke-linecap="round" stroke-linejoin="round"/></svg> Re-check health</button><button class="btn-blue" id="cm-connect" style="height:46px" title="Paste an OnlyFans cURL from DevTools to capture a session and connect a creator"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.4"/><path d="M3.5 19c.5-3.2 2.9-5 5.5-5s2.6.4 3.6 1.2" stroke-linecap="round"/><path d="M17 12v6M14 15h6" stroke-linecap="round"/></svg> Connect a creator</button></div><div class="cm-summary" id="cm-summary"><div class="sm-chip skel"><div class="sm-ic" style="background:#232323"></div><div><div class="sm-v">…</div><div class="sm-l">Creators</div></div></div></div><div class="filterbar" id="cm-filterbar"><input class="fx" id="cm-filter" placeholder="Creator name or id"><select class="fdrop" id="cm-platform"><option value="">Any platform</option><option value="onlyfans">OnlyFans</option></select><select class="fdrop" id="cm-proxy"><option value="">Any proxy</option></select><select class="fdrop" id="cm-conn"><option value="">Any connectivity</option><option value="live">Connected</option><option value="down">Session dead</option><option value="none">No session</option><option value="current">Session current</option><option value="stale">Session stale</option></select><select class="fdrop" id="cm-emp"><option value="">Any employee</option></select><select class="fdrop" id="cm-status"><option value="">Any account status</option><option value="session">Session captured</option><option value="nosession">No session captured</option></select><button class="cm-adv" id="cm-adv" title="Show expert controls (recolor)">Advanced</button><button class="btn-ghost" id="cm-reset" style="height:44px">Reset</button></div><div class="dtable" id="cm-table"><div class="dt-head"><div>Creator</div><div>Nickname</div><div class="gh">Proxy <span class="g"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1L16.5 3h-4l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L6 10.9a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.6c.1-.3.1-.6.1-.9z" stroke-linejoin="round"/></svg></span></div><div>Platform &amp; session</div><div>Creator ID</div><div>Employees who worked it</div><div>Action</div></div></div><div class="tp-foot"><span id="cm-total">Total: … creators</span><span class="pager" id="cm-pager"></span><span class="perpage">Per page <select class="pp" id="cm-per"><option>10</option><option>25</option><option>50</option></select></span><span id="cm-range" style="color:#8a8a8a"></span></div></div></main>
   </div>
   <div class="help"><span class="help-dot"></span><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg></div>
+
+  <!-- ==== Capture-session modal (POST /admin/session/bootstrap, mode=paste-curl) ==== -->
+  <div class="cm-back" id="cm-cap-back">
+    <div class="cm-modal" role="dialog" aria-modal="true" aria-labelledby="cm-cap-title">
+      <div class="cm-mh">
+        <div class="cm-ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 7a5 5 0 0 1 0 10h-1M9 17a5 5 0 0 1 0-10h1" stroke-linecap="round"/><path d="M8 12h8" stroke-linecap="round"/></svg></div>
+        <div>
+          <div class="cm-mtitle" id="cm-cap-title">Connect a creator</div>
+          <div class="cm-msub">Capture a live OnlyFans session by pasting a cURL from your browser — no password ever leaves your machine.</div>
+        </div>
+        <span class="cm-x" id="cm-cap-x" title="Close"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg></span>
+      </div>
+
+      <div class="cm-recap-note" id="cm-recap-note">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 11a8 8 0 1 0-.5 4" stroke-linecap="round"/><path d="M20 5v5h-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Re-capturing session for <b id="cm-recap-who">—</b>. Its dead/stale cookies will be replaced.</span>
+      </div>
+
+      <div class="cm-steps">
+        <ol>
+          <li>Open <b>onlyfans.com</b> logged in as the creator, press <code>F12</code> → <b>Network</b>.</li>
+          <li>Refresh; right-click any <code>/api2/v2/…</code> request → <b>Copy → Copy as cURL</b>.</li>
+          <li>Paste it below and press <b>Capture session</b>.</li>
+        </ol>
+      </div>
+
+      <div class="cm-field">
+        <label class="cm-lbl" for="cm-curl">OnlyFans cURL <span class="req">*</span></label>
+        <textarea id="cm-curl" placeholder="curl 'https://onlyfans.com/api2/v2/…' -H 'user-id: …' -H 'x-bc: …' -H 'sign: …' …"></textarea>
+        <div class="cm-hint">We extract the cookies + a signed-header sample, then derive the request rules. The raw command is sent only to your own relay.</div>
+      </div>
+
+      <div class="cm-field">
+        <label class="cm-lbl" for="cm-nick">Nickname <span style="color:#7a7a7a;font-weight:500">(optional label shown in the switcher)</span></label>
+        <input type="text" id="cm-nick" placeholder="e.g. Ava">
+      </div>
+
+      <label class="cm-check"><input type="checkbox" id="cm-active"><span>Make this the active creator after capture</span></label>
+
+      <div class="cm-safe">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v6c0 4-3 7-7 8-4-1-7-4-7-8V6z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>This is an operator action, not a fan-facing message — it captures a login only. Nothing is sent to any fan.</span>
+      </div>
+
+      <div class="cm-foot">
+        <div class="sp"></div>
+        <button class="btn-ghost" id="cm-cap-cancel" style="height:44px">Cancel</button>
+        <button class="btn-blue" id="cm-capture" style="height:44px" disabled>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Capture session
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
   // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
@@ -581,5 +729,21 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script id="demoClear">/* Parse-time honesty pass: drop the baked "Ava Rivers / @ava_creator" row before
+ * anything can read it as a real creator. Fastt.ready (and the first
+ * GET /admin/proxies) land later; if that GET throws, the catch below leaves an
+ * error row — never the fabricated one. */
+(function () {
+  var t = document.getElementById('cm-table');
+  if (!t) return;
+  Array.prototype.forEach.call(t.querySelectorAll('.dt-row'), function (r) { r.remove(); });
+  var d = document.createElement('div');
+  d.className = 'dt-row';
+  d.style.cssText = 'display:flex;align-items:center;justify-content:center;color:#8a8a8a';
+  d.textContent = 'Loading creators…';
+  t.appendChild(d);
+})();</script>
+<script src="_shared/fastt.js"></script>
+<script src="creators-manage.js"></script>
 </body>
 </html>

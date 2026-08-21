@@ -72,6 +72,21 @@ by llm_client.chat (which writes the `grok_calls` audit row + enforces the daily
 cost cap itself). Static-message steps (the reference `strokes_funnel`) send
 verbatim and never touch the LLM.
 
+Branching storylines: a step may carry an OPTIONAL `next` map that turns the
+linear walker into a BRANCHING one — the next step is chosen from the fan's reply
+instead of always advancing +1::
+
+    {"step": 1, "messages": [...],
+     "next": {"bought": 5, "ignored": 2, "keyword": {"more": 3}, "default": 3}}
+
+`resolve_next(step, facts)` picks the target with precedence keyword > bought >
+ignored(didn't reply) > default > (+1 fallback); targets are step NUMBERS mapped
+to indices. ABSENT `next` behaves EXACTLY like +1, so every existing funnel is
+unaffected. A `next` can point backward, so `funnel_state.hops` counts re-routes
+and the walker halts a fan past _MAX_HOPS (done + 'loop_guard') — a mis-authored
+cycle can't spin forever. funnels_api validates the shape + that every target
+references a real step.
+
 Payload knobs (all optional): `mass_run_id` (process one broadcast only),
 `model` (LLM override), `dry_run` (resolve text but neither send nor advance),
 `max_chats` (per-run send cap), `test_fan` (process only this fan id).
@@ -87,7 +102,7 @@ import random
 import re
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / _to_cents / lease seams
@@ -96,10 +111,18 @@ from attribution import write_outbound_attribution
 from automation_registry import register
 from ._common import (
     LIVE_PROOF_GUARDRAIL, apply_word_restriction, hold_with_typing,
-    load_voice_blocks,
+    is_substantive_msg, load_voice_blocks,
     load_strip_emojis, load_typing_indicator,
     load_typing_wpm, resolve_model, skip_unreachable_fan, strip_emojis,
     typing_delay_seconds,
+)
+from ._wordfilter import (  # compliance word filter
+    banned_hit_summary, filter_banned, load_banned_words,
+)
+from ._funnel_routing import route, step_number_index, strip_html, resolve_next
+from ._funnel_signals import (
+    has_fan_paid_ppv, has_fan_replied, last_funnel_out_at, last_inbound_at,
+    latest_reply,
 )
 from db.engine import get_session
 from db.models import (
@@ -138,18 +161,11 @@ def _jittered_gap() -> float:
 _STEP_TEMPERATURE = 0.85         # warm/varied, matches the persona calls
 _MSG_CLIP = 400                  # clip each history message body for the prompt
 _HISTORY_TAIL = 20               # last N messages handed to the model on generate
-
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-# ── Text helpers (local copies — house pattern) ──────────────────────
-
-def _strip_html(s: str | None) -> str:
-    if not s:
-        return ""
-    if "<" not in s:
-        return s.strip()
-    return _TAG_RE.sub("", s).strip()
+# Branching loop guard: a `next` map may point BACKWARD, so a mis-authored funnel
+# can form a cycle. Halt a fan after this many `next` re-routes (passed to
+# _funnel_routing.route as `max_hops`). A linear funnel (no `next`) never bumps the
+# counter, so it never trips. Tests lower this (a11._MAX_HOPS) to trip the guard fast.
+_MAX_HOPS = 20
 
 
 def _step_intervals(steps: list[dict], idx: int) -> list[int]:
@@ -304,77 +320,6 @@ def _presend_problems(is_ppv: bool, texts: list[str], media: list[int]) -> list[
     return problems
 
 
-# ── Reply detection (DB-first — the WS pump already wrote inbound) ────
-
-async def _last_funnel_out_at(account_id: str, fan_id: int, mass_run_id: int) -> datetime | None:
-    """Timestamp of the latest outbound message belonging to THIS funnel run
-    (the broadcast row, then each step we sent — all tagged mass_run_id). Scoping
-    to the run isolates the funnel from welcome_chatter_for_info/send_welcome noise."""
-    async with get_session() as s:
-        ts = (await s.execute(
-            select(func.max(Message.created_at)).where(
-                Message.account_id == str(account_id),
-                Message.fan_id == int(fan_id),
-                Message.mass_run_id == int(mass_run_id),
-                Message.direction == "out",
-            )
-        )).scalar_one_or_none()
-    return ts
-
-
-async def _has_fan_replied(account_id: str, fan_id: int, since: datetime | None) -> bool:
-    """True iff the fan sent an inbound message strictly AFTER `since` (our last
-    funnel message). `since` None → any inbound at all counts."""
-    async with get_session() as s:
-        q = select(Message.message_id).where(
-            Message.account_id == str(account_id),
-            Message.fan_id == int(fan_id),
-            Message.direction == "in",
-            Message.is_unsent.is_(False),
-        )
-        if since is not None:
-            q = q.where(Message.created_at > since)
-        hit = (await s.execute(q.limit(1))).first()
-    return hit is not None
-
-
-async def _has_fan_paid_ppv(account_id: str, fan_id: int, since: datetime | None) -> bool:
-    """True iff the fan UNLOCKED (paid) an outbound PPV since `since` — the
-    "offer taken" signal (#30). Reads Message.is_paid, which transaction_ingest
-    flips True on the `ppv_message` ledger row (and ai_chatter's isOpened
-    fast-path). `since` None → any paid PPV counts. `purchased_at` is the unlock
-    time; we coalesce to created_at for rows the ledger hasn't stamped yet."""
-    async with get_session() as s:
-        q = select(Message.message_id).where(
-            Message.account_id == str(account_id),
-            Message.fan_id == int(fan_id),
-            Message.direction == "out",
-            Message.is_paid.is_(True),
-        )
-        if since is not None:
-            q = q.where(func.coalesce(Message.purchased_at, Message.created_at) > since)
-        hit = (await s.execute(q.limit(1))).first()
-    return hit is not None
-
-
-async def _last_inbound_at(
-    account_id: str, fan_id: int, *, since: datetime | None = None,
-) -> datetime | None:
-    """Timestamp of the fan's latest inbound (direction='in', not unsent), or
-    None. `since` bounds it to replies after our broadcast. Used to gate NEW
-    funnel enrollment against a run's `discovery_closed_at` cutoff (#R4)."""
-    async with get_session() as s:
-        q = select(func.max(Message.created_at)).where(
-            Message.account_id == str(account_id),
-            Message.fan_id == int(fan_id),
-            Message.direction == "in",
-            Message.is_unsent.is_(False),
-        )
-        if since is not None:
-            q = q.where(Message.created_at > since)
-        return (await s.execute(q)).scalar_one_or_none()
-
-
 async def _record_responder(
     account_id: str, funnel_id: int, fan_id: int, mass_run_id: int, now: datetime,
 ) -> None:
@@ -412,7 +357,7 @@ async def _recipient_fans(account_id: str, mass_run_id: int) -> list[int]:
 def _norm_body(s: str | None) -> str:
     """Normalize a message body for opener matching: drop HTML tags,
     collapse whitespace, casefold."""
-    return re.sub(r"\s+", " ", _strip_html(s)).casefold()
+    return re.sub(r"\s+", " ", strip_html(s)).casefold()
 
 
 # Adoption window around started_at for scrape-backfilled opener rows. OF
@@ -457,7 +402,7 @@ async def _adopt_list_recipients(
     opener only lands in each fan's chat when scrape_history backfills it,
     UNTAGGED. Adopt those rows: any untagged outbound near started_at whose
     normalized body equals the opener gets mass_run_id stamped, which makes
-    the fan visible to _recipient_fans and scopes _last_funnel_out_at to the
+    the fan visible to _recipient_fans and scopes last_funnel_out_at to the
     run. Idempotent — tagged rows leave the candidate set. Returns rows
     adopted (eventual-consistent: fans appear as scrape catches up)."""
     if not openers or started_at is None:
@@ -548,6 +493,7 @@ async def _save_state(cs: FunnelState, now: datetime) -> None:
         row.status = cs.status
         row.last_error = cs.last_error
         row.last_ppv_sent_at = cs.last_ppv_sent_at
+        row.hops = cs.hops
         row.updated_at = now
 
 
@@ -572,8 +518,8 @@ async def _history_block(account_id: str, fan_id: int) -> str:
         )).all()
     rows = list(reversed(rows))  # oldest → newest
     return "\n".join(
-        f"{'FAN' if d == 'in' else 'YOU'}: {_strip_html(b)[:_MSG_CLIP]}"
-        for d, b in rows if _strip_html(b)
+        f"{'FAN' if d == 'in' else 'YOU'}: {strip_html(b)[:_MSG_CLIP]}"
+        for d, b in rows if strip_html(b)
     )
 
 
@@ -711,6 +657,27 @@ async def _send_step(
     return sent
 
 
+async def _branch_now(cs, step: dict, facts: dict, num_to_idx: dict[int, int],
+                      c: int, steps: list[dict], now: datetime) -> bool:
+    """Take this step's `next` route IMMEDIATELY (no reply-wait) and persist.
+
+    THE one way an early branch leaves the walker. Both callers reach it the same
+    way — the buyer (`next.bought`) and the non-replier whose reply window is spent
+    (`next.ignored`) — and both must route with the loop guard ARMED (they only run
+    when a `next` map exists, and that map is what can cycle) at the walker's own
+    `_MAX_HOPS`, then save. Returns True iff the fan finished, so the caller counts
+    the completion.
+
+    The ADVANCE path after a successful send does NOT come here: it waits on the
+    step's own interval list and arms the guard only when the step actually carries
+    a `next`, so it calls `route` directly with those arguments.
+    """
+    done = route(cs, resolve_next(step, facts, num_to_idx, c), steps, now,
+                  wait_min=0, guard=True, max_hops=_MAX_HOPS)
+    await _save_state(cs, now)
+    return done
+
+
 # ── The automation ───────────────────────────────────────────────────
 
 @register("reply_mass_funnel")
@@ -727,6 +694,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
+    banned_words, banned_mode = await load_banned_words(account_id)  # compliance word filter
     persona = await _load_persona(account_id)
 
     runs = await _active_mass_runs(account_id, only_run)
@@ -742,6 +710,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     waiting = 0           # due but fan hasn't replied yet → rescheduled
     completed = 0         # states marked done this tick
     converted = 0         # halted because the fan bought the offer (#30)
+    branched = 0          # re-routed by a step's `next` map (bought/ignored jump)
     blocked = 0           # pre-send guard refused a blank/broken step (#1)
     skipped_locked = 0
     skipped_cooldown = 0
@@ -777,6 +746,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             log.info("reply_mass_funnel run=%s funnel=%s has no steps — skipping",
                      mass_run_id, funnel_id)
             continue
+        # Branching: `next` targets are step NUMBERS → resolve them to indices.
+        num_to_idx = step_number_index(steps)
         # MEDIA is per-account (vault ids don't carry between models) — resolve
         # this account's binding once per run; _resolve_step_media falls back to
         # any legacy in-step media for funnels not yet seeded.
@@ -800,8 +771,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if fan_id in tracked or (only_fan is not None and fan_id != only_fan):
                 continue
             # Replied since the broadcast (our only funnel-out so far)?
-            broadcast_at = await _last_funnel_out_at(account_id, fan_id, mass_run_id)
-            if await _has_fan_replied(account_id, fan_id, broadcast_at):
+            broadcast_at = await last_funnel_out_at(account_id, fan_id, mass_run_id)
+            if await has_fan_replied(account_id, fan_id, broadcast_at):
                 # They ANSWERED this funnel's opener → durable dedup ledger
                 # (R1/R2), regardless of the discovery cutoff below.
                 await _record_responder(account_id, funnel_id, fan_id, mass_run_id, now)
@@ -810,7 +781,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # a fan who replies after the mass is gone is deduped but not
                 # walked. Pre-cutoff replies (adopted late) still enroll.
                 if discovery_closed_at is not None:
-                    last_in = await _last_inbound_at(
+                    last_in = await last_inbound_at(
                         account_id, fan_id, since=broadcast_at)
                     if last_in is None or last_in > discovery_closed_at:
                         continue
@@ -852,25 +823,59 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
             sent_ok = False
             try:
-                # ── #30 Offer taken? A fan who UNLOCKED a PPV since this funnel
-                #    began (our own step, or another automation's) has converted —
-                #    halt and hand off to the chatters instead of walking the rest
-                #    of the steps. Checked BEFORE the reply gate so a SILENT buyer
-                #    (bought without texting back) also stops the nudges. Baseline
-                #    prefers our own last PPV send, else the broadcast time.
+                step = steps[c]
+                is_ppv = step.get("type") == "paid_ppv"
+                branch = step.get("next") if isinstance(step.get("next"), dict) else None
+
+                # ── Branching FACTS — gathered once, drive resolve_next. #30
+                #    "offer taken" (a PPV unlocked since this funnel's baseline —
+                #    our own last PPV, else the broadcast time), whether the fan
+                #    replied since our last funnel message, and that reply's text.
                 paid_since = cs.last_ppv_sent_at or started_at
-                if paid_since is not None and await _has_fan_paid_ppv(
-                        account_id, fan_id, paid_since):
+                bought = bool(paid_since is not None and await has_fan_paid_ppv(
+                    account_id, fan_id, paid_since))
+                last_out = await last_funnel_out_at(account_id, fan_id, mass_run_id)
+                # One query answers both "replied since?" and "with what text?" —
+                # the old pair scanned the identical rows twice per due fan per tick.
+                replied, reply_text = await latest_reply(account_id, fan_id, last_out)
+                substantive = is_substantive_msg(reply_text) if reply_text else False
+                facts = {"replied": replied, "bought": bought,
+                         "substantive": substantive, "reply_text": reply_text}
+
+                # ── #30 Offer taken? A fan who UNLOCKED a PPV since this funnel
+                #    began (our own step, or another automation's) has converted.
+                #    With NO `next.bought` route this HALTS and hands off to the
+                #    chatters (the legacy behaviour, unchanged). A `next.bought`
+                #    step instead BRANCHES the buyer onward (e.g. to a thank-you /
+                #    upsell arc); we stamp last_ppv_sent_at=now so the SAME purchase
+                #    can't re-fire the branch next tick. Checked before the reply
+                #    gate so a SILENT buyer also stops the nudge sequence.
+                if bought:
+                    if branch is not None and branch.get("bought") is not None:
+                        cs.last_ppv_sent_at = now
+                        if await _branch_now(cs, step, facts, num_to_idx, c, steps, now):
+                            completed += 1
+                        branched += 1
+                        continue
                     cs.status = "done"
                     cs.last_error = "offer_taken"
                     await _save_state(cs, now)
                     converted += 1
                     continue  # finally releases the lease (sent_ok False)
 
-                last_out = await _last_funnel_out_at(account_id, fan_id, mass_run_id)
-                if not await _has_fan_replied(account_id, fan_id, last_out):
+                if not replied:
                     # Not yet — reschedule on the just-sent step's interval list.
                     intervals = _step_intervals(steps, max(c - 1, 0))
+                    # `next.ignored` fires ONLY once the reply window is exhausted
+                    # (a full pass over the interval list) — a fan still inside the
+                    # [2,4,10] poll is rescheduled exactly as before, not branched
+                    # away prematurely.
+                    if (branch is not None and branch.get("ignored") is not None
+                            and cs.check_count >= len(intervals)):
+                        if await _branch_now(cs, step, facts, num_to_idx, c, steps, now):
+                            completed += 1
+                        branched += 1
+                        continue
                     wait = _wait_minutes(intervals, cs.check_count)
                     cs.check_count += 1
                     cs.next_check_at = now + timedelta(minutes=wait)
@@ -878,8 +883,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     waiting += 1
                     continue
 
-                step = steps[c]
-                is_ppv = step.get("type") == "paid_ppv"
                 try:
                     texts = await _step_texts(account_id, fan_id, step, persona, model)
                 except LLMCapExceeded:
@@ -911,7 +914,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 #    or text that empties after word-restriction) won't fix itself
                 #    per tick — record it, back off to the fallback interval, and
                 #    skip. It stays `pending` so a later media/text fix can resume.
-                problems = _presend_problems(is_ppv, texts, step_media)
+                # Compliance word filter. A "block" verdict joins the #1 pre-send
+                # reasons below so it rides the SAME blocked/back-off/resume path —
+                # an operator fixing the copy makes the step deliverable again.
+                texts, _bw = filter_banned(texts, banned_words, banned_mode)
+                if _bw:
+                    log.info("reply_mass_funnel banned word(s) %r account=%s fan=%s step=%s",
+                             banned_hit_summary(_bw), account_id, fan_id, c)
+                problems = (["banned_words"] if texts is None
+                            else _presend_problems(is_ppv, texts, step_media))
                 if problems:
                     blocked += 1
                     cs.last_error = "blocked:" + ",".join(problems)
@@ -945,19 +956,26 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     errors += 1
                     continue
 
-                # Advance the state machine + schedule the next reply-check.
-                cs.current_step = c + 1
+                # Advance the state machine + schedule the next reply-check. The
+                # step just sent (index c) decides the NEXT step via resolve_next —
+                # a keyword in the reply, a purchase, or the `default`. With NO
+                # `next` map this is exactly the old current_step + 1 walk.
                 if is_ppv:
                     # Stamp when our own offer went out — the precise baseline for
                     # the #30 "offer taken" halt on any subsequent tick.
                     cs.last_ppv_sent_at = now
-                if is_ppv or cs.current_step >= len(steps):
-                    cs.status = "done"   # PPV is terminal → hand off to chatters
+                if is_ppv and branch is None:
+                    # A paid_ppv step with no routing stays terminal → hand off to
+                    # the chatters (legacy behaviour, unchanged).
+                    cs.current_step = c + 1
+                    cs.status = "done"
                     completed += 1
                 else:
-                    cs.check_count = 0
-                    intervals = _step_intervals(steps, cs.current_step - 1)  # step just sent
-                    cs.next_check_at = now + timedelta(minutes=_wait_minutes(intervals, 0))
+                    intervals = _step_intervals(steps, c)  # the step just sent
+                    if route(cs, resolve_next(step, facts, num_to_idx, c), steps, now,
+                              wait_min=_wait_minutes(intervals, 0),
+                              guard=branch is not None, max_hops=_MAX_HOPS):
+                        completed += 1
                 await _save_state(cs, now)
                 advanced += 1
                 sent_ok = True
@@ -991,6 +1009,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "waiting": waiting,
         "completed": completed,
         "converted": converted,
+        "branched": branched,
         "blocked": blocked,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,

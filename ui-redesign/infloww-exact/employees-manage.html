@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Manage employees</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -417,12 +416,117 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="em-css">
+  /* ---- employees-manage: live roster additions (same palette, additive) ---- */
+  .emp-groups{display:flex;flex-direction:column;gap:14px;overflow-y:auto}
+  .rail-h{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;
+    display:flex;align-items:center;gap:8px}
+  .rail-count{color:#8a8a8a;font-weight:600;letter-spacing:0;text-transform:none;font-size:12px}
+  .views{display:flex;flex-direction:column;gap:6px}
+  .vrow{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:12px;background:#1c1c1c;
+    border:1px solid #2b2b2b;cursor:pointer;font-size:14.5px;color:#cfcfcf}
+  .vrow:hover{border-color:#3a3a3a}
+  .vrow.on{border-color:#4166f6;color:#fff;background:#191c2c}
+  .vrow .n{margin-left:auto;font-weight:600;color:#8a8a8a}
+  .vrow.on .n{color:#6d8bfb}
+  .railnote{margin-top:auto;background:#141414;border:1px solid #262626;border-radius:12px;padding:14px}
+  .railnote .t{font-size:14px;font-weight:600;color:#cfcfcf;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .railnote .d{font-size:12.5px;color:#7a7a7a;margin-top:7px;line-height:1.55}
+  .railnote code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:#9aa8d8}
+
+  .et2-head,.et2-row{grid-template-columns:40px 1.25fr 1.5fr .95fr 1.25fr .78fr 1.45fr;gap:10px;padding-right:18px}
+  .et2-head{font-size:14px}
+  .et2-row{height:auto;min-height:68px;padding-top:12px;padding-bottom:12px;align-items:center;font-size:14.5px}
+  .et2-row .acts{gap:12px;font-size:13px;flex-wrap:wrap;row-gap:4px}
+  .et2-row .acts span:hover{color:#6d8bfb}
+  .cbx{display:inline-block;cursor:pointer;position:relative;flex:0 0 auto}
+  .cbx.on{background:#4166f6;border-color:#4166f6}
+  .cbx.on::after{content:"";position:absolute;left:5px;top:1px;width:4px;height:9px;border:solid #fff;
+    border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .empname{display:flex;align-items:center;gap:9px}
+  .emp-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;display:inline-block}
+  .sub{font-size:12.5px;color:#7a7a7a;margin-top:4px;line-height:1.4}
+  .dim{color:#6a6a6a}
+  .off{color:#8a8a8a}
+  .et2-row.disabled .empname .nm{text-decoration:line-through;color:#9a9a9a}
+  .em-foot{display:flex;align-items:center;gap:16px;margin:16px 0 26px;font-size:13.5px;color:#8a8a8a;flex-wrap:wrap}
+
+  .batchwrap{position:relative}
+  .batchmenu{display:none;position:absolute;top:50px;right:0;min-width:210px;background:#1b1b1d;
+    border:1px solid #333;border-radius:11px;padding:6px;z-index:80;box-shadow:0 12px 34px rgba(0,0,0,.55)}
+  .batchmenu.open{display:block}
+  .batchmenu div{padding:10px 12px;border-radius:8px;color:#e6e6e6;font-size:14px;cursor:pointer}
+  .batchmenu div:hover{background:#242424}
+  .batchmenu div.danger{color:#e08b8b}
+
+  select.ef-drop{appearance:none;-webkit-appearance:none;background:transparent;color:#cfcfcf;
+    font-family:inherit;font-size:14.5px;padding:0 34px 0 14px;cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237a7a7a' stroke-width='2'><path d='M6 9l6 6 6-6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 12px center;display:inline-flex}
+  select.ef-drop option{background:#1c1c1c;color:#e6e6e6}
+
+  /* ---- drill-down modal ---- */
+  .emod-back{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9990;display:flex;
+    align-items:center;justify-content:center}
+  .emod{width:680px;max-width:92vw;max-height:80vh;background:#1c1c1c;border:1px solid #333;
+    border-radius:14px;display:flex;flex-direction:column;overflow:hidden;
+    box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .emod-h{display:flex;align-items:center;gap:10px;padding:18px 22px;border-bottom:1px solid #2a2a2a;
+    font-size:17px;font-weight:600;color:#fff}
+  .emod-h .x{margin-left:auto;color:#8a8a8a;cursor:pointer;font-size:22px;line-height:1;padding:0 4px}
+  .emod-b{padding:18px 22px;overflow-y:auto;font-size:14px;color:#d0d0d0;line-height:1.5}
+  .emod-f{padding:14px 22px;border-top:1px solid #2a2a2a;display:flex;gap:10px;justify-content:flex-end;align-items:center}
+  .emod-f .lft{margin-right:auto;color:#8a8a8a;font-size:13px}
+  .arow{display:flex;gap:14px;padding:11px 0;border-bottom:1px solid #222;font-size:13.5px;align-items:flex-start}
+  .arow .tm{color:#8a8a8a;flex:0 0 128px}
+  .arow .ac{flex:1;min-width:0;word-break:break-word;color:#e6e6e6}
+  .arow .ac .pl{color:#7a7a7a;font-size:12.5px;margin-top:3px}
+  .acheck{display:flex;align-items:center;gap:11px;padding:10px 4px;border-bottom:1px solid #222;cursor:pointer}
+  .acheck .cbx{width:18px;height:18px;border:1.6px solid #4a4a4a;border-radius:4px}
+  .modinput{width:100%;height:44px;background:#141414;border:1px solid #333;border-radius:9px;color:#fff;
+    font-family:inherit;font-size:14.5px;padding:0 12px;margin-top:8px}
+  .swatches{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .swatch{width:26px;height:26px;border-radius:50%;cursor:pointer;border:2px solid transparent}
+  .swatch.on{border-color:#fff}
+
+  /* ---- chatter logins (progressive-disclosure drawer) ---- */
+  .clogins{margin:6px 0 30px;border:1px solid #232323;border-radius:12px;overflow:hidden}
+  .clh{display:flex;align-items:center;gap:14px;padding:15px 20px;cursor:pointer;background:#141414}
+  .clh:hover{background:#171717}
+  .clt{font-size:15px;font-weight:600;color:#fff;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .cls{font-size:12.5px;color:#7a7a7a;margin-top:4px;line-height:1.45}
+  .clcv{margin-left:auto;color:#8a8a8a;display:flex;transition:transform .18s;flex:0 0 auto}
+  .clogins.open .clcv{transform:rotate(180deg)}
+  .clb{display:none;padding:18px 20px;flex-direction:column;gap:16px;background:#0d0d0d}
+  .clogins.open .clb{display:flex}
+  .clcard{background:#111111;border:1px solid #232323;border-radius:11px;padding:16px 18px}
+  .clcard h4{font-size:14px;font-weight:600;color:#e6e6e6;margin-bottom:6px}
+  .clcard p{font-size:12.5px;color:#8a8a8a;line-height:1.55;margin-bottom:2px}
+  .clrow{display:grid;grid-template-columns:14px 1.1fr 1fr 1fr auto;gap:12px;align-items:center;
+    padding:10px 0;border-bottom:1px solid #1c1c1c;font-size:13.5px;color:#d0d0d0}
+  .clrow:last-child{border-bottom:0}
+  .clrow .un{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#cfcfcf;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .clminp{flex:1;height:40px;background:#141414;border:1px solid #2a2a2a;border-radius:9px;color:#fff;
+    font-family:inherit;font-size:14px;padding:0 12px;outline:none;min-width:0}
+  .clminp:focus{border-color:#4166f6}
+  .clform{display:flex;gap:10px;align-items:center;margin-top:12px}
+  .clnote{display:flex;align-items:flex-start;gap:11px;background:#141414;border:1px solid #262626;border-radius:10px;padding:14px 16px}
+  .clnote .ic{color:#e5a35b;display:flex;flex:0 0 auto;margin-top:1px}
+  .clnote .d{font-size:12.5px;color:#8a8a8a;line-height:1.6}
+  .clnote code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#9aa8d8}
+  .clact{cursor:pointer;font-size:13px;font-weight:500;justify-self:end}
+  .clact.danger{color:#e08b8b}
+  .clact.danger:hover{text-decoration:underline}
+  .btn-blue[disabled],.btn-outline[disabled]{opacity:.42;cursor:not-allowed;pointer-events:none}
+  /* keep the Actions column clear of the bottom-right floating help widget */
+  .et2-head,.et2-row{padding-right:76px}
+  .emp-main{padding-bottom:84px}
+</style>
 </head>
 <body>
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -499,7 +603,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -520,7 +624,7 @@
       </div>
       <div class="version">Version 5.7.14</div>
     </aside>
-    <main class="page"><div class="page-head"><div class="page-title">Manage employees</div></div><div class="feature"><div class="emp-groups"><div class="grp"><span class="grp-name">Main Group</span><span class="grp-more"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5.5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="18.5" r="1.7"/></svg></span></div></div><div class="emp-main"><div class="emp-top"><div class="emp-title">Main Group</div><div class="emp-actions"><button class="btn-outline">Batch actions <span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button><button class="btn-blue">+ Add employee</button></div></div><div class="emp-filters"><div class="ef"><span class="ef-lbl">By employee :</span><input placeholder="Employee"></div><div class="ef"><span class="ef-lbl">By Creator :</span><div class="ef-drop">Creator<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div><div class="ef-right"><button class="btn-ghost">Reset</button><button class="btn-blue">Search</button></div></div><div class="emp-filters2"><div class="ef"><span class="ef-lbl">By status :</span><div class="ef-drop">Status<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div></div><div class="etable"><div class="et2-head"><div><span class="cbx"></span></div><div>Employee</div><div>Assigned Creators</div><div>Role</div><div>Status</div><div>Actions</div></div><div class="et2-row"><div><span class="cbx"></span></div><div>Sam Rivera</div><div>Aria</div><div>Owner, Admin</div><div class="ok">Activated</div><div class="acts"><span>Edit</span><span>More</span></div></div></div></div></div></main>
+    <main class="page"><div class="page-head"><div class="page-title">Manage employees</div></div><div class="feature"><div class="emp-groups"><div class="rail-h">Views <span class="rail-count" id="em-railcount">loading…</span></div><div class="views" id="em-views"></div><div class="railnote" id="em-groupnote"><div class="t">Employee groups</div><div class="d">This relay has no employee-group table and no group route — there is nothing real to list here, so nothing is invented. The views above are live filters over the roster returned by <code>GET /admin/employees</code>.</div></div></div><div class="emp-main"><div class="emp-top"><div class="emp-title" id="em-title">All employees</div><div class="emp-actions"><div class="batchwrap"><button class="btn-outline" id="em-batch">Batch actions <span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button><div class="batchmenu" id="em-batchmenu"><div data-b="enable">Enable selected</div><div data-b="access">Set creator access…</div><div data-b="disable" class="danger">Disable selected</div><div data-b="clear">Clear selection</div></div></div><button class="btn-blue" id="em-new">+ Add employee</button></div></div><div class="emp-filters"><div class="ef"><span class="ef-lbl">By employee :</span><input id="em-filter" placeholder="Name or #id"></div><div class="ef"><span class="ef-lbl">By Creator :</span><select class="ef-drop" id="em-creator"><option value="">Any creator</option></select></div><div class="ef-right"><button class="btn-ghost" id="em-reset">Reset</button><button class="btn-blue" id="em-search">Search</button></div></div><div class="emp-filters2"><div class="ef"><span class="ef-lbl">By status :</span><select class="ef-drop" id="em-status"><option value="">Any status</option><option value="active">Activated</option><option value="disabled">Deactivated</option></select></div><div class="ef"><span class="ef-lbl">By role :</span><select class="ef-drop" id="em-role"><option value="">Any role</option><option value="chatter">Chatter (linked login)</option><option value="roster">Employee (roster)</option></select></div><div class="ef-right" id="em-selinfo">No rows selected</div></div><div class="etable" id="em-table"><div class="et2-head"><div><span class="cbx" id="em-all" title="Select every visible row"></span></div><div>Employee</div><div>Assigned Creators</div><div>Role</div><div>Performance (all-time)</div><div>Status</div><div>Actions</div></div></div><div class="em-foot" id="em-foot">Loading roster…</div><div class="clogins" id="cl-sec"><div class="clh" id="cl-head"><div><div class="clt">Chatter logins <span id="cl-count" class="dim" style="font-weight:500;font-size:13px"></span></div><div class="cls">Invite a new chatter, link an existing one, or unlink — the login accounts your team signs in with. Owner-only.</div></div><span class="clcv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="clb" id="cl-body"><div class="dim" style="font-size:13px">Checking owner session…</div></div></div></div></div></main>
   </div>
   <div class="help"><span class="help-dot"></span><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg></div>
 </div>
@@ -581,5 +685,20 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script id="demoClear">/* Parse-time honesty pass: drop the baked "Sam Rivera / Owner, Admin / Activated"
+ * row before it can be read as a real employee. The live list (and the sign-in /
+ * error notices) replace this placeholder. */
+(function () {
+  var t = document.getElementById('em-table');
+  if (!t) return;
+  Array.prototype.forEach.call(t.querySelectorAll('.et2-row'), function (r) { r.remove(); });
+  var d = document.createElement('div');
+  d.className = 'et2-row';
+  d.style.cssText = 'display:flex;align-items:center;justify-content:center;color:#8a8a8a';
+  d.textContent = 'Loading employees…';
+  t.appendChild(d);
+})();</script>
+<script src="_shared/fastt.js"></script>
+<script src="employees-manage.js"></script>
 </body>
 </html>

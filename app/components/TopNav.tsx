@@ -64,10 +64,18 @@ const LINKS: NavLink[] = [
   // custom, because the selling brake stops the bot but not a person.
   { href: "/customs",     label: "Customs"  },
   { href: "/automations", label: "Automations", chatterHidden: true },
+  { href: "/growth",      label: "Growth",      chatterHidden: true },
   { href: "/vault",       label: "Vault",       chatterHidden: true },
   { href: "/setup",       label: "Setup",    chatterHidden: true },
   { href: "/settings",    label: "Settings" },
 ];
+
+/** The topbar's left cluster — hamburger, view switch, blur toggle — is one
+ *  control shape in three costumes: same 36px square, same hover plate, only
+ *  the colour differs. Naming the geometry once means the bar stays aligned
+ *  when those metrics change, instead of three copies drifting apart. */
+const ICON_BTN = "w-9 h-9 grid place-items-center rounded-lg hover:bg-bg-elev-1 shrink-0";
+const ICON_BTN_DIM = "text-fg-dim hover:text-fg";
 
 export default function TopNav() {
   const { current, clear } = useEmployee();
@@ -140,13 +148,27 @@ export default function TopNav() {
         <button
           type="button"
           onClick={() => setMobileNavOpen((v) => !v)}
-          className="lg:hidden w-9 h-9 -ml-1 grid place-items-center rounded-lg text-fg-dim hover:text-fg hover:bg-bg-elev-1 shrink-0"
+          className={cn("lg:hidden -ml-1", ICON_BTN, ICON_BTN_DIM)}
           title="Menu"
           aria-label="Open menu"
           aria-expanded={mobileNavOpen}
         >
           <span aria-hidden className="text-lg leading-none">≡</span>
         </button>
+
+        {/* View switch → the Infloww skin, the same relay behind a different
+         *  front. A PLAIN <a>, never next/link: /infloww is not a Next route,
+         *  it is a rewrite onto the relay's second StaticFiles mount, so a
+         *  client-side navigation would look for an RSC payload that does not
+         *  exist and dead-end. The full page load is the point. */}
+        <a
+          href="/infloww/dashboard.html"
+          className={cn(ICON_BTN, ICON_BTN_DIM)}
+          title="Switch to the Infloww view"
+          aria-label="Switch to the Infloww view"
+        >
+          <span aria-hidden className="text-base leading-none">⧉</span>
+        </a>
 
         {/* Image-blur quick toggle — lives in the header so it works from
          *  every surface (popout chat included), not just the ChatList
@@ -156,8 +178,8 @@ export default function TopNav() {
           type="button"
           onClick={() => setBlurMode(blurOn ? "off" : readLastOnBlurMode())}
           className={cn(
-            "w-9 h-9 grid place-items-center rounded-lg hover:bg-bg-elev-1 shrink-0",
-            blurOn ? "text-warn" : "text-fg-dim hover:text-fg",
+            ICON_BTN,
+            blurOn ? "text-warn" : ICON_BTN_DIM,
           )}
           title={blurOn ? "Images blurred — click to unblur" : "Blur images"}
           aria-label={blurOn ? "Unblur images" : "Blur images"}

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Templates</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -402,6 +401,14 @@
     display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}
   .tpl-copy:hover{border-color:#4a4a4a;color:#fff}
   .tpl-copy.done{border-color:rgba(103,209,174,.4);color:var(--green)}
+  .tpl-ar{height:30px;padding:0 11px;border-radius:8px;border:1px solid var(--border);
+    background:#1c1c1c;color:#ddd;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}
+  .tpl-ar:hover{border-color:#4a4a4a;color:#fff}
+  .tpl-ar i{width:7px;height:7px;border-radius:50%;background:#5a5a5a;display:inline-block;flex:0 0 auto}
+  .tpl-ar.on{border-color:rgba(103,209,174,.35);color:var(--green);background:rgba(103,209,174,.08)}
+  .tpl-ar.on i{background:#3ec46a}
+  .tpl-ar[disabled]{opacity:.55;cursor:default}
   .tpl-card.new{border-style:dashed;align-items:center;justify-content:center;cursor:pointer;gap:7px;
     color:var(--muted);min-height:148px;background:transparent}
   .tpl-card.new:hover{color:#fff}
@@ -409,6 +416,34 @@
     color:#7d97f8;display:flex;align-items:center;justify-content:center}
   .tpl-card.new .nt{font-size:13.5px;font-weight:600}
   .tpl-card.new .ns{font-size:12px;color:var(--muted2)}
+
+  /* per-account roster chips (real accounts + real template counts) */
+  .tp-acct{display:flex;gap:8px;flex-wrap:wrap;max-height:132px;overflow-y:auto;padding:1px}
+  .tp-a{height:30px;display:inline-flex;align-items:center;gap:7px;padding:0 11px;border-radius:15px;
+    border:1px solid var(--border);background:#1c1c1c;color:#b9b9b9;font-size:12.5px;font-weight:500;
+    cursor:pointer;white-space:nowrap}
+  .tp-a:hover{border-color:#4a4a4a;color:#fff}
+  .tp-a.on{border-color:var(--accent);background:rgba(65,102,246,.12);color:#c9d3ff;cursor:default}
+  .tp-a .n{font-variant-numeric:tabular-nums;color:var(--muted2)}
+  .tp-a.on .n{color:#9fb2fa}
+  .tp-a .n.pending{opacity:.5}
+
+  /* sequences (script_id / script_step grouping) */
+  .tp-scripts{display:flex;flex-direction:column;gap:10px}
+  .tp-script{background:#1c1c1c;border:1px solid var(--border-soft);border-radius:10px;padding:11px 13px}
+  .tp-script .sh{display:flex;align-items:center;gap:9px;font-size:13.5px;font-weight:600;color:#fff}
+  .tp-script .sh .cnt{margin-left:auto;font-size:11.5px;font-weight:500;color:var(--muted)}
+  .tp-steps{display:flex;flex-direction:column;gap:5px;margin-top:9px}
+  .tp-step{display:flex;align-items:center;gap:10px;font-size:12.5px;color:#c9c9c9}
+  .tp-step .k{width:22px;height:22px;border-radius:50%;flex:0 0 auto;background:rgba(65,102,246,.15);
+    color:#7d97f8;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .tp-step .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tp-step .nx{color:var(--muted2);font-size:11.5px;flex:0 0 auto}
+  .tp-empty-box{background:#1c1c1c;border:1px dashed #3a3a3a;border-radius:10px;padding:18px;
+    text-align:center;color:var(--muted);font-size:13px;line-height:1.55}
+  .tp-empty-box b{color:#ddd}
+  .fx-kv.tp-hint{display:block;line-height:1.55}
+  .fx-kv.tp-hint b{color:#ddd;font-weight:600}
 </style>
 <style>.main{overflow-y:auto;padding-bottom:40px}</style>
 <style id="ms-css">
@@ -440,7 +475,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -519,7 +553,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -558,10 +592,11 @@
       <div class="pg-sub">Your snippet library — short reusable lines that Welcome, Follow-ups and your own manual replies all pull from. Copy one, paste it anywhere.</div>
 
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>6 templates saved</span>
-        <span class="fx-st ok"><i></i>Welcome message set · on</span>
-        <span class="fx-st"><i></i>Used 48× this week</span>
-        <span class="fx-st"><i></i>Stored in fastt — OF never sees these</span>
+        <span class="fx-st ok" id="tp-count"><i></i>Loading…</span>
+        <span class="fx-st" id="tp-oftpl"><i></i>OF welcome template …</span>
+        <span class="fx-st" id="tp-welcome"><i></i>OF auto-reply …</span>
+        <span class="fx-st" id="tp-edited"><i></i>Last edited …</span>
+        <span class="fx-st"><i></i>Saved replies live in fastt — OF never sees those</span>
       </div>
 
       <div class="fx-note" style="margin-bottom:14px">
@@ -570,14 +605,14 @@
       </div>
 
       <!-- ===== primary: the library ===== -->
-      <div class="fx-chips" data-single style="margin-bottom:14px">
-        <span class="fx-chip on">All · 6</span>
-        <span class="fx-chip">Welcome · 2</span>
-        <span class="fx-chip">Follow-ups · 2</span>
-        <span class="fx-chip">Manual · 2</span>
+      <div class="fx-chips" data-single style="margin-bottom:14px" id="tp-filter">
+        <span class="fx-chip on" data-cat="all">All · …</span>
+        <span class="fx-chip" data-cat="welcome">Welcome · …</span>
+        <span class="fx-chip" data-cat="followups">Follow-ups · …</span>
+        <span class="fx-chip" data-cat="manual">Manual · …</span>
       </div>
 
-      <div class="tpl-grid">
+      <div class="tpl-grid" id="tp-grid">
         <div class="tpl-card">
           <div class="tpl-top"><div class="tpl-name">Welcome — morning</div><a class="tpl-tag wel" href="onboarding-welcome.html" title="Where this template is used">Welcome</a></div>
           <div class="tpl-text">hey <span class="var">{name}</span> 👋 you caught me right as my coffee finished ☕ what got you up this early?</div>
@@ -608,7 +643,7 @@
           <div class="tpl-text">it&rsquo;s been a minute <span class="var">{name}</span>&hellip; I saved one from the beach set just for you 🌊</div>
           <div class="tpl-foot"><span class="tpl-tile tile-beach"></span><span class="tpl-meta"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.4a1.6 1.6 0 0 1-2.3-2.3L15 7.3" stroke-linecap="round" stroke-linejoin="round"/></svg>Beach set · 1</span><button class="tpl-copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15h-.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5" stroke-linecap="round"/></svg>Copy</button></div>
         </div>
-        <div class="tpl-card new">
+        <div class="tpl-card new" id="tp-new">
           <span class="plus"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg></span>
           <span class="nt">New template</span>
           <span class="ns">a blank line, or start from one of these</span>
@@ -626,32 +661,28 @@
           <div class="fx-adv-body" id="adv-tpl">
 
             <div class="fx-adv-group"><h4>Per-account overrides</h4>
-              <div class="fx-note">Each creator keeps her own set — the cards above are Aria&rsquo;s. Switch creator in the top-right to see another set; nothing is shared between accounts unless you copy it over.</div>
-              <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
-                <div class="fx-chips" data-single>
-                  <span class="fx-chip on">Aria · 6</span>
-                  <span class="fx-chip">Jade · 4</span>
-                  <span class="fx-chip">Sofia · 2</span>
+              <div class="fx-note">Each creator keeps her own set. Switch creator in the top-left to see another set; nothing is shared between accounts unless you copy it over.</div>
+              <div style="margin-top:12px" id="tp-peracct">
+                <div class="tp-acct" id="tp-acct-list"><span class="tp-a">loading creators…</span></div>
+                <div class="fx-kv tp-hint" style="margin-top:10px" id="tp-acct-hint">…</div>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
+                  <button class="fx-btn ghost" style="height:32px;font-size:12.5px" id="tp-copyset">Copy this set to another creator</button>
+                  <span style="font-size:12px;color:var(--muted2)" id="tp-copyhint"></span>
                 </div>
-                <button class="fx-btn ghost" style="height:32px;font-size:12.5px">Copy this set to another creator</button>
               </div>
             </div>
 
-            <div class="fx-adv-group"><h4>Sequences</h4>
-              <div class="fx-grid3">
-                <div class="fx-field"><label>Script name <span style="color:var(--muted2);font-weight:400">groups templates into an ordered flow</span></label><input class="fx-input" value="welcome-flow"></div>
-                <div class="fx-field"><label>This template is step</label><input class="fx-input" value="1"></div>
-                <div class="fx-field"><label>Suggested next</label><select class="fx-select"><option>Day-2 check-in (step 2)</option><option>Quiet-fan nudge</option><option>None</option></select></div>
-              </div>
-              <div class="fx-kv" style="margin-top:8px">After a step is sent, the chat composer offers the <b>next step</b> as a one-tap bubble.</div>
+            <div class="fx-adv-group" id="tp-seq"><h4>Sequences <span id="tp-seq-n" style="margin-left:8px;font-size:11px;font-weight:600;letter-spacing:0;text-transform:none;color:var(--muted2)">…</span></h4>
+              <div id="tp-seq-body"><div class="tp-empty-box">loading…</div></div>
+              <div class="fx-kv tp-hint" style="margin-top:8px">After a step is sent, the chat composer offers the <b>next step</b> as a one-tap bubble. A template joins a sequence when it carries a <b>script name</b> and a <b>step number</b> — set both by clicking its card above.</div>
             </div>
 
             <div class="fx-adv-group" style="margin-bottom:0"><h4>Backup</h4>
               <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-                <button class="fx-btn ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v10M8 10l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke-linecap="round"/></svg>Import templates (.json)</button>
-                <button class="fx-btn ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 14V4M8 8l4-4 4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke-linecap="round"/></svg>Export all 6</button>
+                <button class="fx-btn ghost" id="tp-import"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v10M8 10l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke-linecap="round"/></svg>Import templates (.json)</button>
+                <button class="fx-btn ghost" id="tp-export"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 14V4M8 8l4-4 4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke-linecap="round"/></svg>Export all</button>
               </div>
-              <div class="fx-note warn">Saved templates live in fastt only — OnlyFans never sees them. The one exception is the <a href="onboarding-welcome.html" style="color:inherit;text-decoration:underline">welcome message</a>, which is stored on OF itself so it fires even when fastt is off.</div>
+              <div class="fx-note warn"><span>Saved replies live in fastt only — OnlyFans never sees them. The one exception is the <a href="onboarding-welcome.html" style="color:inherit;text-decoration:underline">welcome message</a>, which is stored on OF itself so it fires even when fastt is off — and it only actually sends when OF&rsquo;s own <b>reply-on-subscribe</b> switch is on (shown in the status strip at the top).</span></div>
             </div>
 
           </div>
@@ -768,5 +799,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="onboarding-templates.js" id="wire-js"></script>
 </body>
 </html>

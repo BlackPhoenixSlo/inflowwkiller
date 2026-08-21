@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — Scripts &amp; Pricing</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -342,6 +341,16 @@
 </style>
 <style>
   .main{overflow-y:auto;padding-bottom:40px}
+  /* summary lead card */
+  .sum-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:4px 0 18px}
+  .sum-tile{background:#1c1c1c;border:1px solid var(--border-soft);border-radius:10px;padding:13px 15px;min-width:0}
+  .sum-tile .k{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted2)}
+  .sum-tile .v{font-size:21px;font-weight:700;color:#fff;margin-top:6px;line-height:1.1}
+  .sum-tile .s{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.35}
+  .sum-tile.warn{border-color:rgba(254,188,46,.3)}
+  .sum-tile.warn .v{color:#e8cf9a}
+  .sum-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .sum-actions .fx-btn{height:42px;padding:0 20px;font-size:14px}
   /* page-specific: small state chips for ladder rungs + script-pack slots */
   .pchip{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:11px;
     font-size:11px;font-weight:600;flex:0 0 auto;white-space:nowrap}
@@ -351,8 +360,68 @@
   .lad2 .fx-ladder{min-width:0}
   .fx-rung.empty .fx-select{color:var(--muted)}
   .fx-rung.empty{border-style:dashed;border-color:#3d3d3d}
-  .card-actions{margin-left:auto;display:flex;gap:10px}
+  .card-actions{margin-left:auto;display:flex;gap:10px;align-items:center}
+  .card-actions .fx-btn{height:32px;padding:0 13px;font-size:12.5px}
+  .card-actions .fx-btn[disabled]{opacity:.5;cursor:default}
   .slot-lbl{display:flex;align-items:center;gap:8px}
+  /* editable rung: line 1 = name/price/on, line 2 = thumbs + conversion */
+  .fx-rung{flex-wrap:wrap}
+  .fx-rung .fx-input.lbl{flex:1;min-width:0;height:34px}
+  .fx-rung .rung-2{display:flex;align-items:center;gap:8px;width:100%;padding-left:36px;
+    margin-top:-2px;flex-wrap:wrap}
+  .rung-thumbs{display:flex;gap:4px;flex:0 0 auto}
+  .rung-thumb{width:26px;height:26px;border-radius:6px;border:1px solid var(--border);
+    background:#232323 center/cover;flex:0 0 auto}
+  .rung-kind{height:26px;padding:0 8px;font-size:11px;background:#232323;border:1px solid var(--border);
+    border-radius:8px;color:#b9b9b9;font-family:inherit}
+  .rung-stat{font-size:11px;color:var(--muted2);margin-left:auto;white-space:nowrap}
+  .rung-stat b{color:#b9b9b9;font-weight:600}
+  .rung-stat.dead b{color:#e8cf9a}
+  .rung-on{cursor:pointer}
+  .lad-bar{display:flex;align-items:center;gap:12px;margin-top:14px;flex-wrap:wrap}
+  .lad-bar .msg{font-size:12.5px;color:var(--muted2)}
+  .lad-bar .msg.dirty{color:#e8cf9a}
+  /* suggestion output */
+  .sug{margin-top:14px;border-top:1px solid var(--border-soft);padding-top:14px}
+  .sug-h{font-size:12px;font-weight:600;color:#ddd;margin-bottom:8px}
+  .sug-row{display:flex;gap:10px;align-items:baseline;padding:6px 0;border-top:1px solid var(--border-soft);
+    font-size:12.5px;color:#b9b9b9}
+  .sug-row:first-of-type{border-top:0}
+  .sug-row b{color:#ddd;font-weight:600}
+  .sug-why{color:var(--muted2);font-size:11.5px}
+  .sug-empty{font-size:12.5px;color:var(--muted2);line-height:1.55}
+  /* simulate (dry-run) bubbles */
+  .sim-bubbles{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+  .sim-bub{background:rgba(65,102,246,.12);border:1px solid rgba(65,102,246,.3);
+    border-radius:16px 16px 16px 4px;padding:8px 13px;font-size:13.5px;color:#e6ebff;line-height:1.45;max-width:82%}
+  .sim-offer{margin-top:10px;display:inline-flex;align-items:center;gap:8px;background:rgba(103,209,174,.12);
+    border:1px solid rgba(103,209,174,.3);color:var(--green);border-radius:10px;padding:8px 12px;
+    font-size:12.5px;font-weight:600}
+  .sim-offer b{color:#fff;font-weight:700}
+  .sim-none{font-size:12.5px;color:var(--muted2);margin-top:10px;line-height:1.5}
+  /* live monitor */
+  .mon-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  .mon-col-h{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted2);
+    margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .mon-cnt{color:#b9b9b9;font-weight:600;letter-spacing:0;text-transform:none}
+  .mon-empty{font-size:12.5px;color:var(--muted2);padding:6px 0;line-height:1.5}
+  .mon-row{display:flex;align-items:center;gap:10px;padding:9px 11px;background:#1c1c1c;
+    border:1px solid var(--border-soft);border-radius:10px;margin-bottom:7px}
+  .mon-row .who{font-size:13px;color:#fff;font-weight:600;flex:0 0 auto}
+  .mon-row .what{font-size:12.5px;color:#b9b9b9;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mon-row .amt{font-size:12.5px;color:var(--green);font-weight:600;margin-left:auto;flex:0 0 auto;white-space:nowrap}
+  .mon-row .age{font-size:11px;color:var(--muted2);flex:0 0 auto}
+  .mon-cancel{width:24px;height:24px;border-radius:6px;border:1px solid var(--border);background:transparent;
+    color:#8a8a8a;cursor:pointer;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-family:inherit}
+  .mon-cancel:hover{border-color:#e05b5b;color:#e05b5b}
+  .mon-cancel:disabled{opacity:.4;cursor:default}
+  .mon-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;flex:0 0 auto;text-transform:capitalize}
+  .mon-badge.open{background:rgba(254,188,46,.14);color:#e8cf9a}
+  .mon-badge.active{background:rgba(103,209,174,.14);color:var(--green)}
+  .mon-badge.delivered{background:rgba(103,209,174,.14);color:var(--green)}
+  .mon-badge.expired{background:rgba(138,138,138,.12);color:#8a8a8a}
+  .mon-badge.cancelled{background:rgba(224,91,91,.14);color:#e0955b}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -383,7 +452,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -462,7 +530,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -494,39 +562,53 @@
         </div>
         <div class="sec-utc">the catalog the AI sells from — she climbs one rung per buy</div>
         <div class="head-right">
-          <div class="dropdown">
+          <div class="dropdown" id="hdr-persona-drop">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg>
-            Aria
+            <span id="hdr-persona">Aria</span>
             <span class="cv"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           </div>
         </div>
       </div>
 
-      <!-- live status -->
-      <div class="fx-status">
-        <span class="fx-st ok"><i></i>Selling from 8 of 12 rungs</span>
-        <span class="fx-st warn"><i></i>4 rungs have no content</span>
-        <span class="fx-st"><i></i>Band $3.00 – $200</span>
-        <span class="fx-st"><i></i>Proven-spend floor on</span>
-        <span class="fx-st"><i></i>DeepSeek V4 Flash writes the lines</span>
+      <!-- ============ PRIMARY: summary lead card ============ -->
+      <div class="fx-card" id="sum-card">
+        <div class="fx-card-h">Your sales catalog
+          <span style="margin-left:auto;font-size:12.5px;font-weight:500;color:var(--muted)">the ladder the AI climbs, one rung per buy</span>
+        </div>
+        <div class="fx-card-sub" id="sum-plain" style="margin-bottom:16px">
+          She opens at your lowest rung and climbs one step per buy.
+        </div>
+        <div class="sum-grid">
+          <div class="sum-tile"><div class="k">Selling from</div><div class="v" id="sum-selling">8 of 12</div><div class="s">rungs with a price + media</div></div>
+          <div class="sum-tile warn" id="sum-empty-tile"><div class="k">Needs content</div><div class="v" id="sum-empty">4</div><div class="s">empty rungs — never offered</div></div>
+          <div class="sum-tile"><div class="k">Price band</div><div class="v" id="sum-band" style="font-size:17px">$3.00 – $200</div><div class="s">every ask clamps inside</div></div>
+          <div class="sum-tile"><div class="k">Writes her lines</div><div class="v" id="sum-model" style="font-size:15px">DeepSeek V4</div><div class="s" id="sum-floor">Proven-spend floor on</div></div>
+        </div>
+        <div class="sum-actions">
+          <button class="fx-btn" id="btn-fill">✨ Fill content</button>
+          <button class="fx-btn green" id="btn-lines">🪄 Write lines from vault</button>
+          <button class="fx-btn ghost" id="btn-edit-ladder" style="margin-left:auto">Edit the ladder ↓</button>
+        </div>
+        <div class="sug" id="sug-box" style="display:none">
+          <div class="sug-h" id="sug-h"></div>
+          <div id="sug-body"></div>
+        </div>
       </div>
 
-      <!-- ============ PRIMARY: the catalog ladder ============ -->
-      <div class="fx-card">
-        <div class="fx-card-h">Catalog ladder
-          <span class="pchip ok">8 filled</span>
-          <span class="pchip warn">4 empty</span>
-          <div class="card-actions">
-            <button class="fx-btn ghost">✨ Fill content</button>
-            <button class="fx-btn">🪄 Write lines from vault</button>
-          </div>
+      <!-- ============ the catalog ladder (raw rung table) ============ -->
+      <div class="fx-card" id="lad-card">
+        <div class="fx-card-h" id="lad-h">Catalog ladder
+          <span class="pchip ok" id="chip-filled">8 filled</span>
+          <span class="pchip warn" id="chip-empty">4 empty</span>
+          <button class="fx-btn ghost" id="lad-toggle" style="margin-left:auto;height:32px;padding:0 14px;font-size:12.5px">Show ladder ▾</button>
         </div>
         <div class="fx-card-sub" style="margin-bottom:16px">
           Cheapest to priciest. The AI opens low and climbs one rung per buy — give every rung a vault folder and a price.
           An empty rung is never offered, so the ladder simply stops there.
         </div>
 
-        <div class="lad2">
+        <div id="lad-body" style="display:none">
+        <div class="lad2" id="lad2">
           <div class="fx-ladder">
             <div class="fx-rung"><span class="n">1</span>
               <select class="fx-select"><option selected>Teasers</option><option>Beach set</option><option>Gym set</option><option>VIP set</option></select>
@@ -593,15 +675,22 @@
           </div>
         </div>
 
+        <div class="lad-bar">
+          <button class="fx-btn" id="btn-save-lad" disabled>Save catalog</button>
+          <button class="fx-btn ghost" id="btn-revert-lad" disabled>Revert</button>
+          <span class="msg" id="lad-msg">Edit a name, price or kind and the Save button lights up.</span>
+        </div>
+        </div><!-- /#lad-body -->
+
         <div class="fx-note" style="margin-top:16px">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex:0 0 auto;margin-top:1px"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-          Price band: floor <b>$3.00</b> (OnlyFans rejects anything cheaper) · ceiling <b>$200</b> (the wire max). Whatever the math says, every ask stays inside the band.
+          Price band: floor <b id="band-floor">$3.00</b> (OnlyFans rejects anything cheaper) · ceiling <b id="band-ceil">$200</b> (the wire max). Whatever the math says, every ask stays inside the band.
         </div>
 
         <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
-          <span class="fx-switch sm on"></span>
+          <span class="fx-switch sm on" id="psf-sw"></span>
           <span style="font-size:13px;color:#ddd;line-height:1.45">
-            <b>Proven-spend floor</b> — never re-offer him cheaper than <b>38% of his biggest buy</b>. A $100 buyer is never quoted $9 again; if a rung can't clear his floor it's skipped, not discounted.
+            <b>Proven-spend floor</b> — never re-offer him cheaper than <b id="psf-pct">38% of his biggest buy</b>. A $100 buyer is never quoted $9 again; if a rung can't clear his floor it's skipped, not discounted.
           </span>
         </div>
 
@@ -617,77 +706,77 @@
             <div class="fx-adv-group"><h4>Escalation math</h4>
               <div class="fx-grid3">
                 <div class="fx-field"><label>Climb after a paid rung</label>
-                  <div class="fx-unit" data-unit="×"><input class="fx-input" value="1.75"></div>
+                  <div class="fx-unit" data-unit="×"><input class="fx-input" id="esc-mult" value="1.75"></div>
                 </div>
                 <div class="fx-field"><label>Max ask vs his biggest-ever buy</label>
-                  <div class="fx-unit" data-unit="×"><input class="fx-input" value="3.0"></div>
+                  <div class="fx-unit" data-unit="×"><input class="fx-input" id="esc-hist" value="3.0"></div>
                 </div>
-                <div class="fx-field"><label>Cold-open ceiling (never paid)</label>
-                  <div class="fx-unit" data-unit="$"><input class="fx-input" value="59"></div>
+                <div class="fx-field"><label id="esc-cold-lbl">Cold-open ceiling (never paid)</label>
+                  <div class="fx-unit" data-unit="$"><input class="fx-input" id="esc-cold" value="59"></div>
                 </div>
               </div>
               <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-top:8px">Next ask = his last paid price <b style="color:#ddd;font-weight:500">× 1.75</b>, never above <b style="color:#ddd;font-weight:500">3×</b> the largest single unlock he has ever made. A fan who has never paid is never asked more than <b style="color:#ddd;font-weight:500">$59</b>.</div>
             </div>
 
-            <div class="fx-adv-group"><h4>Per-PPV send caps</h4>
+            <div class="fx-adv-group"><h4 id="caps-h">Per-PPV send caps</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Max PPV sends / day</label><input class="fx-input" value="0"></div>
-                <div class="fx-field"><label>Max PPV sends / week</label><input class="fx-input" value="0"></div>
-                <div class="fx-field"><label>Max PPV sends / month</label><input class="fx-input" value="0"></div>
+                <div class="fx-field"><label>Max PPV sends / day</label><input class="fx-input" id="caps-day" value="0"></div>
+                <div class="fx-field"><label>Max PPV sends / week</label><input class="fx-input" id="caps-week" value="0"></div>
+                <div class="fx-field"><label>Max PPV sends / month</label><input class="fx-input" id="caps-month" value="0"></div>
               </div>
               <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-top:8px"><b style="color:#ddd;font-weight:500">0 = no cap.</b> The ladder's own pacing — one climb per buy, max 8 asks per fan per day — usually does the throttling for you.</div>
             </div>
 
             <div class="fx-adv-group"><h4>Script pack — her canned lines</h4>
-              <div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:10px">One line is picked at random per moment; <b style="color:#ddd;font-weight:500">{name}</b> and <b style="color:#ddd;font-weight:500">{price}</b> fill in automatically. An edited line replaces the shipped set for that slot — slots marked <span class="pchip warn" style="height:18px;padding:0 7px">unused by engine</span> are editable but nothing sends them yet.</div>
+              <div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:10px">One line is picked at random per moment; <b style="color:#ddd;font-weight:500">{name}</b> and <b style="color:#ddd;font-weight:500">{price}</b> fill in automatically. An edited line replaces the shipped set for that slot. Six slots are wired into the engine today — <b style="color:#ddd;font-weight:500">escalate</b>, <b style="color:#ddd;font-weight:500">after a buy</b>, <b style="color:#ddd;font-weight:500">discount resend</b>, <b style="color:#ddd;font-weight:500">soft "I'm broke"</b>, <b style="color:#ddd;font-weight:500">aftercare</b> and <b style="color:#ddd;font-weight:500">just-wants-to-talk</b>. The rest are marked <span class="pchip warn" style="height:18px;padding:0 7px">never sent</span>: they save fine, but no code path renders them, so editing one changes nothing a fan will read.</div>
               <div class="fx-grid2">
                 <div class="fx-field">
-                  <label class="slot-lbl">Question hook — opens the scene, always free</label>
-                  <input class="fx-input" value="cant stop thinking about our chat 😏 u around {name}?">
+                  <label class="slot-lbl">Question hook <span class="pchip warn">never sent</span></label>
+                  <input class="fx-input" data-slot="question_hook" value="cant stop thinking about our chat 😏 u around {name}?">
                 </div>
                 <div class="fx-field">
-                  <label class="slot-lbl">Cold open — his first priced line <span class="pchip warn">unused by engine</span></label>
-                  <input class="fx-input" value="I need your honest opinion about this babe 😘">
+                  <label class="slot-lbl">Cold open — his first priced line <span class="pchip warn">never sent</span></label>
+                  <input class="fx-input" data-slot="rung_open" value="I need your honest opinion about this babe 😘">
                 </div>
                 <div class="fx-field">
                   <label class="slot-lbl">Escalate — right after a paid rung</label>
-                  <input class="fx-input" value="you're gonna love where this goes {name} 😈">
+                  <input class="fx-input" data-slot="rung_escalate" value="you're gonna love where this goes {name} 😈">
                 </div>
                 <div class="fx-field">
                   <label class="slot-lbl">After a buy — keeps the scene alive, free</label>
-                  <input class="fx-input" value="mmm yeah? did you like that 😏">
+                  <input class="fx-input" data-slot="post_buy_bridge" value="mmm yeah? did you like that 😏">
                 </div>
                 <div class="fx-field">
-                  <label class="slot-lbl">Edge hold <span class="pchip warn">unused by engine</span></label>
-                  <input class="fx-input" value="u love that right?">
+                  <label class="slot-lbl">Edge hold <span class="pchip warn">never sent</span></label>
+                  <input class="fx-input" data-slot="edge_hold" value="u love that right?">
                 </div>
                 <div class="fx-field">
-                  <label class="slot-lbl">Filming stall — sells the "right now" illusion</label>
-                  <input class="fx-input" value="ok give me two secs im filming it rn 🎥">
+                  <label class="slot-lbl">Filming stall <span class="pchip warn">never sent</span></label>
+                  <input class="fx-input" data-slot="pre_ppv_stall" value="ok give me two secs im filming it rn 🎥">
                 </div>
                 <div class="fx-field">
-                  <label class="slot-lbl">Price objection <span class="pchip warn">unused by engine</span></label>
-                  <input class="fx-input" value="its a long one baby, not a quick clip — i promise its worth it">
+                  <label class="slot-lbl">Price objection <span class="pchip warn">never sent</span></label>
+                  <input class="fx-input" data-slot="objection_price" value="its a long one baby, not a quick clip — i promise its worth it">
                 </div>
                 <div class="fx-field">
-                  <label class="slot-lbl">Haggle counter — concede once, never twice <span class="pchip warn">unused by engine</span></label>
-                  <input class="fx-input" value="mmm ok... {price} and its yours, but thats me being nice 😏">
+                  <label class="slot-lbl">Haggle counter <span class="pchip warn">never sent</span></label>
+                  <input class="fx-input" data-slot="haggle_counter" value="mmm ok... {price} and its yours, but thats me being nice 😏">
                 </div>
                 <div class="fx-field">
-                  <label class="slot-lbl">Discount resend <span class="pchip warn">unused by engine</span></label>
-                  <input class="fx-input" value="hey stranger... where u been? {price} just for you">
+                  <label class="slot-lbl">Discount resend — the earned price drop after a real objection</label>
+                  <input class="fx-input" data-slot="discount_resend" value="hey stranger... where u been? {price} just for you">
                 </div>
                 <div class="fx-field">
                   <label class="slot-lbl">Soft "I'm broke" — stop selling, keep talking</label>
-                  <input class="fx-input" value="aww no rush at all baby 🥺 im not going anywhere">
+                  <input class="fx-input" data-slot="soft_broke_ack" value="aww no rush at all baby 🥺 im not going anywhere">
                 </div>
                 <div class="fx-field">
                   <label class="slot-lbl">Aftercare — one warm closer, then quiet</label>
-                  <input class="fx-input" value="dream of me!! talk to you tomorrow!">
+                  <input class="fx-input" data-slot="aftercare" value="dream of me!! talk to you tomorrow!">
                 </div>
                 <div class="fx-field">
-                  <label class="slot-lbl">Just-wants-to-talk acknowledge <span class="pchip warn">unused by engine</span></label>
-                  <input class="fx-input" value="aww i love just talking to you too 🥰">
+                  <label class="slot-lbl">Just-wants-to-talk acknowledge — seller off, conversation on</label>
+                  <input class="fx-input" data-slot="companion_ack" value="aww i love just talking to you too 🥰">
                 </div>
               </div>
             </div>
@@ -698,6 +787,51 @@
             </div>
 
           </div>
+        </div>
+      </div>
+
+      <!-- ============ TEST THE CATALOG (dry run) ============ -->
+      <div class="fx-card" id="sim-card">
+        <div class="fx-card-h" id="sim-h">Test the catalog
+          <span class="fx-new">DRY RUN</span>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:14px">
+          Type what a fan might say and see her reply — and exactly which rung she would offer — from the live ladder above.
+          Nothing is sent to anyone. <span style="color:var(--muted2)">Tip: ⌘/Ctrl + Enter runs it.</span>
+        </div>
+        <div class="fx-composer">
+          <textarea id="sim-input" placeholder="what a fan says…">ngl im kinda in the mood.. u got anything for me? 🥵</textarea>
+          <div class="fx-comp-bar">
+            <span style="font-size:12px;color:var(--muted2);margin-left:6px">Uses this creator's persona + catalog + one capped AI call.</span>
+            <button class="fx-btn" id="sim-run" style="margin-left:auto">▶ Run dry run</button>
+          </div>
+        </div>
+        <div id="sim-out" style="display:none;margin-top:14px"></div>
+      </div>
+
+      <!-- ============ LIVE MONITOR ============ -->
+      <div class="fx-card" id="mon-card">
+        <div class="fx-card-h" id="mon-h">Live monitor
+          <span class="pchip ok" id="mon-open-chip" style="display:none"></span>
+          <span style="margin-left:auto;font-size:12px;color:var(--muted2)" id="mon-refreshed">refreshes every 15s</span>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:16px">
+          The ladder in action — offers she is waiting on and any fan walking a script right now.
+          Cancelling an offer hands that fan back to your team; it sends nothing.
+        </div>
+        <div class="mon-grid">
+          <div>
+            <div class="mon-col-h">Open offers <span id="mon-open-n" class="mon-cnt"></span></div>
+            <div id="mon-offers"><div class="mon-empty">Loading…</div></div>
+          </div>
+          <div>
+            <div class="mon-col-h">Mid-script fans <span id="mon-pin-n" class="mon-cnt"></span></div>
+            <div id="mon-pins"><div class="mon-empty">Loading…</div></div>
+          </div>
+        </div>
+        <div id="mon-recent-wrap" style="display:none;margin-top:18px">
+          <div class="mon-col-h">Recently closed</div>
+          <div id="mon-recent"></div>
         </div>
       </div>
 
@@ -741,6 +875,26 @@
     });
   })();
   // ==== /CANONICAL SIDEBAR JS ====
+</script>
+<script id="ladder-toggle-js">
+  // Collapse the raw 12-rung table by default so the page opens on the summary,
+  // not a wall of inputs. Visual only — no endpoint, no send.
+  (function(){
+    var body = document.getElementById('lad-body');
+    var t = document.getElementById('lad-toggle');
+    var edit = document.getElementById('btn-edit-ladder');
+    if (!body) return;
+    function set(open){
+      body.style.display = open ? '' : 'none';
+      if (t) t.textContent = open ? 'Hide ladder ▴' : 'Show ladder ▾';
+    }
+    if (t) t.addEventListener('click', function(){ set(body.style.display === 'none'); });
+    if (edit) edit.addEventListener('click', function(){
+      set(true);
+      var card = document.getElementById('lad-card');
+      if (card && card.scrollIntoView) card.scrollIntoView({ behavior:'smooth', block:'start' });
+    });
+  })();
 </script>
 <script id="fx-js">
   /* ================= fx behaviors (paste whole block, idempotent) ================= */
@@ -800,5 +954,8 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="ai-scripts-pricing.js" id="wire-js"></script>
+<script src="ai-scripts-pricing.2.js" id="wire-monitor-js"></script>
 </body>
 </html>

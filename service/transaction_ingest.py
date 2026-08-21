@@ -1312,7 +1312,8 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             # that loop is GATED (selling automations ∪ online principals), so
             # an account selling only off its wall would never stamp. Whenever
             # this account has a recent ppv_post txn, re-read the feed here —
-            # stamping is idempotent, so overlap with the fast poll is free.
+            # stamping is idempotent, and the announce channel this also feeds
+            # is DEDUPED against the fast poll (not absent from this path).
             try:
                 recent_post_buy = await _has_recent_post_txn(
                     account_id,

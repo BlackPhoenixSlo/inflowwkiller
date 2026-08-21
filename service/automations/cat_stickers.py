@@ -28,8 +28,65 @@ list. `harvest_male.py` → contact sheets → `finalize_male.py` is its pipelin
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timedelta
+from typing import NamedTuple
+
+from ._common import (
+    CAT_STICKER_GAP_MIN_KEY, CAT_STICKER_SKIP_PCT_KEY, CAT_STICKER_SOLO_PCT_KEY,
+    CAT_STICKERS_KEY, _STYLE_FORCE_OFF_ENV, _load_style_json,
+)
+
+log = logging.getLogger("of-relay.automation.cat_stickers")
+
+# ── Account config (style_config_json) ────────────────────────────────
+# The storage KEYS stay in `_common`, which is where `style_config_api` and
+# `test_style_config` already read them from and which this module imports
+# anyway — a second copy here was three string literals that had to agree with
+# the validator forever. The READER lives here, next to the DEFAULT_* knobs and
+# the pack it configures.
+
+
+class StickerConfig(NamedTuple):
+    """One style_config_json read's worth of sticker knobs. A NamedTuple so
+    existing 4-way unpacking and slicing keep working unchanged."""
+    enabled: bool
+    skip_w: float
+    solo_w: float
+    gap_min: float
+
+
+async def load_cat_sticker_config(account_id: str) -> StickerConfig:
+    """The whole cat-sticker config in ONE style_config_json read.
+
+    enabled: account-wide toggle for the reaction pack (ai_chatter may end a
+    reply with a cat gif, occasionally sending JUST the gif). Reads the
+    'cat_stickers' key. DEFAULT ON (absent/NULL/parse-error → True); an
+    explicit stored False opts the account out. STYLE_FORCE_OFF kills it with
+    the rest of the realism stack.
+
+    Rate knobs: the cat_sticker_*_pct/_gap_min keys; absent/NULL/parse-error/
+    non-numeric → the house defaults (wide open: skip 0, solo 5%, gap 0)."""
+    stored = await _load_style_json(account_id)
+    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+        enabled = False
+    else:
+        val = stored.get(CAT_STICKERS_KEY)
+        enabled = True if val is None else bool(val)
+
+    def _num(key: str, default: float, scale: float, hi: float) -> float:
+        v = stored.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return default
+        return min(max(float(v) * scale, 0.0), hi)
+
+    return StickerConfig(
+        enabled,
+        _num(CAT_STICKER_SKIP_PCT_KEY, DEFAULT_SKIP, 0.01, 1.0),
+        _num(CAT_STICKER_SOLO_PCT_KEY, DEFAULT_SOLO, 0.01, 1.0),
+        _num(CAT_STICKER_GAP_MIN_KEY, DEFAULT_GAP_MIN, 1.0, 7 * 24 * 60))
+
 
 from ._markers import bare_star_span, protocol_marker_re
 
@@ -69,7 +126,7 @@ TAGS = frozenset(_CATALOG)
 
 # Per-reply roll knobs — house defaults, overridable PER ACCOUNT via
 # style_config_json (cat_sticker_skip_pct / cat_sticker_solo_pct /
-# cat_sticker_gap_min — see _common.load_cat_sticker_tuning); the resolved
+# cat_sticker_gap_min — see load_cat_sticker_config above); the resolved
 # values arrive here as call args. "skip" hides the protocol entirely,
 # "allow" shows it and lets the model judge, "solo" nudges a sticker-ONLY
 # reply (the gif replaces the text). Wide open since 07-23: skip=0 and no

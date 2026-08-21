@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Reminder Cards</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -383,6 +382,19 @@
   .rc-phead .t{font-size:15px;font-weight:600;color:#fff;display:flex;align-items:center;gap:8px}
   .rc-phead .h{font-size:12.5px;color:var(--muted2);margin-left:auto}
   .rc-week{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}
+  .rc-arm{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:2px 0 12px}
+  .rc-arm .fx-check{padding-bottom:9px}
+  .rc-armstate{font-size:12.5px;color:var(--muted);margin-left:auto;padding-bottom:10px;text-align:right;line-height:1.5}
+  .rc-armstate b{color:#ddd;font-weight:600}
+  .rc-armstate.on b{color:var(--green)}
+  .rc-frame{width:100%;height:600px;border:1px solid var(--border);border-radius:12px;
+    background:#0b0e14;overflow:hidden;display:flex;flex-direction:column}
+  .rc-frame-cap{flex:0 0 auto;padding:9px 14px;font-size:12px;line-height:1.5;color:#8a8a8a;
+    background:#141414;border-bottom:1px solid var(--border)}
+  .rc-frame-cap b{color:#b9b9b9;font-weight:600}
+  .rc-frame .rc-if{flex:1;width:100%;border:0;display:block;min-height:0}
+  .fx-btn:disabled{opacity:.42;cursor:not-allowed}
+  .fx-note>div{min-width:0}
   .rc-slot{background:#1c1c1c;border:1px solid var(--border-soft);border-radius:10px;padding:10px;
     display:flex;flex-direction:column;gap:8px}
   .rc-slot.today{border-color:rgba(65,102,246,.6);background:rgba(65,102,246,.06)}
@@ -430,7 +442,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -509,7 +520,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -546,32 +557,32 @@
       </div>
 
       <!-- status strip -->
-      <div class="fx-status">
-        <span class="fx-st"><i></i>Off — nothing sends</span>
-        <span class="fx-st warn"><i></i>3 cards waiting for you</span>
-        <span class="fx-st"><i></i>Daily card at 10:00</span>
-        <span class="fx-st"><i></i>Folder: Teasers · 41 unseen photos left</span>
+      <div class="fx-status" id="rm-status">
+        <span class="fx-st" id="rm-st-state"><i></i>Checking…</span>
+        <span class="fx-st warn" id="rm-st-wait"><i></i>… cards waiting</span>
+        <span class="fx-st" id="rm-st-time"><i></i>Daily card at …</span>
+        <span class="fx-st" id="rm-st-folder"><i></i>Folder: …</span>
       </div>
 
       <!-- master toggle (prod: OFF) -->
-      <div class="fx-togglecard">
+      <div class="fx-togglecard" id="rm-card">
         <div class="fx-tc-row">
           <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg></div>
           <div class="fx-tc-body">
             <div class="fx-tc-title">Daily reminder cards</div>
-            <div class="fx-tc-desc">Every day fastt picks <b style="color:#ddd">2 photos your fans haven't seen</b> from your <b style="color:#ddd">Teasers</b> folder, pairs them with one of your lines, and drops a card below. You press Approve — only then does it go out.</div>
+            <div class="fx-tc-desc" id="rm-desc">Every day fastt picks <b style="color:#ddd">2 photos your fans haven't seen</b> from your reminder folder, pairs them with one of your lines, and drops a card below. You press Approve — only then does it go out.</div>
           </div>
-          <span class="fx-tc-state">Off</span>
-          <span class="fx-switch"></span>
+          <span class="fx-tc-state">…</span>
+          <span class="fx-switch" id="rm-switch"></span>
         </div>
         <div class="fx-tc-knobs">
-          <div class="fx-kv">Next card <b>tomorrow 10:00</b> · goes out to <b>all fans</b> minus your exclude list</div>
+          <div class="fx-kv" id="rm-kv">…</div>
         </div>
       </div>
 
       <!-- approval queue -->
-      <div class="rc-qhead"><span class="t">Waiting for your approval</span><span class="h">Skip costs nothing — a skipped photo goes straight back in the pool.</span></div>
-      <div class="rc-queue">
+      <div class="rc-qhead" id="rm-qhead"><span class="t">Waiting for your approval</span><span class="h">Skip costs nothing — a skipped photo goes straight back in the pool.</span></div>
+      <div class="rc-queue" id="rm-queue">
 
         <div class="rc-card today">
           <div class="rc-top">
@@ -630,55 +641,34 @@
       </div>
 
       <!-- week planner strip -->
-      <div class="card rc-planner">
+      <div class="card rc-planner" id="rm-planner">
         <div class="rc-phead">
           <span class="t"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="16" rx="2.5"/><path d="M4 9.5h16M8 3v4M16 3v4" stroke-linecap="round"/></svg>Week planner</span>
           <span class="rc-suggest">Suggest-only</span>
-          <span class="h">The week escalates on its own — soft Monday, payoff Saturday, free taste Sunday.</span>
+          <span class="h" id="rm-plan-sub">The week escalates on its own — soft Monday, payoff Saturday, free taste Sunday.</span>
         </div>
-        <div class="rc-week">
-          <div class="rc-slot">
-            <span class="rc-sday">Mon</span>
-            <div class="rc-mini" style="background:linear-gradient(135deg,#2f4a44,#4a7a68)"></div>
-            <span class="rc-sname">Soft opener</span>
-            <span class="rc-arc tease">Tease</span>
+        <div class="rc-arm" id="rm-arm">
+          <div class="fx-field" style="width:132px"><label>Arc length</label>
+            <select class="fx-select" id="rm-weeks">
+              <option value="1" selected>1 week</option>
+              <option value="2">2 weeks</option>
+              <option value="3">3 weeks</option>
+              <option value="4">4 weeks</option>
+            </select>
           </div>
-          <div class="rc-slot">
-            <span class="rc-sday">Tue</span>
-            <div class="rc-mini" style="background:linear-gradient(135deg,#2e4a5a,#5a8a7a)"></div>
-            <span class="rc-sname">Beach set</span>
-            <span class="rc-arc warm">Warm</span>
-          </div>
-          <div class="rc-slot today">
-            <span class="rc-sday">Wed <span class="now">· TODAY</span></span>
-            <div class="rc-mini" style="background:linear-gradient(135deg,#3a3560,#7a5a8a)"></div>
-            <span class="rc-sname">Teasers pick</span>
-            <span class="rc-arc warm">Warm</span>
-          </div>
-          <div class="rc-slot">
-            <span class="rc-sday">Thu</span>
-            <div class="rc-mini" style="background:linear-gradient(135deg,#4a3550,#8a5a7a)"></div>
-            <span class="rc-sname">Mirror set</span>
-            <span class="rc-arc reveal">Reveal</span>
-          </div>
-          <div class="rc-slot">
-            <span class="rc-sday">Fri</span>
-            <div class="rc-mini" style="background:linear-gradient(135deg,#503242,#9a5a6a)"></div>
-            <span class="rc-sname">Night set</span>
-            <span class="rc-arc reveal">Reveal</span>
-          </div>
-          <div class="rc-slot">
-            <span class="rc-sday">Sat</span>
-            <div class="rc-mini" style="background:linear-gradient(135deg,#54283c,#a84a62)"></div>
-            <span class="rc-sname">VIP set — the payoff</span>
-            <span class="rc-arc peak">Peak</span>
-          </div>
-          <div class="rc-slot">
-            <span class="rc-sday">Sun</span>
-            <div class="rc-mini" style="background:linear-gradient(135deg,#33394f,#5a6a8a)"></div>
-            <span class="rc-sname">Free recap taste</span>
-            <span class="rc-arc tease">Tease</span>
-          </div>
+          <label class="fx-check" id="rm-voice"><span class="bx"></span>In-voice copy <span class="sub">every caption rewritten in her voice &mdash; slower, ~7 model calls per week</span></label>
+          <label class="fx-check" id="rm-combine"><span class="bx"></span>Combine feed + DM</label>
+          <span class="rc-armstate" id="rm-armstate">checking&hellip;</span>
+          <button class="fx-btn ghost" id="rm-rebuild">Rebuild preview</button>
+          <button class="fx-btn" id="rm-armbtn">Arm this arc&hellip;</button>
+          <button class="fx-btn ghost" id="rm-cancelbtn" style="display:none;color:#f0715f;border-color:rgba(240,113,95,.4)">Stand the arc down</button>
+        </div>
+        <div class="fx-status" id="rm-plan-stats" style="margin:0 0 12px"><span class="fx-st"><i></i>Building the arc&hellip;</span></div>
+        <div class="rc-week" id="rm-week" style="display:none"></div>
+        <div class="rc-frame" id="rm-frame-wrap">
+          <div class="rc-frame-cap">The arc the planner actually built &mdash; read-only, nothing armed. Showing this week&rsquo;s reminder coverage; the per-day breakdown isn&rsquo;t available yet.</div>
+          <iframe class="rc-if" sandbox="allow-same-origin" title="PPV week preview"></iframe>
+        </div>
         </div>
       </div>
 
@@ -695,37 +685,40 @@
             <div class="fx-adv-group"><h4>What goes out</h4>
               <div class="fx-grid3">
                 <div class="fx-field"><label>Pull photos from</label>
-                  <select class="fx-select"><option selected>Teasers</option><option>Beach set</option><option>VIP set</option></select>
+                  <select class="fx-select" id="rm-fold"><option selected>Loading folders…</option></select>
                 </div>
-                <div class="fx-field"><label>Images per day</label><input class="fx-input" value="2"></div>
+                <div class="fx-field"><label>Images per day</label><input class="fx-input" value="2" id="rm-imgs"></div>
                 <div class="fx-field"><label>Daily times</label>
-                  <div class="fx-chips" style="align-items:center;height:38px"><span class="fx-chip on">10:00</span><span class="fx-chip">14:00</span><span class="fx-chip">19:00</span></div>
+                  <div class="fx-chips" style="align-items:center;height:38px" id="rm-times"><span class="fx-chip" data-time="10:00">10:00</span><span class="fx-chip" data-time="14:00">14:00</span><span class="fx-chip" data-time="19:00">19:00</span></div>
                 </div>
               </div>
               <div class="fx-field" style="margin-top:12px"><label>Your lines — one is picked at random per card</label>
-                <textarea class="fx-input">good morning 🤍 two from my camera roll you haven't seen yet…
-found a couple i never posted… being brave today
-don't forget about me today 🙈 these are just for you</textarea>
+                <textarea class="fx-input" id="rm-lines" placeholder="one line per row — a random one is used per card"></textarea>
               </div>
             </div>
 
             <div class="fx-adv-group"><h4>Rotation &amp; fatigue</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Repeat a photo after (days)</label><input class="fx-input" value="30"></div>
-                <div class="fx-field"><label>Per-fan cooldown (hours)</label><input class="fx-input" value="48"></div>
+                <div class="fx-field"><label>Repeat a photo after (days)</label><input class="fx-input" value="30" id="rm-rep"></div>
+                <div class="fx-field"><label>Per-fan cooldown (hours)</label><input class="fx-input" value="48" id="rm-cool"></div>
                 <div class="fx-field"><label>When fresh photos run low</label>
-                  <select class="fx-select"><option selected>Send fewer images</option><option>Hold the day — send nothing</option><option>Re-use after the 30-day window</option></select>
+                  <select class="fx-select" id="rm-low"><option value="use_fewer" selected>Send fewer images</option><option value="stop">Hold the day — send nothing</option><option value="repeat_after_window">Re-use after the repeat window</option></select>
                 </div>
               </div>
-              <div class="fx-kv" style="margin-top:8px">A photo is never shown to the same fans twice inside the window · a fan who got any reminder in the last <b>48 h</b> is skipped automatically.</div>
+              <div class="fx-kv" style="margin-top:8px" id="rm-rot-kv">A photo is never shown to the same fans twice inside the window · a fan who got any reminder in the last <b>48 h</b> is skipped automatically.</div>
             </div>
 
-            <div class="fx-adv-group"><h4>Hands-free (careful)</h4>
-              <div class="rc-switchrow"><span class="fx-switch"></span>Auto-post approved cards to the feed <span class="sub">off — cards wait for you</span></div>
-              <div class="rc-switchrow"><span class="fx-switch"></span>Auto-send approved cards as a mass DM <span class="sub">off — cards wait for you</span></div>
+            <div class="fx-adv-group" id="rm-bands"><h4>PPV arc price bands</h4>
+              <div class="fx-tc-desc" style="margin:-2px 0 12px;font-size:12.5px;color:#8a8a8a;line-height:1.5">The week planner prices every PPV inside its explicitness tier’s band — climbing across the arc, never leaving the band. Edit a band and the preview above re-prices itself.</div>
+              <div id="rm-bands-body"><div class="fx-kv">Loading price bands…</div></div>
+            </div>
+
+            <div class="fx-adv-group" id="rm-handsfree"><h4>Hands-free (careful)</h4>
+              <div class="rc-switchrow"><span class="fx-switch" id="rm-autopost"></span>Auto-post approved cards to the feed <span class="sub" id="rm-autopost-sub">not built — no feed-post path exists</span></div>
+              <div class="rc-switchrow"><span class="fx-switch on" id="rm-automass"></span>Auto-send approved cards as a mass DM <span class="sub" id="rm-automass-sub">no gate — every approved card is mass-DM&rsquo;d on the next enabled run</span></div>
               <div class="fx-note warn" style="margin-top:8px">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex:0 0 auto;margin-top:1px"><path d="M12 4l8 14H4L12 4z" stroke-linejoin="round"/><path d="M12 10v4M12 16.5v.01" stroke-linecap="round"/></svg>
-                Nothing sends itself until you flip these. Every card above still needs your Approve — these only skip the second click after approval.
+                These switches are not wired to the sender yet. Approve IS the send decision: the consumer automation mass-DMs every approved card on its next enabled run, and nothing auto-posts to the feed at all.
               </div>
             </div>
 
@@ -832,5 +825,7 @@ don't forget about me today 🙈 these are just for you</textarea>
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="vault-reminders.js" id="wire-js"></script>
 </body>
 </html>

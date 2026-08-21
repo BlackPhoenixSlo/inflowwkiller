@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<!--
+  The front door. StaticFiles is mounted with html=True, so this is what
+  /infloww/ serves; without it the mount 404s at its own root and every one of
+  the 55 pages is reachable only by typing its filename. dashboard.html is the
+  landing page the shared nav treats as home.
+-->
+<title>Infloww — Dashboard</title>
+<meta http-equiv="refresh" content="0; url=/infloww/dashboard.html">
+<link rel="canonical" href="/infloww/dashboard.html">
+<p style="font:14px system-ui;padding:2rem">
+  Loading the <a href="/infloww/dashboard.html">dashboard</a>…
+</p>
+<!--
+  ⚠️ The hop above is ABSOLUTE on purpose. Next.js normalises "/infloww/" to
+  "/infloww" with a 308, and from THAT url a relative "dashboard.html" resolves
+  to "/dashboard.html" at the site root — a 404, i.e. the skin dead-ends at its
+  own front door the moment it is reached through the app rather than straight
+  off the relay. An absolute hop lands correctly from either origin.
+-->

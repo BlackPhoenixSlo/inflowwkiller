@@ -29,7 +29,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +44,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +86,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -354,6 +352,30 @@
   .rv-tab.on{background:#343434;color:#fff;border-color:#3f3f3f}
   .rv-tab .ct{font-size:11px;font-weight:700;background:#2c2c2c;color:#cfcfcf;border-radius:9px;padding:3px 8px;line-height:1}
   .rv-tab.on .ct{background:var(--accent);color:#fff}
+  /* ---- additive: the pending-approval queue (folder / ppv / reminder) ---- */
+  .rq-sec{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:14px}
+  .rq-h{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border-soft)}
+  .rq-h .t{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#cfcfcf}
+  .rq-h .c{font-size:12px;color:var(--muted)}
+  .rq-h .sp{margin-left:auto}
+  .rq-item{display:flex;align-items:flex-start;gap:14px;padding:12px 16px;border-bottom:1px solid #202020}
+  .rq-item:last-child{border-bottom:0}
+  .rq-b{flex:1;min-width:0}
+  .rq-t{font-size:13.5px;font-weight:600;color:#fff;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .rq-m{font-size:12px;color:var(--muted);margin-top:3px;display:flex;gap:14px;flex-wrap:wrap}
+  .rq-q{font-size:12.5px;color:#ddd;margin-top:7px;line-height:1.5}
+  .rq-empty{padding:16px;font-size:12.5px;color:var(--muted2)}
+  .rq-stale{font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    background:rgba(232,170,70,.15);color:#e8aa46;border:1px solid rgba(232,170,70,.4);padding:1px 6px;border-radius:5px}
+  .rq-thumbs{display:flex;gap:5px;margin-top:8px}
+  .rq-th{width:44px;height:44px;border-radius:7px;background:#1a1a1a center/cover no-repeat;border:1px solid #2a2a2a;flex:0 0 auto}
+  .rq-acts{display:flex;gap:8px;flex:0 0 auto}
+  .btn-ok{height:30px;padding:0 12px;border-radius:8px;border:1px solid rgba(103,209,174,.45);
+    background:rgba(103,209,174,.12);color:#67d1ae;font:600 12.5px Inter,sans-serif;cursor:pointer}
+  .btn-no{height:30px;padding:0 12px;border-radius:8px;border:1px solid rgba(240,113,95,.4);
+    background:rgba(240,113,95,.1);color:#f0715f;font:600 12.5px Inter,sans-serif;cursor:pointer}
+  .btn-ok:disabled,.btn-no:disabled{opacity:.4;cursor:not-allowed}
+  .fx-note>div{min-width:0}
 
   /* hero */
   .rv-hero{display:flex;align-items:center;gap:26px;background:var(--card);border:1px solid var(--border);
@@ -428,6 +450,39 @@
   .fbtn.rn{border:1px solid var(--border);background:#1c1c1c;color:#ddd}
   .fbtn.rn:hover{border-color:#4a4a4a}
   .fcard.done .fbtn.ok{background:rgba(103,209,174,.25)}
+  /* correction (a region was re-tapped) shows amber, matching the real modal */
+  .fbtn.ok.fix{border-color:rgba(232,170,70,.5);background:rgba(232,170,70,.15);color:#e8c886}
+  .fcard.dirty{border-color:rgba(232,170,70,.55)}
+
+  /* ---- per-region flag editor (breasts / vulva / anus × not-in / covered / bare) ---- */
+  .fthumb.zoomable{cursor:zoom-in}
+  .fregions{display:flex;flex-direction:column;gap:6px}
+  .freg{display:flex;align-items:center;gap:8px}
+  .frn{font-size:10.5px;color:var(--muted);width:52px;flex:0 0 52px;white-space:nowrap}
+  .frn.lk{color:#8fe6c8}
+  .fstates{display:flex;gap:4px;flex:1}
+  .fsb{flex:1;height:24px;border-radius:6px;border:1px solid var(--border);background:var(--card);
+    color:var(--muted);font:600 10px Inter,sans-serif;cursor:pointer;padding:0}
+  .fsb:hover:not(:disabled){border-color:#4a4a4a}
+  .fsb:disabled{opacity:.4;cursor:not-allowed}
+  .fsb.on.st-bare{border-color:rgba(236,75,155,.7);background:rgba(236,75,155,.18);color:#f3a0c8}
+  .fsb.on.st-covered{border-color:rgba(91,158,250,.7);background:rgba(91,158,250,.18);color:#a0c4f7}
+  .fsb.on.st-not{border-color:#5a5a5a;background:#2c2c2c;color:#cfcfcf}
+  .fnote{width:100%;height:28px;background:#1c1c1c;border:1px solid var(--border);border-radius:7px;
+    color:#eee;font-family:inherit;font-size:11px;padding:0 9px;outline:none}
+  .fnote:focus{border-color:#4a4a4a}
+  .fwarn{font-size:10.5px;color:#e5b95b;line-height:1.4}
+  .fgar{font-size:10.5px;color:var(--muted);line-height:1.4}
+  .fgar b{color:#ddd;font-weight:600}
+
+  /* full-frame lightbox — the square crop hides an edge-of-frame waistband,
+     which is exactly what the reviewer is here to judge */
+  .rv-lb{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.82);display:none;
+    align-items:center;justify-content:center;padding:40px}
+  .rv-lb.open{display:flex}
+  .rv-lb img{max-width:92vw;max-height:88vh;border-radius:10px;object-fit:contain}
+  .rv-lb .x{position:absolute;top:22px;right:26px;width:38px;height:38px;border-radius:50%;
+    background:#111;border:1px solid #333;color:#eee;font-size:18px;cursor:pointer}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -458,7 +513,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -537,7 +591,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -569,29 +623,39 @@
         <div class="sec-utc" style="margin-left:14px">Three quick human checks the AI can't make alone — each pass is a handful of clicks</div>
       </div>
 
-      <div class="fx-status">
-        <span class="fx-st ok"><i></i>Scan fresh — 8 min ago</span>
-        <span class="fx-st warn"><i></i>27 items waiting</span>
-        <span class="fx-st"><i></i>Model agrees with you 90.2%</span>
-        <span class="fx-st"><i></i>Qwen3-VL 30B</span>
+      <div class="fx-status" id="rv-status">
+        <span class="fx-st ok" id="rv-st-fresh"><i></i>Checking…</span>
+        <span class="fx-st warn" id="rv-st-wait"><i></i>… items waiting</span>
+        <span class="fx-st" id="rv-st-acc"><i></i>Accuracy …</span>
+        <span class="fx-st" id="rv-st-model"><i></i>…</span>
       </div>
 
       <!-- ===== tabs ===== -->
       <div class="rv-tabs">
-        <button class="rv-tab on" data-pane="pane-dupes">Duplicates <span class="ct">12</span></button>
-        <button class="rv-tab" data-pane="pane-disputes">Disputes <span class="ct">6</span></button>
-        <button class="rv-tab" data-pane="pane-flags">Flags <span class="ct">9</span></button>
+        <button class="rv-tab on" data-pane="pane-queue">Waiting for approval <span class="ct" id="rv-ct-queue">…</span></button>
+        <button class="rv-tab" data-pane="pane-dupes">Duplicates <span class="ct" id="rv-ct-dupes">…</span></button>
+        <button class="rv-tab" data-pane="pane-disputes">Disputes <span class="ct" id="rv-ct-disputes">…</span></button>
+        <button class="rv-tab" data-pane="pane-flags">Flags <span class="ct" id="rv-ct-flags">…</span></button>
       </div>
 
-      <!-- ================= TAB 1 · DUPLICATES ================= -->
-      <section class="rv-pane" id="pane-dupes">
+      <!-- ============ TAB 0 · WAITING FOR APPROVAL ============ -->
+      <section class="rv-pane" id="pane-queue">
+        <div class="fx-note" style="margin-bottom:12px">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex:0 0 auto;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg>
+          <div>Everything the AI proposed that a fan could eventually see. Approving flips the row to <b>approved</b> on the ledger &mdash; it touches no OnlyFans state and sends nothing; a downstream automation applies it later. If the vault moved since a proposal was drafted the row comes back <b>stale</b> and stays pending.</div>
+        </div>
+        <div id="rv-queue"></div>
+      </section>
 
-        <div class="rv-hero">
-          <div class="big">30.6%</div>
+      <!-- ================= TAB 1 · DUPLICATES ================= -->
+      <section class="rv-pane" id="pane-dupes" style="display:none">
+
+        <div class="rv-hero" id="rv-hero">
+          <div class="big" id="rv-pct">…</div>
           <div class="hb">
             <div class="ht">of this vault is re-uploads</div>
-            <div class="hs">706 of 2,309 items are copies of something already in the vault. Every copy clutters the picker, splits folder ordering and costs a describe run. Keep the original, remove the rest.</div>
-            <div class="rv-bar"><i></i></div>
+            <div class="hs" id="rv-hs">Scanning the mirror for duplicate sets…</div>
+            <div class="rv-bar"><i id="rv-bar-i"></i></div>
           </div>
         </div>
 
@@ -667,8 +731,8 @@
         </div>
 
         <div class="rv-foot">
-          <button class="btn-rose">Remove 14 copies from OnlyFans…</button>
-          <span class="fine">12 sets · 14 copies ticked · originals are never touched · asks you to confirm first</span>
+          <button class="btn-rose" id="rv-hide">Remove copies from OnlyFans…</button>
+          <span class="fine" id="rv-dupes-fine">… · originals are never touched · asks you to confirm first</span>
         </div>
       </section>
 
@@ -749,7 +813,7 @@
         </div>
 
         <div class="rv-foot">
-          <span class="fine">6 open · 2 fixed this session · a fix re-cuts the folders and re-bands the prices automatically</span>
+          <span class="fine" id="rv-disp-fine">… · a fix re-cuts the folders and re-bands the prices automatically</span>
         </div>
       </section>
 
@@ -758,10 +822,10 @@
 
         <div class="fx-note" style="margin-bottom:12px">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex:0 0 auto;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg>
-          Name the garment, don't judge the vibe — the AI labels each item with one word for what's actually worn. Confirm the right ones; every confirm makes the accuracy number real.
+          For each item the vision model calls every region — breasts, vulva, anus — <b>bare</b>, <b>covered</b> or <b>not in frame</b>. Those three answers pick the folder, the price band and what's safe for a whole list. Tap only what's wrong (it locks permanently); press <b>Looks right</b> to confirm — that's what the accuracy number is measured from, not a no-op.
         </div>
 
-        <div class="fgrid">
+        <div class="fgrid" id="rv-fgrid">
           <!-- card 1 -->
           <div class="fcard">
             <div class="fthumb" style="background:linear-gradient(150deg,#c98aa2,#6f57b8)"></div>
@@ -819,7 +883,7 @@
         </div>
 
         <div class="rv-foot">
-          <span class="fine">9 to check · flagged-first ordering · your fixes are locked — a re-run refreshes everything except what you corrected</span>
+          <span class="fine" id="rv-flags-fine">… · your fixes are locked — a re-run refreshes everything except what you corrected</span>
         </div>
       </section>
 
@@ -835,30 +899,30 @@
           <div class="fx-adv-group"><h4>Duplicate matching</h4>
             <div class="fx-grid3">
               <div class="fx-field"><label>Match strictness</label>
-                <select class="fx-select">
-                  <option>0 · pixel-identical only</option>
-                  <option selected>2 · recommended</option>
-                  <option>4 · looser</option>
-                  <option>6 · review every set</option>
+                <select class="fx-select" id="rv-thresh">
+                  <option value="0">0 · pixel-identical only</option>
+                  <option value="2" selected>2 · recommended</option>
+                  <option value="4">4 · looser</option>
+                  <option value="6">6 · review every set</option>
                 </select>
               </div>
-              <div class="fx-field"><label>Which copy is the original</label>
+              <div class="fx-field" id="rv-orig-field"><label>Which copy is the original</label>
                 <select class="fx-select">
                   <option selected>Earliest upload (recommended)</option>
                   <option>Most-sent copy</option>
                 </select>
               </div>
-              <div class="fx-field"><label>Re-scan</label>
+              <div class="fx-field" id="rv-rescan-field"><label>Re-scan</label>
                 <select class="fx-select">
                   <option selected>After every vault sync</option>
                   <option>Manual only</option>
                 </select>
               </div>
             </div>
-            <label class="fx-check" style="margin-top:8px"><span class="bx"></span>Allow removing copies already sent in a PPV <span class="sub">off = sent copies are protected</span></label>
+            <label class="fx-check" style="margin-top:8px" id="rv-allowsent"><span class="bx"></span>Allow removing copies already sent in a PPV <span class="sub">off = sent copies are protected</span></label>
           </div>
 
-          <div class="fx-adv-group"><h4>Disputes &amp; corrections</h4>
+          <div class="fx-adv-group" id="rv-disp-group"><h4>Disputes &amp; corrections</h4>
             <label class="fx-check on"><span class="bx"></span>Lock my corrections <span class="sub">no re-run can overwrite a fixed field</span></label>
             <label class="fx-check on"><span class="bx"></span>Re-cut folders &amp; price bands after each fix</label>
           </div>
@@ -866,21 +930,21 @@
           <div class="fx-adv-group"><h4>Flag checking</h4>
             <div class="fx-grid3">
               <div class="fx-field"><label>Card order</label>
-                <select class="fx-select">
-                  <option selected>Flagged first, then the rest</option>
-                  <option>Only flagged</option>
-                  <option>Newest first</option>
+                <select class="fx-select" id="rv-order">
+                  <option value="iffy-first" selected>Flagged first, then the rest</option>
+                  <option value="only">Only flagged</option>
+                  <option value="newest">Newest first</option>
                 </select>
               </div>
-              <div class="fx-field"><label>Cards per batch</label><input class="fx-input" value="24"></div>
-              <div class="fx-field"><label>Vision model</label>
+              <div class="fx-field"><label>Cards per batch</label><input class="fx-input" value="24" id="rv-batch"></div>
+              <div class="fx-field" id="rv-vmodel-field"><label>Vision model</label>
                 <select class="fx-select">
                   <option selected>Qwen3-VL 30B (escalates to 235B)</option>
                   <option>Qwen3-VL 235B only</option>
                 </select>
               </div>
             </div>
-            <div class="fx-kv" style="margin-top:8px">prompt <b>v3</b> · model agrees with you <b>90.2%</b> (1,240 answers) · confirms count too — they're what the accuracy is measured from</div>
+            <div class="fx-kv" style="margin-top:8px" id="rv-flags-kv">prompt … · grade cards to make the accuracy number real</div>
           </div>
 
         </div>
@@ -892,6 +956,8 @@
   <div class="help">
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg>
   </div>
+
+  <div class="rv-lb" id="rv-lb"><button class="x" id="rv-lb-x" type="button">&times;</button><img id="rv-lb-img" alt=""></div>
 
 </div>
 
@@ -1016,5 +1082,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="vault-review.js" id="wire-js"></script>
 </body>
 </html>

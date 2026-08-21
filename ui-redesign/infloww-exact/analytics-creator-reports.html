@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="data:,">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Creator reports</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,13 +19,11 @@
     -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
   body{display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
   a{color:inherit;text-decoration:none}
-  .app{position:relative;width:1440px;height:900px;overflow:hidden;background:var(--canvas);color:var(--text);display:flex;flex-direction:column}
+  /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+  .app{position:relative;width:1440px;height:100vh;overflow:hidden;background:var(--canvas);color:var(--text);display:flex;flex-direction:column}
 
   /* ============ TOP BAR ============ */
   .topbar{height:52px;flex:0 0 52px;background:var(--black);display:flex;align-items:center;padding:0 18px 0 20px;gap:14px}
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}.traffic .y{background:#febc2e}.traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -52,6 +51,8 @@
   .creator .pink{width:8px;height:8px;border-radius:50%;background:#ec4b9b;margin-left:auto}
   .creator .cv{color:var(--muted);display:flex}
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative}
   .nav-item:hover{background:#141414}
   .nav-item .ico{width:22px;display:flex;align-items:center;justify-content:center;flex:0 0 22px;color:#9a9a9a}
@@ -130,6 +131,99 @@
 
   .help{position:absolute;right:26px;bottom:22px;width:52px;height:52px;border-radius:50%;background:#111;border:1px solid #2a2a2a;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(0,0,0,.5);color:#eaeaea}
 
+  /* ==== additive: range popover + creator-performance table ==== */
+  .ft-pop{position:fixed;z-index:9995;background:#1b1b1d;border:1px solid #333;border-radius:12px;padding:13px;
+    box-shadow:0 12px 34px rgba(0,0,0,.55);font:13px Inter,sans-serif;color:#e6e6e6;min-width:262px}
+  .ft-pop .pr{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .ft-pop .pr button{background:#151515;border:1px solid #333;color:#cfcfcf;border-radius:7px;padding:6px 10px;
+    font:500 12px Inter,sans-serif;cursor:pointer}
+  .ft-pop .pr button:hover{border-color:#4166f6;color:#fff}
+  .ft-pop .rw{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:7px 0;color:#8a8a8a}
+  .ft-pop input[type=date]{background:#151515;border:1px solid #333;color:#fff;border-radius:7px;padding:6px 8px;
+    font:13px Inter,sans-serif;color-scheme:dark}
+  .ft-pop .go{width:100%;margin-top:11px;background:#4166f6;border:0;color:#fff;border-radius:8px;padding:9px;
+    font:600 13px Inter,sans-serif;cursor:pointer}
+  .ctable{border:1px solid #262626;border-radius:12px;overflow:auto;background:#141416}
+  .ctable table{width:100%;border-collapse:collapse;font-size:13px}
+  .ctable th{background:#1a1a1c;color:#cfcfcf;font-weight:500;text-align:left;padding:12px 10px;white-space:nowrap;
+    font-size:12px;cursor:pointer;user-select:none}
+  .ctable th.r{text-align:right}
+  .ctable th.on{color:#fff}
+  .ctable td{padding:11px 10px;border-top:1px solid #202020;color:#d6d6d6;white-space:nowrap}
+  .ctable td.r{text-align:right;font-variant-numeric:tabular-nums}
+  .ctable tbody tr:hover td{background:#18181a}
+  .ctable tfoot td{background:#1a1a1c;color:#fff;font-weight:600;border-top:1px solid #2a2a2a}
+  .cname{color:#fff;font-weight:600}
+  .cid{color:#6a6a6a;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .pend{color:#e0b24a}
+  .capnote{color:#8a8a8a;font-size:12.5px;margin-top:12px;line-height:1.5}
+
+  /* ==== additive v2: all-models filter · channel multi-line · KPI cards ==== */
+  .msrow{display:flex;align-items:center;gap:10px;padding:7px 6px;border-radius:8px;cursor:pointer;margin:0}
+  .msrow:hover{background:#232325}
+  .msrow input{accent-color:#4166f6;width:15px;height:15px;flex:0 0 auto}
+  .msrow .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+  .msrow .nm{flex:1;color:#e6e6e6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .msrow .am{color:#8a8a8a;font-variant-numeric:tabular-nums}
+  .msdiv{height:1px;background:#2a2a2a;margin:6px 2px}
+
+  /* earnings by channel — multi-line + legend */
+  .chanwrap{display:flex;gap:26px;align-items:center;padding-top:4px}
+  .chan-chart{flex:1;min-width:0}
+  .chan-legend{flex:0 0 236px;display:flex;flex-direction:column}
+  .chan-legend .lg{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #232323;font-size:14px}
+  .chan-legend .lg:last-child{border-bottom:none}
+  .chan-legend .lg .dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto}
+  .chan-legend .lg .nm{color:#d4d4d4}
+  .chan-legend .lg .pc{margin-left:auto;color:#8a8a8a;font-variant-numeric:tabular-nums;font-size:13px}
+  .chan-legend .lg .am{color:#fff;font-weight:600;min-width:62px;text-align:right;font-variant-numeric:tabular-nums}
+
+  /* per-model KPI cards (Creator performance) */
+  .kpigrid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .kpicard{background:#0f0f11;border:1px solid #232325;border-radius:14px;padding:18px 20px}
+  .kc-head{display:flex;align-items:flex-start;gap:12px}
+  .kc-av{width:44px;height:44px;border-radius:50%;background:#3a3a3a;display:grid;place-items:center;font-weight:700;font-size:15px;color:#fff;overflow:hidden;flex:0 0 auto}
+  .kc-av img{width:100%;height:100%;object-fit:cover;display:block}
+  .kc-id{min-width:0;flex:1}
+  .kc-name{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:#fff}
+  .kc-name .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kc-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;border:1px solid;flex:0 0 auto}
+  .kc-badge.paid{color:#67d1ae;border-color:rgba(103,209,174,.4);background:rgba(103,209,174,.1)}
+  .kc-badge.free{color:#8a8a8a;border-color:#333}
+  .kc-handle{font-size:11px;color:#6a6a6a;font-family:ui-monospace,Menlo,monospace;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kc-total{font-size:30px;font-weight:700;color:#fff;letter-spacing:-.5px;margin-top:14px}
+  .kc-pend{font-size:12px;color:#8a8a8a;margin-top:3px}
+  .kc-pend .pend{color:#e0b24a}
+  .kc-revlbl{font-size:11px;color:#8a8a8a;margin-top:3px}
+  .kc-chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}
+  .kc-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #2a2a2a;background:#171719;border-radius:999px;padding:4px 10px;font-size:12px}
+  .kc-chip .kl{color:#8a8a8a}
+  .kc-chip .kv{color:#fff;font-weight:600;font-variant-numeric:tabular-nums}
+  .kc-chip .kp{color:#e0b24a;font-variant-numeric:tabular-nums}
+  .kc-kpis{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px;margin-top:16px;padding-top:16px;border-top:1px solid #232325}
+  .kc-kpi .kk{font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:#8a8a8a}
+  .kc-kpi .kvv{font-size:16px;font-weight:600;color:#fff;margin-top:4px;font-variant-numeric:tabular-nums}
+  .kc-kpi .kvv.mut{color:#6a6a6a}
+  .kchip{display:inline-flex;align-items:center;gap:5px;background:#151515;border:1px solid #2c2c2c;border-radius:99px;
+    padding:3px 9px;font-size:11.5px;color:#cfcfcf;margin:0 6px 6px 0}
+  .kchip .p{color:#e0b24a}
+  /* ==== additive: perf-tab toolbar pills (Columns + Export) ==== */
+  .pbtn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 13px;border:1px solid #333;border-radius:9px;
+    background:#151515;color:#dcdcdc;font:500 13px Inter,sans-serif;cursor:pointer;white-space:nowrap}
+  .pbtn:hover{border-color:#4166f6;color:#fff}
+  .pbtn svg{flex:0 0 auto}
+  .pbtn.accent{border-color:#2f3f8f;color:#8ea2ff}
+  .pbtn.accent:hover{border-color:#4166f6;background:#161a2e;color:#fff}
+  .ft-pop .cpick{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:7px;color:#cfcfcf;cursor:pointer;font-size:13px}
+  .ft-pop .cpick:hover{background:#242424}
+  .ft-pop .cpick input{accent-color:#4166f6;width:15px;height:15px;flex:0 0 auto}
+  .ft-pop .cpick.locked{color:#6a6a6a;cursor:default}
+  .ft-pop .cphead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;
+    padding-bottom:8px;border-bottom:1px solid #2a2a2a}
+  .ft-pop .cphead .qa{color:#8ea2ff;font-size:12px;cursor:pointer}
+  .ft-pop .cphead .qa:hover{color:#fff}
+  .ft-pop .cphead .qa.mut{color:#8a8a8a}
+
   /* ==== canonical sidebar submenu (propagated from dashboard.html) ==== */
   .nav-item.has-sub{cursor:pointer}
   .nav-item.open{color:#fff;background:#141414}
@@ -182,7 +276,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
     </div>
@@ -250,7 +343,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -283,8 +376,8 @@
 
       <!-- tabs -->
       <div class="tabs">
-        <div class="tab on">Overview</div>
-        <div class="tab">Creator performance</div>
+        <div class="tab on" data-tab="ov">Overview</div>
+        <div class="tab" data-tab="perf">Creator performance</div>
       </div>
 
       <!-- filter bar -->
@@ -305,10 +398,11 @@
           <span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
         </div>
         <span class="netlbl">Show net earnings</span>
-        <div class="tg on" id="netToggle"></div>
+        <div class="tg" id="netToggle"></div>
         <span class="reset">Reset</span>
       </div>
 
+      <div id="ovWrap">
       <!-- earnings summary -->
       <div class="sect">Earnings summary
         <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
@@ -353,6 +447,7 @@
             <div class="pct">0.00%</div>
           </div>
         </div>
+        <div class="capnote" id="sumSrc"></div>
       </div>
 
       <!-- earnings trends chart -->
@@ -379,34 +474,51 @@
         </svg>
       </div>
 
-      <!-- earnings by channel + breakdown -->
-      <div class="grid-bottom">
-        <div class="panel">
-          <div class="sect" style="margin:0 0 18px">Earnings by channel
-            <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
-          </div>
-          <div class="donutwrap">
-            <svg width="150" height="150" viewBox="0 0 150 150">
-              <circle cx="75" cy="75" r="52" fill="none" stroke="#2a2a2a" stroke-width="22"/>
-              <text x="75" y="72" text-anchor="middle" font-family="Inter" font-size="13" fill="#8a8a8a">Total</text>
-              <text x="75" y="92" text-anchor="middle" font-family="Inter" font-size="17" font-weight="700" fill="#fff">$0.00</text>
-            </svg>
-            <div style="flex:1">
-              <div class="bd-row"><span class="l"><span class="dt" style="background:#67d1ae"></span>Subscriptions</span><span class="r">$0.00</span></div>
-              <div class="bd-row"><span class="l"><span class="dt" style="background:#4166f6"></span>Messages</span><span class="r">$0.00</span></div>
-              <div class="bd-row"><span class="l"><span class="dt" style="background:#a78bfa"></span>Posts</span><span class="r">$0.00</span></div>
-              <div class="bd-row" style="border-bottom:none"><span class="l"><span class="dt" style="background:#e5735b"></span>Tips</span><span class="r">$0.00</span></div>
-            </div>
+      <!-- earnings by channel — multi-line time-series + legend -->
+      <div class="panel" id="chanPanel" style="margin-top:22px">
+        <div class="sect" style="margin:0 0 14px">Earnings by channel
+          <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+        </div>
+        <div class="chanwrap">
+          <svg class="chart chan-chart" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="chan-legend" id="chanLegend"></div>
+        </div>
+        <div class="capnote" id="chanNote"></div>
+      </div>
+
+      <!-- earnings breakdown -->
+      <div class="panel" style="margin-top:22px">
+        <div class="sect" style="margin:0 0 18px">Earnings breakdown</div>
+        <div class="bd-row" id="bdGross"><span class="l">Gross earnings</span><span class="r">$0.00</span></div>
+        <div class="bd-row" id="bdFee"><span class="l">Platform fee</span><span class="r">$0.00</span></div>
+        <div class="bd-row" id="bdVat"><span class="l">VAT collected</span><span class="r">$0.00</span></div>
+        <div class="bd-row" id="bdCb"><span class="l">Chargeback ratio</span><span class="r">$0.00</span></div>
+        <div class="bd-row" id="bdRef"><span class="l">Refunds</span><span class="r">$0.00</span></div>
+        <div class="bd-row" id="bdNet" style="border-bottom:none;padding-top:16px"><span class="l" style="font-weight:600;color:#fff">Net earnings</span><span class="r" style="color:#4166f6">$0.00</span></div>
+        <div class="capnote" id="bdNote"></div>
+      </div>
+      </div><!-- /#ovWrap -->
+
+      <!-- Creator performance tab (all creators, same window) -->
+      <div id="perfWrap" style="display:none">
+        <div class="sect">Creator performance
+          <span class="info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
+        </div>
+        <div class="fbar" style="margin:0 0 16px;gap:16px">
+          <label style="display:flex;align-items:center;gap:8px;color:#8a8a8a;font-size:13.5px;cursor:pointer">
+            <input type="checkbox" id="perfHideZero" checked style="accent-color:#4166f6;width:15px;height:15px">Hide $0 creators
+          </label>
+          <span id="perfHidden" style="color:#6a6a6a;font-size:12.5px"></span>
+          <span id="perfCount" style="color:#6a6a6a;font-size:12.5px"></span>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+            <button type="button" class="pbtn accent" id="perfExport">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v11M8 10l4 4 4-4M5 21h14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Export CSV
+            </button>
           </div>
         </div>
-        <div class="panel">
-          <div class="sect" style="margin:0 0 18px">Earnings breakdown</div>
-          <div class="bd-row"><span class="l">Gross earnings</span><span class="r">$0.00</span></div>
-          <div class="bd-row"><span class="l">Platform fee</span><span class="r">$0.00</span></div>
-          <div class="bd-row"><span class="l">Chargebacks</span><span class="r">$0.00</span></div>
-          <div class="bd-row"><span class="l">Refunds</span><span class="r">$0.00</span></div>
-          <div class="bd-row" style="border-bottom:none;padding-top:16px"><span class="l" style="font-weight:600;color:#fff">Net earnings</span><span class="r" style="color:#4166f6">$0.00</span></div>
-        </div>
+        <div class="kpigrid" id="perfCards"></div>
+        <div class="capnote" id="perfNote" style="margin-top:16px"></div>
       </div>
 
     </main>
@@ -449,11 +561,15 @@
     });
   })();
   // ==== /CANONICAL SIDEBAR JS ====
-  // ---- tabs (visual) ----
+  // ---- tabs: swap the .on class AND the panel behind it ----
   document.querySelectorAll('.tab').forEach(function(b){
     b.addEventListener('click',function(){
       document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on')});
       b.classList.add('on');
+      var perf = b.dataset.tab === 'perf';
+      document.getElementById('ovWrap').style.display = perf ? 'none' : '';
+      document.getElementById('perfWrap').style.display = perf ? '' : 'none';
+      if (perf && window.__loadPerf) window.__loadPerf();
     });
   });
   // ---- trends segment (visual) ----
@@ -466,6 +582,8 @@
   // ---- net earnings toggle (visual) ----
   document.getElementById('netToggle').addEventListener('click',function(){this.classList.toggle('on')});
 </script>
+<script src="_shared/fastt.js"></script>
+<script src="analytics-creator-reports.js"></script>
 <script id="ms-js">(function(){
   if(window.__msInit)return; window.__msInit=1;
   document.addEventListener('click',function(e){

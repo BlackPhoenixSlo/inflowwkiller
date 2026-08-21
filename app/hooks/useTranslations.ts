@@ -75,11 +75,18 @@ export function useTranslations(
       (t) => t && !cache.has(t) && !inFlight.has(t),
     );
     if (!missing.length) return;
-    missing.forEach((t) => inFlight.add(t));
     let cancelled = false;
     (async () => {
       for (let i = 0; i < missing.length; i += CHUNK) {
         const chunk = missing.slice(i, i + CHUNK);
+        // Acquire inFlight per-CHUNK, not upfront: the invariant is "inFlight
+        // only holds texts with a request actually in the air". Acquiring the
+        // whole `missing` list here used to leak every not-yet-fetched chunk
+        // when `cancelled` fired mid-run (each poll/SSE refresh re-runs the
+        // effect), permanently blocking the tail of any >40-text thread from
+        // ever translating. Worst case now is a bounded duplicate fetch when
+        // two runs overlap — idempotent (same cache.set, relay caches too).
+        chunk.forEach((t) => inFlight.add(t));
         setStatus(+1);
         try {
           const resp = await relay.post<{ results: Array<BubbleTranslation | null> }>(

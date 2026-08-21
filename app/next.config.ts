@@ -74,8 +74,21 @@ const nextConfig: NextConfig = {
       { source: "/ui",           destination: `${RELAY_URL}/ui/` },
       { source: "/ui/",          destination: `${RELAY_URL}/ui/` },
       { source: "/ui/:path*",    destination: `${RELAY_URL}/ui/:path*` },
+      // The Infloww skin, same deal — the relay's second StaticFiles mount.
+      // TopNav's view switcher points here, so without these three the link
+      // 404s at the Next dev port before it ever reaches the relay: exactly
+      // the "NEW top-level path OUTSIDE /admin/*" footgun called out above.
+      // In production the single reverse proxy fronts both and these are a
+      // no-op, which is why the gap only ever shows up in dev.
+      { source: "/infloww",        destination: `${RELAY_URL}/infloww/` },
+      { source: "/infloww/",       destination: `${RELAY_URL}/infloww/` },
+      { source: "/infloww/:path*", destination: `${RELAY_URL}/infloww/:path*` },
       // Drift detection.
       { source: "/admin/rev/:path*", destination: `${RELAY_URL}/admin/rev/:path*` },
+      // Public tracking-link redirect (Growth → Tracking Links). A fan hits
+      // /t/<slug>; the relay records the click and 302s to the target. Must be
+      // a top-level rewrite — it's outside the /admin/* prefix.
+      { source: "/t/:slug", destination: `${RELAY_URL}/t/:slug` },
     ];
   },
   // Skip image optimization for now — OF media URLs are CDN-hosted with

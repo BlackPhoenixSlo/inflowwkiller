@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — Reply Timing</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -345,7 +344,7 @@
   /* ── Reply Timing page-specific (charts only) ── */
   .rt-charts{display:flex;gap:32px;margin-top:16px}
   .rt-panel{flex:1;min-width:0}
-  .rt-ph{display:flex;align-items:baseline;gap:8px;margin-bottom:12px}
+  .rt-ph{display:flex;align-items:baseline;gap:8px;margin-bottom:26px}
   .rt-ph .t{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted2)}
   .rt-ph .v{font-size:11.5px;font-weight:500;color:#b9b9b9;margin-left:auto}
   .rt-bars{display:flex;align-items:flex-end;gap:2px;height:92px;border-bottom:1px solid #383838;position:relative}
@@ -353,10 +352,48 @@
   .rt-bars.green .b{background:var(--green)}
   .rt-x{display:flex;gap:2px;margin-top:6px}
   .rt-x span{flex:1;text-align:center;font-size:10px;color:var(--muted2);white-space:nowrap}
+  .rt-medmark{position:absolute;top:-6px;bottom:-1px;border-left:1px dashed rgba(65,102,246,.55);
+    border-right:1px dashed rgba(65,102,246,.55);pointer-events:none}
+  .rt-medmark i{position:absolute;top:5px;left:50%;transform:translateX(-50%);font-style:normal;
+    font-size:9.5px;font-weight:600;color:#9db1fb;white-space:nowrap;background:rgba(38,38,38,.85);
+    padding:1px 5px;border-radius:8px}
+  .rt-note{font-size:11.5px;color:var(--muted2);line-height:1.5;margin-top:9px}
+  .rt-note b{color:#b9b9b9;font-weight:600}
+  .rt-bars .b{transition:height .18s}
+  .rt-bars.empty{align-items:center;justify-content:center;border-bottom-color:transparent}
+  .rt-bars.empty .msg{font-size:12px;color:var(--muted2);text-align:center;line-height:1.5;padding:0 10px}
   .rt-sleepband{position:absolute;top:-6px;bottom:-1px;background:rgba(255,255,255,.045);
     border:1px dashed #4a4a4a;border-bottom:0;border-radius:6px 6px 0 0;pointer-events:none}
-  .rt-sleepband i{position:absolute;top:5px;left:50%;transform:translateX(-50%);font-style:normal;
-    font-size:9.5px;font-weight:600;color:#9a9a9a;white-space:nowrap}
+  .rt-sleepband i{position:absolute;top:-17px;left:50%;transform:translateX(-50%);font-style:normal;
+    font-size:9.5px;font-weight:600;color:#9a9a9a;white-space:nowrap;
+    background:rgba(38,38,38,.9);padding:1px 5px;border-radius:8px}
+  /* keep derived sleep-window time range on one line */
+  #rt-derived-1,#rt-derived-2,#rt-derived-3{white-space:nowrap}
+
+  /* ── Cadence leash ladder ── */
+  #cad-ladder{transition:opacity .15s}
+  .cad-rung{display:flex;align-items:center;gap:14px;padding:11px 0;border-bottom:1px solid var(--border-soft)}
+  .cad-rung:last-child{border-bottom:0}
+  .cad-heat{width:10px;height:10px;border-radius:50%;background:var(--h,#4166f6);flex:0 0 auto;
+    box-shadow:0 0 8px var(--h,#4166f6)}
+  .cad-lbl{flex:1;min-width:0}
+  .cad-lbl b{display:block;font-size:13.5px;font-weight:600;color:#eee}
+  .cad-lbl span{display:block;font-size:12px;color:var(--muted2);margin-top:1px}
+  .cad-cap{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+  .cad-cap input{width:62px;height:36px;background:#1c1c1c;border:1px solid var(--border);border-radius:9px;
+    color:#fff;font-family:inherit;font-size:13.5px;font-weight:600;text-align:center;outline:none}
+  .cad-cap input:focus{border-color:var(--accent)}
+  .cad-cap .u{font-size:12.5px;color:var(--muted)}
+  .cad-eff{font-size:11.5px;color:var(--muted2);margin-top:12px;line-height:1.5}
+  .cad-eff b{color:#b9b9b9;font-weight:600}
+  /* spend-floor rules editor */
+  .cad-srow{display:grid;grid-template-columns:1fr 1fr 1fr 34px;gap:10px;align-items:end;margin-bottom:10px}
+  .cad-srow .fx-field>label{font-size:11.5px}
+  .cad-srow-empty{font-size:12.5px;color:var(--muted2);padding:2px 0 6px}
+  .cad-del{width:34px;height:38px;border:1px solid var(--border);border-radius:9px;background:#1c1c1c;
+    color:#e5735b;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center}
+  .cad-del:hover{background:rgba(229,115,91,.12)}
+  .cad-addbtn{margin-top:2px}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -387,7 +424,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -466,7 +502,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -500,9 +536,9 @@
           <div style="font-size:13.5px;color:var(--muted);margin-top:5px">How long she waits before answering. Replies that always land in seconds are the loudest bot tell there is.</div>
         </div>
         <div class="head-right">
-          <div class="dropdown">
+          <div class="dropdown" id="hdr-persona-drop">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg>
-            Aria
+            <span id="hdr-persona">Aria</span>
             <span class="cv"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           </div>
         </div>
@@ -510,10 +546,11 @@
 
       <!-- status strip -->
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running on this account</span>
-        <span class="fx-st ok"><i></i>Live on 2 of 10 accounts</span>
-        <span class="fx-st"><i></i>Sleep: disabled — delays only</span>
-        <span class="fx-st"><i></i>Pure timing — no AI cost</span>
+        <span class="fx-st ok" id="rt-p1"><i></i><span id="rt-st-1">Running on this account</span></span>
+        <span class="fx-st ok" id="rt-p2"><i></i><span id="rt-st-2">Live on 2 of 10 accounts</span></span>
+        <span class="fx-st"><i></i><span id="rt-st-3">Sleep: disabled — delays only</span></span>
+        <span class="fx-st"><i></i><span id="rt-st-4">Pure timing — no AI cost</span></span>
+        <span class="fx-st" id="rt-p5"><i></i><span id="rt-st-5">—</span></span>
       </div>
 
       <!-- master toggle (prod: ON — the graded vault + Ava run rhythm_enabled:true) -->
@@ -527,13 +564,13 @@
             <div class="fx-tc-desc">She answers fast when the conversation is hot, slower when it's quiet, and sometimes steps away — like a person with a life. Off = every reply lands in seconds.</div>
           </div>
           <span class="fx-tc-state">Running</span>
-          <span class="fx-switch on"></span>
+          <span class="fx-switch on" id="rt-master"></span>
         </div>
       </div>
 
       <!-- THE primary thing: pick her pace -->
-      <div class="fx-presets">
-        <div class="fx-preset">
+      <div class="fx-presets" id="rt-presets">
+        <div class="fx-preset" data-preset="instant">
           <div class="pn">Instant</div>
           <div class="pt">Replies in seconds, every time.</div>
           <ul>
@@ -542,18 +579,18 @@
             <li>Fine for tests, reads robotic to regulars</li>
           </ul>
         </div>
-        <div class="fx-preset">
+        <div class="fx-preset" data-preset="realistic">
           <div class="pn">Realistic</div>
           <div class="pt">Waits like a busy girl would, sleeps at night.</div>
           <ul>
             <li>Hot convo ≈ every minute · quiet ≈ 5–10 min</li>
             <li>Sometimes "steps away" when it's cold</li>
-            <li>Sleeps 02:00–09:00 — read off her own sends</li>
+            <li>Sleeps <span id="rt-derived-1">—</span> <span id="rt-derived-src">—</span></li>
           </ul>
         </div>
-        <div class="fx-preset sel">
+        <div class="fx-preset sel" data-preset="nosleep">
           <div class="pn">Realistic, no sleep</div>
-          <div class="pt">Same human pacing — she just gets busy instead. <b style="color:#7d97f8;font-weight:600">Your current setup (the graded vault · Ava).</b></div>
+          <div class="pt">Same human pacing — she just gets busy instead. <b style="color:#7d97f8;font-weight:600" id="rt-nosleep-cur"></b></div>
           <ul>
             <li>Short breaks only, capped at ~2 h</li>
             <li>Never goes dark overnight</li>
@@ -565,58 +602,65 @@
       <div class="fx-note" style="margin:12px 0 16px">She never vanishes mid-sell — while an offer is open, replies cap at 20 minutes and she won't start a break or fall asleep on a live ladder.</div>
 
       <!-- her real numbers -->
-      <div class="fx-card">
-        <div class="fx-card-h">Her actual reply times
-          <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)">last 30 days · 2,107 real 1:1 replies</span>
+      <div class="fx-card" id="rt-chart-card">
+        <div class="fx-card-h" id="rt-chart-h">Her actual reply times
+          <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)" id="rt-sample">measuring…</span>
         </div>
-        <div class="fx-card-sub">Realistic is fitted to this curve — her own pace, not a guess. <b style="color:#ddd;font-weight:600">Sleep is currently disabled</b> — the human delays still apply, she just never goes dark overnight. The <b style="color:#ddd;font-weight:600">02:00–09:00</b> window below is what auto-sleep would use if you switched it on.</div>
+        <div class="fx-card-sub">Realistic is fitted to this curve — her own pace, not a guess. <b style="color:#ddd;font-weight:600" id="rt-sleep-state">Sleep is currently disabled</b> — the human delays still apply, she just never goes dark overnight. The <b style="color:#ddd;font-weight:600" id="rt-derived-2">02:00–09:00</b> window below is what auto-sleep would use if you switched it on.</div>
         <div class="rt-charts">
           <div class="rt-panel">
-            <div class="rt-ph"><span class="t">How long she takes to reply</span><span class="v">median 1 m 46 s</span></div>
-            <div class="rt-bars">
-              <div class="b" style="height:58%"></div>
-              <div class="b" style="height:72%"></div>
-              <div class="b" style="height:100%"></div>
-              <div class="b" style="height:66%"></div>
-              <div class="b" style="height:38%"></div>
-              <div class="b" style="height:26%"></div>
-              <div class="b" style="height:14%"></div>
-              <div class="b" style="height:9%"></div>
-              <div class="b" style="height:15%"></div>
-            </div>
-            <div class="rt-x"><span>≤30s</span><span>1m</span><span>2m</span><span>5m</span><span>15m</span><span>1h</span><span>4h</span><span>8h</span><span>8h+</span></div>
+            <div class="rt-ph"><span class="t">How long she takes to reply</span><span class="v" id="rt-median">—</span></div>
+            <div class="rt-bars" id="rt-chart-a"></div>
+            <div class="rt-x" id="rt-x-a"></div>
+            <div class="rt-note" id="rt-note-a"></div>
           </div>
           <div class="rt-panel">
-            <div class="rt-ph"><span class="t">When she's actually online</span><span class="v">what auto-sleep would use — currently off</span></div>
-            <div class="rt-bars green">
-              <div class="b" style="height:14%"></div>
-              <div class="b" style="height:8%"></div>
-              <div class="b" style="height:3%"></div>
-              <div class="b" style="height:2%"></div>
-              <div class="b" style="height:2%"></div>
-              <div class="b" style="height:2%"></div>
-              <div class="b" style="height:2%"></div>
-              <div class="b" style="height:3%"></div>
-              <div class="b" style="height:4%"></div>
-              <div class="b" style="height:12%"></div>
-              <div class="b" style="height:24%"></div>
-              <div class="b" style="height:32%"></div>
-              <div class="b" style="height:40%"></div>
-              <div class="b" style="height:46%"></div>
-              <div class="b" style="height:52%"></div>
-              <div class="b" style="height:58%"></div>
-              <div class="b" style="height:64%"></div>
-              <div class="b" style="height:72%"></div>
-              <div class="b" style="height:84%"></div>
-              <div class="b" style="height:94%"></div>
-              <div class="b" style="height:100%"></div>
-              <div class="b" style="height:88%"></div>
-              <div class="b" style="height:58%"></div>
-              <div class="b" style="height:28%"></div>
+            <div class="rt-ph"><span class="t">When she's actually online</span><span class="v" id="rt-online-v">—</span></div>
+            <div class="rt-bars green" id="rt-chart-b">
               <div class="rt-sleepband" style="left:8.33%;width:29.17%"><i>would sleep 02–09</i></div>
             </div>
-            <div class="rt-x"><span style="text-align:left">00:00</span><span></span><span></span><span></span><span></span><span></span><span>06:00</span><span></span><span></span><span></span><span></span><span></span><span>12:00</span><span></span><span></span><span></span><span></span><span></span><span>18:00</span><span></span><span></span><span></span><span></span><span style="text-align:right">23:00</span></div>
+            <div class="rt-x" id="rt-x-b"></div>
+            <div class="rt-note" id="rt-note-b"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- CADENCE: the "cadence knobs" half — how many times she'll reply before backing off -->
+      <div class="fx-togglecard on" id="cad-card">
+        <div class="fx-tc-row">
+          <div class="fx-tc-ico green">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/><path d="M9 11h6M9 14h4" stroke-linecap="round"/></svg>
+          </div>
+          <div class="fx-tc-body">
+            <div class="fx-tc-title">Knows when to stop</div>
+            <div class="fx-tc-desc">After she's replied enough times to a fan who's gone quiet, she backs off instead of pestering — a long leash while he's hot, a short one once he's cold. Off = she keeps answering forever.</div>
+          </div>
+          <span class="fx-tc-state">Running</span>
+          <span class="fx-switch on" id="cad-master"></span>
+        </div>
+        <div id="cad-ladder" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-soft)">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted2);margin-bottom:6px">Her leash, by how hot he is</div>
+          <div class="cad-rung" data-tier="pic_sent" style="--h:#ec4b9b">
+            <span class="cad-heat"></span>
+            <div class="cad-lbl"><b>He sent her a photo</b><span>hottest lead — longest runway</span></div>
+            <div class="cad-cap"><input id="cad-cap-pic_sent" inputmode="numeric"><span class="u">replies</span></div>
+          </div>
+          <div class="cad-rung" data-tier="buying_signal" style="--h:#67d1ae">
+            <span class="cad-heat"></span>
+            <div class="cad-lbl"><b>Showing buying signals</b><span>asking for content, escalating, just bought</span></div>
+            <div class="cad-cap"><input id="cad-cap-buying_signal" inputmode="numeric"><span class="u">replies</span></div>
+          </div>
+          <div class="cad-rung" data-tier="baseline" style="--h:#4166f6">
+            <span class="cad-heat"></span>
+            <div class="cad-lbl"><b>Just chatting</b><span>normal back-and-forth</span></div>
+            <div class="cad-cap"><input id="cad-cap-baseline" inputmode="numeric"><span class="u">replies</span></div>
+          </div>
+          <div class="cad-rung" data-tier="no_signal" style="--h:#6a7a8a">
+            <span class="cad-heat"></span>
+            <div class="cad-lbl"><b>Offered, went cold</b><span>short leash — stop pestering fast</span></div>
+            <div class="cad-cap"><input id="cad-cap-no_signal" inputmode="numeric"><span class="u">replies</span></div>
+          </div>
+          <div class="cad-eff">3–5 quick bubbles count as <b>one reply</b>, and the count resets after a quiet stretch — a cap stops pestering a man who's gone silent, never one who's still typing back. <b>0 = no cap.</b> <span id="cad-eff-floor">—</span></div>
         </div>
       </div>
 
@@ -625,31 +669,31 @@
         <div class="fx-adv-head">
           <span class="t">Advanced mode</span>
           <span class="fx-switch sm" data-adv="adv-rt"></span>
-          <span class="h">manual sleep window, delay bounds, what it applies to</span>
+          <span class="h">manual sleep window, delay bounds, burst reset &amp; the spend floor</span>
         </div>
         <div class="fx-adv-body" id="adv-rt">
 
           <div class="fx-adv-group">
             <h4>Sleep window</h4>
             <div class="fx-grid3">
-              <div class="fx-field"><label>Asleep from</label><input class="fx-input" placeholder="auto — 02:00"></div>
-              <div class="fx-field"><label>Until</label><input class="fx-input" placeholder="auto — 09:00"></div>
+              <div class="fx-field"><label>Asleep from</label><input class="fx-input" id="rt-sleep-from" placeholder="auto — 02:00"></div>
+              <div class="fx-field"><label>Until</label><input class="fx-input" id="rt-sleep-until" placeholder="auto — 09:00"></div>
               <div class="fx-field"><label>Creator's timezone</label>
-                <select class="fx-select">
-                  <option selected>Auto — from account settings</option>
-                  <option>US Eastern — New York</option>
-                  <option>US Pacific — Los Angeles</option>
-                  <option>UK — London</option>
-                  <option>Central Europe — Berlin</option>
+                <select class="fx-select" id="rt-tz">
+                  <option value="" selected>Auto — from account settings</option>
+                  <option value="America/New_York">US Eastern — New York</option>
+                  <option value="America/Los_Angeles">US Pacific — Los Angeles</option>
+                  <option value="Europe/London">UK — London</option>
+                  <option value="Europe/Berlin">Central Europe — Berlin</option>
                 </select>
               </div>
             </div>
-            <div class="fx-kv" style="margin-top:10px"><b>Leave the times empty</b> and the window is read off her own send history — currently 02:00–09:00. Anything you type here wins.</div>
+            <div class="fx-kv" style="margin-top:10px"><b>Leave the times empty</b> and the window is read off her own send history — currently <span id="rt-derived-3">02:00–09:00</span>. Anything you type here wins.</div>
             <div class="fx-kv">While she "sleeps", incoming messages wait for the morning. She wakes staggered over ~45 min, so 40 fans don't all get answered at 09:00:00 sharp — and she explains the gap herself.</div>
           </div>
 
           <div class="fx-adv-group">
-            <h4>Reply delay</h4>
+            <h4 id="rt-delay-h">Reply delay</h4>
             <div class="fx-grid3">
               <div class="fx-field"><label>Minimum reply delay (seconds)</label><input class="fx-input" value="25"></div>
               <div class="fx-field"><label>Maximum reply delay (hours)</label><input class="fx-input" value="6"></div>
@@ -660,16 +704,33 @@
 
           <div class="fx-adv-group">
             <h4>How she covers a gap</h4>
-            <label class="fx-check on"><span class="bx"></span>She explains long absences herself <span class="sub">only after 2 h+, about 1 in 10 times — over-apologising is its own tell</span></label>
-            <label class="fx-check on"><span class="bx"></span>Stall line before a paid drop <span class="sub">"give me two secs, getting it ready" — the priced message lands 45–115 s later</span></label>
+            <label class="fx-check on" id="rt-gap-explain"><span class="bx"></span>She explains long absences herself <span class="sub">only after 2 h+, about 1 in 10 times — over-apologising is its own tell</span></label>
+            <label class="fx-check on" data-cfg="filming_stall_enabled"><span class="bx"></span>Stall line before a paid drop <span class="sub">"give me two secs, getting it ready" — the priced message lands 45–115 s later</span></label>
           </div>
 
           <div class="fx-adv-group">
-            <h4>Applies to</h4>
+            <h4 id="rt-applies-h">Applies to</h4>
             <label class="fx-check on"><span class="bx"></span>AI Chatter <span class="sub">1:1 selling replies</span></label>
             <label class="fx-check on"><span class="bx"></span>Auto Convo <span class="sub">casual back-and-forth</span></label>
             <label class="fx-check on"><span class="bx"></span>Re-engage Buyers <span class="sub">win-back openers respect her sleep window</span></label>
             <div class="fx-note" style="margin-top:10px">Broadcasts, welcome messages and scheduled sends keep their own pacing — reply rhythm only shapes her 1:1 AI replies.</div>
+          </div>
+
+          <div class="fx-adv-group">
+            <h4 id="cad-adv-h">Burst limits — fine tuning</h4>
+            <div class="fx-grid3">
+              <div class="fx-field"><label>A quiet gap this long resets the count (min)</label><input class="fx-input" id="cad-gap" inputmode="numeric" placeholder="60"></div>
+              <div class="fx-field"><label>Keep chatting a just-paid fan for (min)</label><input class="fx-input" id="cad-postbuy" inputmode="numeric" placeholder="25"></div>
+              <div class="fx-field"><label>An unanswered offer goes stale after (min)</label><input class="fx-input" id="cad-expiry" inputmode="numeric" placeholder="120"></div>
+            </div>
+            <div class="fx-kv" style="margin-top:10px">The reset gap is measured on <b>her own replies</b>, not his — a fan who keeps typing never holds the burst open forever. Once an offer goes stale it drops him to the short "went cold" leash until he shows a fresh signal.</div>
+          </div>
+
+          <div class="fx-adv-group">
+            <h4 id="cad-spend-h">Spend floor — never short-leash a paying fan</h4>
+            <div class="fx-kv" style="margin:0 0 12px">A proven spender keeps a long leash even when he's momentarily gone quiet. Each rule lifts the cap for a fan who's <b>paid at least this much</b> in a rolling window — it only ever raises the leash, and the highest matching rule wins.</div>
+            <div id="cad-spend-rows"></div>
+            <button class="fx-btn ghost cad-addbtn" type="button" data-act="add-spend">+ Add spend rule</button>
           </div>
 
         </div>
@@ -774,5 +835,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="ai-reply-timing.js" id="wire-js"></script>
 </body>
 </html>

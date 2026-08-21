@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Sheets Export</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='4' y='3' width='16' height='18' rx='3' fill='%2367d1ae'/%3E%3Cpath d='M8 9h8M8 13h8M8 17h8' stroke='%23151515' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -364,6 +363,52 @@
     font-size:11px;font-weight:600}
   .pill-note.ok{background:rgba(103,209,174,.12);color:var(--green)}
   .pill-note.no{background:#333;color:#9a9a9a}
+  /* destination row — lives OUTSIDE .fx-tc-knobs so it is readable while
+     auto-export is off (which is the shipped default state) */
+  .gs-destrow{display:flex;margin-top:14px;padding-top:14px;border-top:1px solid var(--border-soft);
+    gap:14px;align-items:center;flex-wrap:wrap}
+  .gs-destrow .fx-kv{width:100%;margin-top:-2px}
+  /* export history */
+  .gsh-head{display:flex;align-items:baseline;gap:10px;margin-bottom:2px}
+  .gsh-chart{display:flex;align-items:flex-end;gap:7px;height:118px;margin:16px 0 0;padding-bottom:1px}
+  .gsh-col{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;
+    align-items:center;gap:6px;height:100%}
+  .gsh-bar{width:100%;max-width:34px;border-radius:4px 4px 2px 2px;background:linear-gradient(180deg,#4166f6,#2f4bc0);
+    min-height:3px;position:relative}
+  .gsh-bar.err{background:linear-gradient(180deg,#f2295b,#a8163c)}
+  .gsh-bv{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums;line-height:1}
+  .gsh-x{display:flex;gap:7px;margin-top:7px}
+  .gsh-xl{flex:1;min-width:0;text-align:center;font-size:10.5px;color:var(--muted2);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gsh-y{font-size:11px;color:var(--muted2);margin-bottom:-8px}
+  .gsh-table{width:100%;border-collapse:collapse;margin-top:16px}
+  .gsh-table th{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--muted2);text-align:left;padding:7px 8px;border-bottom:1px solid var(--border-soft);white-space:nowrap}
+  .gsh-table td{padding:8px;border-bottom:1px solid var(--border-soft);font-size:12.5px;color:#cfcfcf;white-space:nowrap}
+  .gsh-table tr:last-child td{border-bottom:0}
+  .gsh-table .num{text-align:right;font-variant-numeric:tabular-nums}
+  .gs-more{display:flex;align-items:center;gap:12px;margin-top:10px;font-size:12.5px;color:var(--muted)}
+  .sheet-prev td.wrapcell{white-space:normal;min-width:190px;max-width:270px;line-height:1.45;font-size:12px}
+  /* long profile prose (rich note, Q/tease lines) is clamped so 10 rows stay
+     scannable — hover any cell for the full value that goes into the sheet */
+  .sheet-prev .clamp{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+  .fx-card-sub code,.fx-note code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+    background:rgba(255,255,255,.06);border-radius:4px;padding:1px 4px}
+  /* live search over the preview rows — mirrors the real app's User-data search,
+     which the sheet export otherwise lacks. Client-side over the loaded rows. */
+  .gs-search-wrap{margin-left:auto;position:relative;display:none}
+  .gs-search-wrap.show{display:block}
+  .gs-search-wrap .ic{position:absolute;left:11px;top:50%;transform:translateY(-50%);
+    color:var(--muted2);pointer-events:none;display:flex}
+  #gs-search{height:34px;width:250px;background:#1c1c1c;border:1px solid var(--border);border-radius:9px;
+    color:#eee;font-family:inherit;font-size:13px;padding:0 30px 0 32px;outline:none}
+  #gs-search:focus{border-color:var(--accent)}
+  #gs-search::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+  .gs-search-wrap .clr{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:18px;height:18px;
+    border-radius:50%;display:none;align-items:center;justify-content:center;color:var(--muted);
+    cursor:pointer;font-size:13px;background:#2c2c2c}
+  .gs-search-wrap.has-q .clr{display:flex}
+  .sheet-prev tr td.gs-nomatch{color:var(--muted);padding:18px 12px;white-space:normal}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -394,7 +439,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -473,7 +517,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -506,18 +550,18 @@
             <span class="info"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
           </div>
         </div>
-        <p class="pg-sub">Copies every fan profile from <a href="fans-auto-learn.html" style="color:#7d97f8">Auto-learn Fans</a> into <b style="color:#cfcfcf">one Google Sheet</b> your whole team can read — name, nickname, bio, spend, questions to ask. Read-only: this never messages anyone.</p>
+        <p class="pg-sub">Copies every fan profile from <a href="fans-auto-learn.html" style="color:#7d97f8">Auto-learn Fans</a> into <b style="color:#cfcfcf">one Google Sheet</b> your whole team can read — name, nickname, bio, spend, questions to ask. Read-only: this never messages anyone. <span id="gs-sub-cadence"></span></p>
 
         <!-- status strip -->
         <div class="fx-status">
-          <span class="fx-st ok"><i></i>Connected to Google</span>
-          <span class="fx-st"><i></i>Last export 22 min ago</span>
-          <span class="fx-st"><i></i>2,041 rows written</span>
-          <span class="fx-st"><i></i>Next export in 38 min</span>
+          <span class="fx-st" id="gs-st-status"><i></i>Loading…</span>
+          <span class="fx-st" id="gs-st-last"><i></i>Last export —</span>
+          <span class="fx-st" id="gs-st-rows"><i></i>— rows written</span>
+          <span class="fx-st" id="gs-st-next"><i></i>—</span>
         </div>
 
         <!-- PRIMARY: connected-state toggle card -->
-        <div class="fx-togglecard on">
+        <div class="fx-togglecard" id="gs-card">
           <div class="fx-tc-row">
             <div class="fx-tc-ico green gs-ico">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 9h8M8 13h8M8 17h8M12 9v8" stroke-linecap="round"/></svg>
@@ -525,25 +569,38 @@
             </div>
             <div class="fx-tc-body">
               <div class="fx-tc-title">Export fan profiles to Google Sheets</div>
-              <div class="fx-tc-desc">Once an hour, one row per profiled fan lands in your sheet — kept fresh automatically, so chatters can skim who's who without opening fastt.</div>
+              <div class="fx-tc-desc" id="gs-tc-desc">One row per profiled fan lands in your sheet — kept fresh automatically, so chatters can skim who's who without opening fastt.</div>
             </div>
-            <span class="fx-tc-state">Running</span>
-            <span class="fx-switch on"></span>
+            <span class="fx-tc-state" id="gs-state">…</span>
+            <span class="fx-switch" id="gs-switch"></span>
           </div>
-          <div class="fx-tc-knobs">
+          <!-- destination + last-run summary: OUTSIDE the .fx-tc-knobs container on
+               purpose — knobs are hidden until the automation is ON, and the target
+               sheet / the reason the last export failed must be readable either way -->
+          <div class="gs-destrow">
             <div class="gs-dest">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#67d1ae" stroke-width="1.8"><path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M13 3v5h5" stroke-linecap="round"/></svg>
-              <b>fan-profiles</b><span class="sep">·</span>tab <b>Main</b>
+              <b id="gs-dest-name">—</b><span class="sep">·</span>tab <b id="gs-dest-tab">—</b>
             </div>
-            <button class="fx-btn ghost">
+            <button class="fx-btn ghost" id="gs-open">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg>
               Open sheet
             </button>
-            <div class="fx-kv">last export <b>22 min ago</b> · <b>2,041</b> rows · finished clean</div>
+            <button class="fx-btn ghost" id="gs-runnow" title="Runs the export once, right now. Read-only on our DB; writes one Google Sheet. Sends nothing to fans.">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M8 5.5l10 6.5-10 6.5v-13z" stroke-linejoin="round"/></svg>
+              <span id="gs-runnow-txt">Export now</span>
+            </button>
+            <div class="fx-kv" id="gs-kv">last export <b>—</b></div>
           </div>
+        </div>
 
-          <!-- ADVANCED (closed by default) -->
-          <div class="fx-adv">
+        <!-- ADVANCED (closed by default).
+             Deliberately a SIBLING card, not nested inside #gs-card: the shared
+             fx-kit click handler walks `.fx-switch → closest('.fx-togglecard')`,
+             so an advanced switch living inside the master card would flip the
+             card to "Running" / green while the automation is still off. -->
+        <div class="fx-card">
+          <div class="fx-adv" style="margin-top:0;border-top:0;padding-top:0">
             <div class="fx-adv-head">
               <span class="t">Advanced mode</span>
               <span class="fx-switch sm" data-adv="adv-sheets"></span>
@@ -553,21 +610,21 @@
               <div class="fx-adv-group">
                 <h4>Destination</h4>
                 <div class="fx-grid3">
-                  <div class="fx-field"><label>Spreadsheet</label><input class="fx-input" value="fan-profiles"></div>
-                  <div class="fx-field"><label>Tab name</label><input class="fx-input" value="Main"></div>
-                  <div class="fx-field"><label>Row limit</label><input class="fx-input" value="5,000"></div>
+                  <div class="fx-field"><label>Spreadsheet</label><input class="fx-input" id="gs-spreadsheet" value="" placeholder="default shared sheet"></div>
+                  <div class="fx-field"><label>Tab name</label><input class="fx-input" id="gs-tab" value="Main"></div>
+                  <div class="fx-field"><label>Row limit</label><input class="fx-input" id="gs-limit" value="5000"></div>
                 </div>
-                <label class="fx-check on" style="margin-top:8px"><span class="bx"></span>Create the tab if it's missing<span class="sub">first export adds it for you</span></label>
+                <label class="fx-check on" id="gs-create" style="margin-top:8px"><span class="bx"></span>Create the tab if it's missing<span class="sub">first export adds it for you</span></label>
               </div>
               <div class="fx-adv-group">
                 <h4>Schedule</h4>
                 <div class="fx-grid2">
                   <div class="fx-field"><label>Export every</label>
-                    <select class="fx-select">
-                      <option>30 minutes</option>
-                      <option selected>Hour</option>
-                      <option>6 hours</option>
-                      <option>Day</option>
+                    <select class="fx-select" id="gs-every">
+                      <option value="1800">30 minutes</option>
+                      <option value="3600" selected>Hour</option>
+                      <option value="21600">6 hours</option>
+                      <option value="86400">Day</option>
                     </select>
                   </div>
                 </div>
@@ -580,25 +637,43 @@
         <!-- the one thing that bites people -->
         <div class="fx-note warn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex:0 0 auto;margin-top:1px"><path d="M12 4L2.5 20h19L12 4z" stroke-linejoin="round"/><path d="M12 10v4.5" stroke-linecap="round"/><circle cx="12" cy="17.3" r=".9" fill="currentColor" stroke="none"/></svg>
-          Each export <b>clears and rewrites</b> the Main tab — keep your own columns in a different tab.
+          <span id="gs-warn">Each export <b>clears and rewrites</b> its tab — keep your own columns in a different tab.</span>
         </div>
 
-        <!-- secondary: column preview -->
+        <!-- export history -->
+        <div class="fx-card" id="gs-hist-card">
+          <div class="gsh-head">
+            <div class="fx-card-h" style="margin:0">Export history</div>
+            <span style="font-size:13px;color:var(--muted)" id="gs-hist-count">loading…</span>
+          </div>
+          <div class="fx-card-sub">Rows written per run — a pass that silently starts writing fewer rows shows up here first.</div>
+          <div id="gs-hist-body">
+            <div style="font-size:13px;color:var(--muted);padding:22px 0 6px">Loading the run log…</div>
+          </div>
+        </div>
+
+        <!-- secondary: column preview, live from the same builder the export uses -->
         <div class="fx-card">
-          <div class="fx-card-h">What lands in the sheet</div>
-          <div class="fx-card-sub">One row per profiled fan, same columns every export. Spend is live from cleared transactions.</div>
+          <div class="fx-card-h" style="gap:10px">
+            <span id="gs-prev-title">What lands in the sheet</span>
+            <div class="gs-search-wrap" id="gs-search-wrap">
+              <span class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg></span>
+              <input id="gs-search" type="search" placeholder="Search name / nickname / bio…" autocomplete="off" disabled>
+              <span class="clr" id="gs-search-clr" title="Clear">&times;</span>
+            </div>
+          </div>
+          <div class="fx-card-sub" id="gs-prev-sub">One row per profiled fan, same columns every export. Spend is live from cleared transactions.</div>
           <div class="sheet-prev">
             <table>
-              <thead>
-                <tr><th>Fan</th><th>Nickname</th><th>Bio &amp; talking points</th><th class="num">Spend</th><th class="num">Msgs</th><th>Updated</th><th>Note on OF</th></tr>
-              </thead>
-              <tbody>
-                <tr><td>Mike R.</td><td>gym mike</td><td class="bio">Personal trainer, two dogs, road-trips most weekends. Ask about the half-marathon.</td><td class="num">$412.50</td><td class="num">238</td><td>2h ago</td><td><span class="pill-note ok">added</span></td></tr>
-                <tr><td>Alex T.</td><td>night-shift alex</td><td class="bio">Warehouse nights, big hockey fan, saving up for a truck. Replies late evenings.</td><td class="num">$86.00</td><td class="num">91</td><td>5h ago</td><td><span class="pill-note ok">added</span></td></tr>
-                <tr><td>Chris D.</td><td>coffee chris</td><td class="bio">Runs a small café, loves travel talk, usually around on paydays.</td><td class="num">$147.00</td><td class="num">164</td><td>9h ago</td><td><span class="pill-note ok">added</span></td></tr>
-                <tr><td>Sam K.</td><td>—</td><td class="bio">Quiet one — likes beach photos, opens messages but rarely replies.</td><td class="num">$0.00</td><td class="num">12</td><td>1d ago</td><td><span class="pill-note no">not added</span></td></tr>
+              <thead><tr id="gs-prev-head"><th>loading…</th></tr></thead>
+              <tbody id="gs-prev-rows">
+                <tr><td style="color:var(--muted)">Loading the live rows…</td></tr>
               </tbody>
             </table>
+          </div>
+          <div class="gs-more">
+            <span id="gs-prev-count">—</span>
+            <button class="fx-btn ghost" id="gs-prev-more" style="height:32px;padding:0 13px;font-size:12.5px;display:none">Show more</button>
           </div>
         </div>
 
@@ -703,5 +778,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="fans-sheets-export.js"></script>
 </body>
 </html>

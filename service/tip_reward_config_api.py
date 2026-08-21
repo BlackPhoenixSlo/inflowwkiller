@@ -23,7 +23,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import AccountAiConfig
-from automations.tip_reward import _DEFAULTS, folder_list, rung_folder_slot
+# The defaults and the rung's config shape live in tip_reward_config (the
+# cycle-free leaf both halves of the split import); `folder_list` is the
+# vault kernel's coercion, so a save can never store a shape the read rejects.
+from automations.tip_reward_config import _DEFAULTS, rung_folder_slot
+from automations._vault_pick import folder_list
 
 log = logging.getLogger("of-relay.tip_reward_config_api")
 
@@ -58,15 +62,22 @@ _INT_KNOBS = {
     "context_pick_max": (0, 10),
     "context_pick_messages": (1, 100),
 }
-# Adaptive-ladder jitter knobs (floats). Same contract as _INT_KNOBS: a knob must
+# (key, min, max) — the fractional knobs, same contract as _INT_KNOBS: a knob must
 # be named here or the tab save destroys any stored override — the drop-hole that
 # kept `teaser_convo_adaptive` a dead checkbox until 2026-08-19.
 _FLOAT_KNOBS = {
-    "teaser_convo_cut_lo": (0.05, 0.95),
-    "teaser_convo_cut_hi": (0.05, 0.95),
+    # Adaptive convo ladder. A no-buy jitters the next ask to cut_lo..cut_hi of the
+    # last one — except one roll in `raise_chance`, which BOUNCES it up by
+    # raise_lo..raise_hi instead (capped at the ladder top). A buy at a SOFTENED
+    # price escalates ×climb_step off what he actually paid. An inverted lo/hi is
+    # already normalized by teaser_select._jitter_band, so there is no cross-check
+    # here — one home for that rule.
+    "teaser_convo_cut_lo": (0.0, 1.0),
+    "teaser_convo_cut_hi": (0.0, 1.0),
     "teaser_convo_raise_chance": (0.0, 1.0),   # 0 = the bounce's off switch
     "teaser_convo_raise_lo": (1.0, 3.0),
     "teaser_convo_raise_hi": (1.0, 3.0),
+    "teaser_convo_climb_step": (1.0, 10.0),
 }
 _MAX_TEASER_RUNGS = 10
 _MAX_TIERS = 10
@@ -200,6 +211,16 @@ def _validate(cfg: dict) -> dict:
     # Conversational teaser ladder — enable flag + the rungs list ({folder, price_cents}).
     if "teaser_convo_enabled" in cfg:
         out["teaser_convo_enabled"] = bool(cfg["teaser_convo_enabled"])
+    # `adaptive` picks the buy-aware climb/soften policy over the fixed rung walk;
+    # `ignore_brakes` runs the ladder past the companion/bot-accused/broke brakes.
+    # Both were MISSING from this allowlist while the Settings tab PUT them, so the
+    # save was accepted, the key dropped, and the read-back fell through to
+    # _DEFAULTS (both True) — the checkbox snapped back on every save and the
+    # policy could not be turned off. They drive live ask prices; they belong here.
+    if "teaser_convo_adaptive" in cfg:
+        out["teaser_convo_adaptive"] = bool(cfg["teaser_convo_adaptive"])
+    if "teaser_convo_ignore_brakes" in cfg:
+        out["teaser_convo_ignore_brakes"] = bool(cfg["teaser_convo_ignore_brakes"])
     # Does a PROVEN buyer get the free bait leg (floor ↔ free) instead of holding
     # on one repeated number? Per-account BECAUSE it changes what every past buyer on
     # the account receives next — a code default would flip them all on one deploy.

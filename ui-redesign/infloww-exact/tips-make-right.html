@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — Make It Right</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -389,6 +388,18 @@
   .stchip.yours{background:rgba(254,188,46,.08);border-color:rgba(254,188,46,.28);color:#e8cf9a}
   .stchip.yours i{background:#febc2e}
   .act-note{font-size:11.5px;color:var(--muted2);text-align:right;line-height:1.4}
+  .stchip.running{background:rgba(65,102,246,.16);border-color:rgba(65,102,246,.4);color:#c9d3ff}
+  .stchip.running i{background:#4166f6}
+  .stchip.done{background:rgba(103,209,174,.08);border-color:rgba(103,209,174,.25);color:#8fd9bd}
+  .stchip.done i{background:#67d1ae}
+  .c-fix .steps{font-size:11.5px;color:var(--muted2);margin-top:4px;line-height:1.4}
+  .c-fix .steps b{color:#b9c6f2;font-weight:600}
+  /* preview roll-up: the numbers behind the inbox */
+  .pv-sum{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 14px}
+  .pv-sum .fx-st{cursor:default}
+  #mr-runbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;padding-top:14px;
+    border-top:1px solid var(--border-soft)}
+  #mr-runbar .why{font-size:12.5px;color:var(--muted2);line-height:1.45;flex:1;min-width:220px}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -419,7 +430,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -498,7 +508,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -529,7 +539,7 @@
           <span class="info"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
         </div>
         <div class="head-right">
-          <button class="fx-btn ghost">
+          <button class="fx-btn ghost" id="mr-rescan">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.3-5.6" stroke-linecap="round"/><path d="M20 4v4h-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Re-scan now
           </button>
@@ -542,40 +552,45 @@
       </div>
 
       <!-- status strip -->
-      <div class="fx-status">
-        <span class="fx-st warn"><i></i>Preview-only — nothing sends</span>
-        <span class="fx-st"><i></i>2 fixes suggested</span>
-        <span class="fx-st"><i></i>Last scan 6 min ago</span>
-        <span class="fx-st"><i></i>Looks back 30 days</span>
-        <span class="fx-st"><i></i>Max 2 make-rights per fan</span>
+      <div class="fx-status" id="mr-strip">
+        <span class="fx-st warn" id="mr-st-mode"><i></i>Preview-only — nothing sends</span>
+        <span class="fx-st" id="mr-st-sug"><i></i>2 fixes suggested</span>
+        <span class="fx-st" id="mr-st-scan"><i></i>Last scan 6 min ago</span>
+        <span class="fx-st" id="mr-st-look"><i></i>Looks back 30 days</span>
+        <span class="fx-st" id="mr-st-cap"><i></i>Max 2 make-rights per fan</span>
+        <span class="ft-static" id="mr-sample-strip" style="align-self:center">SAMPLE NUMBERS — mock-up, not real activity</span>
       </div>
 
       <!-- PRIMARY: trust toggle (ships OFF) -->
-      <div class="fx-togglecard">
+      <div class="fx-togglecard" id="mr-card">
         <div class="fx-tc-row">
           <div class="fx-tc-ico green">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20s-7-4.2-9.2-8.6C1.2 8.2 3.2 5 6.4 5c2 0 3.3 1 4.1 2.2h3c.8-1.2 2.1-2.2 4.1-2.2 3.2 0 5.2 3.2 3.6 6.4C19 15.8 12 20 12 20z" stroke-linejoin="round"/><path d="M8 12l2.5 2.5L16 9" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </div>
           <div class="fx-tc-body">
             <div class="fx-tc-title">Make It Right <span class="pv-chip"><i></i>Preview-only</span></div>
-            <div class="fx-tc-desc">Off = the detector still scans and fills the inbox below, but every fix stays a suggestion. Turn on — and approve a row — before anything is actually sent.</div>
+            <div class="fx-tc-desc">Off = the detector still scans and fills the inbox below, but every fix stays a suggestion. Both this switch <b>and</b> auto-send have to be on before the sweep will send anything.</div>
           </div>
           <span class="fx-tc-state">Off</span>
-          <span class="fx-switch"></span>
+          <span class="fx-switch" data-k="enabled"></span>
         </div>
         <div class="fx-tc-knobs">
-          <label class="fx-check"><span class="bx"></span>Auto-send approved fixes <span class="sub">off = everything stays preview, even when enabled</span></label>
-          <div class="fx-kv">fires up to <b>2×</b> per fan, then hands him to you</div>
+          <label class="fx-check" id="mr-autosend"><span class="bx"></span>Auto-send approved fixes <span class="sub">off = everything stays preview, even when enabled</span></label>
+          <div class="fx-kv" id="mr-kv">fires up to <b>2×</b> per fan, then hands him to you</div>
         </div>
       </div>
 
       <!-- INCIDENT INBOX -->
-      <div class="fx-card" style="padding-bottom:10px">
+      <div class="fx-card" style="padding-bottom:10px" id="mr-inbox">
         <div class="fx-card-h">Incident inbox
-          <span style="font-size:12px;font-weight:600;color:#7d97f8;background:rgba(65,102,246,.13);border-radius:10px;padding:2px 8px">4</span>
-          <span style="margin-left:auto;font-size:12px;font-weight:400;color:var(--muted2)">Detector sweeps every 30 min</span>
+          <span style="font-size:12px;font-weight:600;color:#7d97f8;background:rgba(65,102,246,.13);border-radius:10px;padding:2px 8px" id="mr-inbox-n">4</span>
+          <span class="ft-static" id="mr-sample-badge">SAMPLE ROWS — mock-up, not real incidents</span>
+          <span style="margin-left:auto;font-size:12px;font-weight:400;color:var(--muted2)" id="mr-sweep-note">Detector sweeps every 30 min</span>
         </div>
-        <div class="fx-card-sub" style="margin-bottom:14px">Every wrong the detector found, with its suggested fix. Approve to queue the make-right, Skip to dismiss it.</div>
+        <div class="fx-card-sub" style="margin-bottom:12px" id="mr-inbox-sub">Every wrong the detector found, with its suggested fix. There is no per-incident approve or skip on the relay — the sweep is all-or-nothing, so the only action is the guarded run at the bottom of this card.</div>
+
+        <!-- dry-run roll-up: candidates vs what would actually happen -->
+        <div class="pv-sum" id="mr-pv-sum"></div>
 
         <div class="inbox-head">
           <span class="c-fan">Fan</span>
@@ -601,8 +616,8 @@
           </div>
           <div class="c-status"><span class="stchip suggested"><i></i>suggested</span></div>
           <div class="c-act">
-            <button class="fx-btn green btn-sm">Approve</button>
-            <button class="fx-btn ghost btn-sm">Skip</button>
+            <button class="fx-btn green btn-sm" disabled title="Sample mock-up row — not a real incident">Approve</button>
+            <button class="fx-btn ghost btn-sm" disabled title="Sample mock-up row — not a real incident">Skip</button>
           </div>
         </div>
 
@@ -622,8 +637,8 @@
           </div>
           <div class="c-status"><span class="stchip suggested"><i></i>suggested</span></div>
           <div class="c-act">
-            <button class="fx-btn green btn-sm">Approve</button>
-            <button class="fx-btn ghost btn-sm">Skip</button>
+            <button class="fx-btn green btn-sm" disabled title="Sample mock-up row — not a real incident">Approve</button>
+            <button class="fx-btn ghost btn-sm" disabled title="Sample mock-up row — not a real incident">Skip</button>
           </div>
         </div>
 
@@ -662,6 +677,15 @@
           <div class="c-status"><span class="stchip sent"><i></i>sent</span></div>
           <div class="c-act"><span class="act-note">2 days ago</span></div>
         </div>
+
+        <!-- the ONE outbound action the relay actually exposes: the whole sweep -->
+        <div id="mr-runbar">
+          <button class="fx-btn green" id="mr-run" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 4l14 8-14 8V4z" stroke-linejoin="round"/></svg>
+            Send the make-rights now
+          </button>
+          <span class="why" id="mr-run-why">Checking whether anything is safe to send…</span>
+        </div>
       </div>
 
       <div class="fx-note" style="margin-bottom:16px">
@@ -681,61 +705,61 @@
 
             <div class="fx-adv-group"><h4>Detection</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Detector sensitivity</label>
-                  <select class="fx-select">
+                <div class="fx-field" id="mr-sens-field"><label>Detector sensitivity</label>
+                  <select class="fx-select" id="mr-sens">
                     <option selected>Strict — media overlap only (recommended)</option>
                     <option>Balanced — overlap + same-item re-sends</option>
                     <option>Loose — also flag same-price pairs for review</option>
                   </select>
                 </div>
                 <div class="fx-field"><label>Look back</label>
-                  <div class="fx-unit" data-unit="d"><input class="fx-input" value="30" style="padding-left:30px"></div>
+                  <div class="fx-unit" data-unit="d"><input class="fx-input" value="30" style="padding-left:30px" id="mr-look"></div>
                 </div>
                 <div class="fx-field"><label>"Paid but got nothing" grace</label>
-                  <div class="fx-unit" data-unit="h"><input class="fx-input" value="2" style="padding-left:30px"></div>
+                  <div class="fx-unit" data-unit="h"><input class="fx-input" value="2" style="padding-left:30px" id="mr-grace"></div>
                 </div>
               </div>
-              <label class="fx-check" style="margin-top:8px"><span class="bx"></span>Also catch "paid but got nothing" <span class="sub">fuzzier than a double-charge — off by default</span></label>
+              <label class="fx-check" style="margin-top:8px" id="mr-undeliv"><span class="bx"></span>Also catch "paid but got nothing" <span class="sub">fuzzier than a double-charge — off by default</span></label>
             </div>
 
             <div class="fx-adv-group"><h4>The apology &amp; gift</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Apology tone</label>
-                  <select class="fx-select">
+                <div class="fx-field" id="mr-tone-field"><label>Apology tone</label>
+                  <select class="fx-select" id="mr-tone">
                     <option selected>Warm &amp; personal (default)</option>
                     <option>Playful</option>
                     <option>Short &amp; sincere</option>
                   </select>
                 </div>
-                <div class="fx-field"><label>Free pieces (min)</label><input class="fx-input" value="2"></div>
-                <div class="fx-field"><label>Free pieces (max)</label><input class="fx-input" value="4"></div>
+                <div class="fx-field"><label>Free pieces (min)</label><input class="fx-input" value="2" id="mr-gmin"></div>
+                <div class="fx-field"><label>Free pieces (max)</label><input class="fx-input" value="4" id="mr-gmax"></div>
               </div>
               <div class="fx-grid3" style="margin-top:12px">
                 <div class="fx-field"><label>Value per piece <span style="color:var(--muted2)">(for the match math)</span></label>
-                  <div class="fx-unit" data-unit="$"><input class="fx-input" value="6.00"></div>
+                  <div class="fx-unit" data-unit="$"><input class="fx-input" value="6.00" id="mr-gval"></div>
                 </div>
                 <div class="fx-field"><label>Gift tier</label>
-                  <select class="fx-select">
-                    <option selected>Auto-pick by over-charge</option>
+                  <select class="fx-select" id="mr-gtier">
+                    <option value="" selected>Auto-pick by over-charge</option>
                     <option>Basic</option>
                     <option>Mid</option>
                     <option>Premium</option>
                   </select>
                 </div>
                 <div class="fx-field"><label>Apology text override <span style="color:var(--muted2)">(blank = warm auto text)</span></label>
-                  <input class="fx-input" placeholder="e.g. on me, so sorry babe">
+                  <input class="fx-input" placeholder="e.g. on me, so sorry babe" id="mr-acap">
                 </div>
               </div>
-              <label class="fx-check on" style="margin-top:8px"><span class="bx"></span>Match the over-charge <span class="sub">gift value ≥ what he was wrongly charged</span></label>
+              <label class="fx-check on" style="margin-top:8px" id="mr-match"><span class="bx"></span>Match the over-charge <span class="sub">gift value ≥ what he was wrongly charged</span></label>
             </div>
 
             <div class="fx-adv-group"><h4>The exchange — apology → free pieces on his replies → optional PPV → close</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Free pieces before the PPV</label><input class="fx-input" value="3"></div>
-                <div class="fx-field"><label>Pieces per step</label><input class="fx-input" value="1"></div>
+                <div class="fx-field"><label>Free pieces before the PPV</label><input class="fx-input" value="3" id="mr-steps"></div>
+                <div class="fx-field"><label>Pieces per step</label><input class="fx-input" value="1" id="mr-pps"></div>
                 <div class="fx-field"><label>PPV folder <span style="color:var(--muted2)">(none = just close)</span></label>
-                  <select class="fx-select">
-                    <option selected>No PPV — just close warmly</option>
+                  <select class="fx-select" id="mr-ppvfolder">
+                    <option value="" selected>No PPV — just close warmly</option>
                     <option>Teasers</option>
                     <option>Beach set</option>
                     <option>VIP set</option>
@@ -744,29 +768,39 @@
               </div>
               <div class="fx-grid3" style="margin-top:12px">
                 <div class="fx-field"><label>PPV price</label>
-                  <div class="fx-unit" data-unit="$"><input class="fx-input" value="15.00"></div>
+                  <div class="fx-unit" data-unit="$"><input class="fx-input" value="15.00" id="mr-ppvprice"></div>
                 </div>
                 <div class="fx-field"><label>Nudge after silence</label>
-                  <div class="fx-unit" data-unit="h"><input class="fx-input" value="24" style="padding-left:30px"></div>
+                  <div class="fx-unit" data-unit="h"><input class="fx-input" value="24" style="padding-left:30px" id="mr-nudge"></div>
                 </div>
                 <div class="fx-field"><label>Close after silence</label>
-                  <div class="fx-unit" data-unit="h"><input class="fx-input" value="48" style="padding-left:30px"></div>
+                  <div class="fx-unit" data-unit="h"><input class="fx-input" value="48" style="padding-left:30px" id="mr-close"></div>
                 </div>
               </div>
-              <label class="fx-check on" style="margin-top:8px"><span class="bx"></span>Send the first free piece with the apology</label>
+              <div class="fx-grid2" style="margin-top:12px">
+                <div class="fx-field" style="grid-column:1/-1"><label>PPV tease caption <span style="color:var(--muted2)">(blank = the built-in line)</span></label>
+                  <input class="fx-input" placeholder="now that we're good 😌 unlock this? 😏" id="mr-ppvcap">
+                </div>
+              </div>
+              <label class="fx-check on" style="margin-top:8px" id="mr-open"><span class="bx"></span>Send the first free piece with the apology</label>
             </div>
 
             <div class="fx-adv-group" style="margin-bottom:4px"><h4>Refunds &amp; guardrails</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Max make-rights per fan <span style="color:var(--muted2)">(then he's yours)</span></label><input class="fx-input" value="2"></div>
+                <div class="fx-field"><label>Max make-rights per fan <span style="color:var(--muted2)">(then he's yours)</span></label><input class="fx-input" value="2" id="mr-cap2"></div>
                 <div class="fx-field"><label>Skip if messaged within <span style="color:var(--muted2)">(contact-guard)</span></label>
-                  <div class="fx-unit" data-unit="h"><input class="fx-input" value="12" style="padding-left:30px"></div>
+                  <div class="fx-unit" data-unit="h"><input class="fx-input" value="12" style="padding-left:30px" id="mr-guard"></div>
                 </div>
-                <div class="fx-field"><label>One fix per incident</label>
+                <div class="fx-field" id="mr-oneper-field"><label>One fix per incident</label>
                   <input class="fx-input" value="Always on — never re-apologizes" disabled style="opacity:.6">
                 </div>
               </div>
-              <label class="fx-check on" style="margin-top:8px"><span class="bx"></span>Flag refunds for me <span class="sub">money is never moved automatically — you action it in OF</span></label>
+              <div class="fx-grid3" style="margin-top:12px">
+                <div class="fx-field" id="mr-hd-field"><label>Hard-decline apology lane</label>
+                  <input class="fx-input" id="mr-hd" disabled style="opacity:.6">
+                </div>
+              </div>
+              <label class="fx-check on" style="margin-top:8px" id="mr-flag"><span class="bx"></span>Flag refunds for me <span class="sub">money is never moved automatically — you action it in OF</span></label>
             </div>
 
           </div>
@@ -782,6 +816,7 @@
 
 </div>
 
+<script src="_shared/fastt.js"></script>
 <script>
   // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
   (function(){
@@ -872,5 +907,6 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="tips-make-right.js" id="page-wiring"></script>
 </body>
 </html>

@@ -325,11 +325,11 @@ async def redescribe_inbound(account_id: str, message_id: int,
     the button IS the decision.
 
     Owns the config read so callers (the chat-pane endpoint) don't have to know the
-    emphasis seed lives in tip_reward's config blob. That location is historical:
-    `image_describe_prompt` is a DESCRIBE knob filed under tip_reward, which is why
-    this module has to reach into an automation to read its own feature's setting.
-    If that config ever moves, this function is the only place to change."""
-    from automations.tip_reward import image_describe_flags  # lazy: avoid cycle
+    emphasis seed lives in the tip_reward config blob. The accessor now lives with
+    that blob's contract in `tip_reward_config`, a leaf — so reading a DESCRIBE knob
+    no longer means importing a 1.1k-line automation behind a cycle-dodging lazy
+    import, as it did while `image_describe_flags` sat inside `tip_reward`."""
+    from automations.tip_reward_config import image_describe_flags
 
     _on, seed, _scope = await image_describe_flags(account_id)
     return await describe_inbound_message(account_id, message_id, seed, force=force,

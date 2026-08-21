@@ -13,14 +13,13 @@ notices a double-charge before we do is a chargeback and a lost subscriber. It m
 stay correct even after prevention lands (it will simply detect fewer incidents).
 
 Design:
-  • DETECTION is a small registry (`_DETECTORS`) — a new mistake class is one
-    function + one row, not a rewrite. The headline detector `dup_charge` is
-    LANE-AGNOSTIC: it keys on the OF *message id* of each paid charge (from
-    `transactions`, a `delivered` non-free `content_offers`, or a paid
-    `ladder_quote`), resolves each charge's media (item media / vault_sends /
-    message_media), and flags any two DISTINCT charges whose media OVERLAP.
-    Media-level overlap is the truth — two same-priced offers are NOT enough
-    (guardrail: never apologise to a fan who wasn't actually double-charged).
+  • DETECTION is a small registry (`_DETECTORS` in make_right_detect.py — the
+    pure-read scanners live there; this module owns REMEDIATION) — a new mistake
+    class is one function + one row, not a rewrite. The headline `dup_charge`
+    detector is LANE-AGNOSTIC and media-overlap-keyed — see _detect_dup_charges
+    for the algorithm. Media-level overlap is the truth — two same-priced offers
+    are NOT enough (guardrail: never apologise to a fan who wasn't actually
+    double-charged).
   • REMEDIATION: one apology message + a small bundle of FREE, UNSEEN media from
     the tip_reward tip-library tiers (so the apology is never itself a repeat of
     the mistake), valued ≥ the amount he was wrongly charged (operator-tunable).
@@ -60,10 +59,12 @@ from automation_registry import register
 import ownership
 from db.engine import get_session
 from db.models import (
-    AccountAiConfig, Blacklist, CatalogItem, ContentOffer, Fan, LadderQuote,
-    Message, MessageMedia, ResolutionLog, Transaction, VaultSend,
+    AccountAiConfig, Blacklist, Fan, Message, ResolutionLog, VaultSend,
 )
-from automations import content_resolver, tip_reward
+from automations import (
+    _vault_pick, content_resolver, tip_reward, tip_reward_config,
+)
+from automations.make_right_detect import _detect_all
 from . import _voice
 from ._common import load_voice_blocks as _load_voice_blocks
 from ._common import (
@@ -74,19 +75,8 @@ from ._common import (
 
 log = logging.getLogger("of-relay.automation.make_right")
 
-# Money-truth charge kinds (mirror transactions.py / the attribution view). A tip
-# only becomes a "duplicate" if it resolves to media that OVERLAPS another charge,
-# so including tips here is safe (a bare thank-you tip resolves to no media).
-_CHARGE_TX_KINDS = ("ppv_message", "ppv_post", "tip")
-# A delivered offer counts as a paid charge only when the money was real — NEVER a
-# free teaser (resolved_by='free'), or every reused-media item becomes a false
-# "double sale". The one copy of the predicate lives with the ownership readers.
-_PAID_RESOLVED_BY = ownership.OWNED_RESOLVED_BY
-
-# Built-in defaults — ON for every model (operator ruling 2026-08-05: a fan who was
-# charged twice must get the apology on every account, not only the ones somebody
-# remembered to tick). A stored `false` still wins, so an opt-OUT is one checkbox.
-# Every numeric knob is operator-tunable.
+# Built-in defaults — DISABLED + preview-only so the agent is inert until a creator
+# enables it AND opts into auto-send. Every numeric knob is operator-tunable.
 _DEFAULTS: dict = {
     "enabled": True,           # master switch (detection still runs for preview)
     "auto_send": True,         # send apologies. OFF → preview-only even on a real run
@@ -175,8 +165,8 @@ _DEFAULTS: dict = {
 }
 
 # Warm, human apology openers (bubble 1), keyed to the MISTAKE so the words match
-# what actually went wrong. Seeded per fan+incident so a dry-run preview and the real
-# send show the SAME words.
+# what actually went wrong. Seeded per fan+incident via _step_rng, so a dry-run
+# preview and the real send show the SAME words.
 # One pool per MISTAKE — an apology aimed at the wrong grievance reads as not
 # listening (08-04: arguing "that set really is different" turned a $8.28
 # complaint into a fight). Never defend the content, never promise a refund,
@@ -193,6 +183,15 @@ _APOLOGY_FRAMES = {
     "content_letdown": ["aw {name} i'm sorry that one missed 🙈 that's on me for not reading you better — let me make it up to you"],
 }
 _DEFAULT_APOLOGY_KIND = "dup_charge"
+# Mistake kinds whose apology wording is POLICY, not operator copy — the
+# `apology_caption` override is ignored for these. Declared here, beside the
+# frames, so each kind's whole contract (its words + who may replace them) is
+# read in one place: adding a mistake class shouldn't mean hunting for a
+# hardcoded name comparison further down the file.
+#   • hard_decline — the override field was written for the dup-charge context
+#     ("on me, so sorry babe 💕" + a gift). Letting it reach a fan the classifier
+#     just read as chargeback/report language is exactly the wrong turn.
+_FIXED_WORDING_KINDS = frozenset({"hard_decline"})
 # Free-gift lead-ins (bubble 2 rides the apology), then the priced pivot and the
 # quiet-nudge. Follow-up leads say {name}, never a literal "babe" — a pet name
 # two bubbles after an apology that used his real name is the tell that nobody
@@ -289,324 +288,6 @@ async def is_enabled(account_id: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DETECTION registry — a new mistake class is one function + one row here.
-# Each detector: async (account_id, cfg, now) -> list[incident dict].
-# An incident dict: {kind, fan_id, incident_key, message_ids, item_ids,
-#                    overlap_media, wrongful_cents, evidence}.
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _item_media(media_ids_json: str | None) -> set[int]:
-    """Decode a catalog_items.media_ids JSON array → set of OF media ids."""
-    try:
-        return {int(m) for m in json.loads(media_ids_json or "[]")}
-    except Exception:
-        return set()
-
-
-async def _catalog_media_map(account_id: str, item_ids: set[int]) -> dict[int, set[int]]:
-    """{catalog_item_id -> set(media_id)} for the given items (media_ids JSON)."""
-    if not item_ids:
-        return {}
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(CatalogItem.id, CatalogItem.media_ids).where(
-                CatalogItem.account_id == str(account_id),
-                CatalogItem.id.in_([int(i) for i in item_ids])))).all()
-    return {int(i): _item_media(m) for i, m in rows}
-
-
-async def _detect_dup_charges(account_id: str, cfg: dict, now: datetime,
-                              only_fan_ids: set[int] | None = None) -> list[dict]:
-    """Headline detector: charged twice for the same content, LANE-AGNOSTIC.
-
-    A "charge" is keyed on the OF message id it rode on. We gather paid charges
-    from three sources (they reference the SAME message id for one purchase, so a
-    message-id dedup collapses them), resolve each charge's media, and flag any two
-    DISTINCT charges of the same fan whose media OVERLAP.
-
-    `only_fan_ids` scopes the scan to specific fans (a targeted/preview run, and the
-    jaka<->Ava live-test guard) — mirrors _resolve_open_offers(only_fan_ids=...).
-    """
-    since = now - timedelta(days=max(1, int(cfg.get("lookback_days") or 30)))
-    _fan_in = [int(x) for x in only_fan_ids] if only_fan_ids else None
-
-    # (fan_id, message_id) -> charge accumulator
-    # {item_ids:set, amount:int|None, sources:set, at:datetime|None}
-    charges: dict[tuple[int, int], dict] = {}
-
-    def _add(fan_id, message_id, *, item_id=None, amount=None, at=None, source):
-        if fan_id is None or message_id is None:
-            return  # a charge with no message id can't be deduped/resolved by media
-        key = (int(fan_id), int(message_id))
-        c = charges.setdefault(key, {"item_ids": set(), "amount": None,
-                                     "sources": set(), "at": None})
-        if item_id is not None:
-            c["item_ids"].add(int(item_id))
-        if amount is not None and (c["amount"] is None or int(amount) > c["amount"]):
-            c["amount"] = int(amount)
-        # WHEN the money moved — the anchor the freshness gate measures from. Sources
-        # disagree by seconds (a quote is sent before it is paid), so keep the LATEST.
-        if at is not None and (c["at"] is None or at > c["at"]):
-            c["at"] = at
-        c["sources"].add(source)
-
-    async with get_session() as s:
-        # (a) transactions — the money-truth, present regardless of which automation
-        # sent it (the lane-agnostic backstop for funnel/mass/teaser buys).
-        q_tx = select(Transaction.fan_id, Transaction.message_id, Transaction.amount_cents,
-                      Transaction.occurred_at).where(
-            Transaction.account_id == str(account_id),
-            Transaction.kind.in_(_CHARGE_TX_KINDS),
-            Transaction.status.in_(("cleared", "pending")),
-            Transaction.fan_id.is_not(None),
-            Transaction.message_id.is_not(None),
-            Transaction.occurred_at >= since)
-        if _fan_in:
-            q_tx = q_tx.where(Transaction.fan_id.in_(_fan_in))
-        for fid, mid, amt, occ in (await s.execute(q_tx)).all():
-            _add(fid, mid, amount=amt, at=occ, source="txn")
-
-        # (b) delivered, NON-FREE content_offers — carry the item (→ media) and the
-        # PPV message id. This is what caught the Daniel incident.
-        q_off = select(ContentOffer.fan_id, ContentOffer.offer_message_id,
-                       ContentOffer.item_id, ContentOffer.price_cents,
-                       ContentOffer.resolved_at).where(
-            ContentOffer.account_id == str(account_id),
-            ContentOffer.status == "delivered",
-            ContentOffer.resolved_by.in_(_PAID_RESOLVED_BY),
-            ContentOffer.offer_message_id.is_not(None),
-            ContentOffer.resolved_at >= since)
-        if _fan_in:
-            q_off = q_off.where(ContentOffer.fan_id.in_(_fan_in))
-        for fid, msg, item, price, resolved in (await s.execute(q_off)).all():
-            _add(fid, msg, item_id=item, amount=price, at=resolved, source="offer")
-
-        # (c) paid ladder quotes — same PPV message id, carry the item.
-        q_lq = select(LadderQuote.fan_id, LadderQuote.message_id,
-                      LadderQuote.item_id, LadderQuote.price_cents,
-                      LadderQuote.sent_at).where(
-            LadderQuote.account_id == str(account_id),
-            LadderQuote.paid.is_(True),
-            LadderQuote.message_id.is_not(None),
-            LadderQuote.sent_at >= since)
-        if _fan_in:
-            q_lq = q_lq.where(LadderQuote.fan_id.in_(_fan_in))
-        for fid, msg, item, price, sent in (await s.execute(q_lq)).all():
-            _add(fid, msg, item_id=item, amount=price, at=sent, source="quote")
-
-    if not charges:
-        return []
-
-    # Which fans have ≥2 distinct charge messages — the only ones that CAN dup.
-    by_fan: dict[int, list[int]] = {}
-    for (fid, mid) in charges:
-        by_fan.setdefault(fid, []).append(mid)
-    suspects = {fid: msgs for fid, msgs in by_fan.items() if len(msgs) >= 2}
-    if not suspects:
-        return []
-
-    suspect_msgs = {mid for fid, msgs in suspects.items() for mid in msgs}
-
-    # Resolve media per message. Prefer item media (Path C/D); fall back to the
-    # message's own vault_sends / message_media rows (Path B/A) for lanes that
-    # wrote no catalog item.
-    all_item_ids: set[int] = set()
-    for c in charges.values():
-        all_item_ids |= c["item_ids"]
-    cat_media = await _catalog_media_map(account_id, all_item_ids)
-
-    vs_media: dict[int, set[int]] = {}
-    mm_media: dict[int, set[int]] = {}
-    async with get_session() as s:
-        for msg, mid in (await s.execute(
-                select(VaultSend.message_id, VaultSend.media_id).where(
-                    VaultSend.account_id == str(account_id),
-                    VaultSend.message_id.in_(list(suspect_msgs))))).all():
-            if msg is not None:
-                vs_media.setdefault(int(msg), set()).add(int(mid))
-        for msg, mid in (await s.execute(
-                select(MessageMedia.message_id, MessageMedia.media_id).where(
-                    MessageMedia.account_id == str(account_id),
-                    MessageMedia.message_id.in_(list(suspect_msgs))))).all():
-            if msg is not None:
-                mm_media.setdefault(int(msg), set()).add(int(mid))
-
-    def _media_for(fid: int, mid: int) -> set[int]:
-        c = charges[(fid, mid)]
-        out: set[int] = set()
-        for it in c["item_ids"]:
-            out |= cat_media.get(int(it), set())
-        out |= vs_media.get(int(mid), set())
-        out |= mm_media.get(int(mid), set())
-        return out
-
-    incidents: list[dict] = []
-    for fid, msgs in suspects.items():
-        msgs = sorted(set(msgs))
-        media = {mid: _media_for(fid, mid) for mid in msgs}
-        # Union-find: connect two charge messages that share any media.
-        parent = {m: m for m in msgs}
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        for i in range(len(msgs)):
-            for j in range(i + 1, len(msgs)):
-                a, b = msgs[i], msgs[j]
-                if media[a] and media[b] and (media[a] & media[b]):
-                    parent[find(a)] = find(b)
-
-        comps: dict[int, list[int]] = {}
-        for m in msgs:
-            comps.setdefault(find(m), []).append(m)
-
-        for comp_msgs in comps.values():
-            if len(comp_msgs) < 2:
-                continue  # not a duplicate — a single charge
-            comp_msgs = sorted(comp_msgs)
-            overlap: set[int] = set()
-            for i in range(len(comp_msgs)):
-                for j in range(i + 1, len(comp_msgs)):
-                    overlap |= (media[comp_msgs[i]] & media[comp_msgs[j]])
-            item_ids: set[int] = set()
-            amounts: list[int] = []
-            last_at: datetime | None = None
-            for m in comp_msgs:
-                item_ids |= charges[(fid, m)]["item_ids"]
-                amt = charges[(fid, m)]["amount"]
-                if amt:
-                    amounts.append(int(amt))
-                at = charges[(fid, m)]["at"]
-                if at is not None and (last_at is None or at > last_at):
-                    last_at = at
-            # He should have paid ONCE — the wrongful amount is everything past the
-            # single largest legitimate charge.
-            wrongful = sum(sorted(amounts, reverse=True)[1:]) if len(amounts) >= 2 else \
-                (amounts[0] if amounts else 0)
-            key_item = str(min(item_ids)) if item_ids else ("m" + str(min(overlap)))
-            incident_key = "dupsale:{}:{}".format(
-                key_item, "-".join(str(m) for m in comp_msgs))
-            incidents.append({
-                "kind": "dup_charge",
-                "fan_id": int(fid),
-                "incident_key": incident_key,
-                "message_ids": comp_msgs,
-                "item_ids": sorted(item_ids),
-                "overlap_media": sorted(overlap),
-                "wrongful_cents": int(wrongful),
-                # The freshness anchor: the LAST of the duplicate charges. An apology
-                # is owed for the charge he just made, not the one he made in July.
-                "last_charge_at": last_at,
-                "evidence": {"charge_count": len(comp_msgs),
-                             "amounts_cents": amounts},
-            })
-    return incidents
-
-
-# Charges that should have delivered CONTENT (or, for a sub, access the fan expects
-# more of). A cleared one with nothing sent after is "paid but got nothing".
-_UNDELIVERED_TX_KINDS = ("ppv_message", "ppv_post", "tip", "subscribe", "subscription")
-
-
-async def _detect_paid_undelivered(account_id: str, cfg: dict, now: datetime,
-                                   only_fan_ids: set[int] | None = None) -> list[dict]:
-    """Mistake class #2: a fan PAID but got NOTHING. A cleared/pending charge with NO
-    content delivered to him AFTER it (no VaultSend, no delivered offer) once a grace
-    window has passed — "i paid $6 and never got anything more." Chargeback bait.
-
-    Off by default (`detect_undelivered`) — it's fuzzier than a double-charge; an
-    operator opts in. Scoped by `only_fan_ids` like the other detectors.
-    """
-    lookback_days = max(1, int(cfg.get("lookback_days") or 30))
-    grace_h = max(0, int(cfg.get("undelivered_grace_hours") or 2))
-    since = now - timedelta(days=lookback_days)
-    grace_cutoff = now - timedelta(hours=grace_h)   # paid at least grace_h ago
-    _fan_in = [int(x) for x in only_fan_ids] if only_fan_ids else None
-
-    async with get_session() as s:
-        q = select(Transaction.id, Transaction.fan_id, Transaction.message_id,
-                   Transaction.amount_cents, Transaction.occurred_at, Transaction.kind).where(
-            Transaction.account_id == str(account_id),
-            Transaction.kind.in_(_UNDELIVERED_TX_KINDS),
-            Transaction.status.in_(("cleared", "pending")),
-            Transaction.fan_id.is_not(None),
-            Transaction.occurred_at >= since,
-            Transaction.occurred_at <= grace_cutoff)
-        if _fan_in:
-            q = q.where(Transaction.fan_id.in_(_fan_in))
-        txns = (await s.execute(q)).all()
-        if not txns:
-            return []
-        fans = list({int(t.fan_id) for t in txns})
-        # Latest delivery per fan = max(any VaultSend, any DELIVERED offer).
-        vs = (await s.execute(select(VaultSend.fan_id, func.max(VaultSend.sent_at)).where(
-            VaultSend.account_id == str(account_id),
-            VaultSend.fan_id.in_(fans)).group_by(VaultSend.fan_id))).all()
-        co = (await s.execute(select(ContentOffer.fan_id, func.max(ContentOffer.resolved_at)).where(
-            ContentOffer.account_id == str(account_id),
-            ContentOffer.fan_id.in_(fans),
-            ContentOffer.status == "delivered").group_by(ContentOffer.fan_id))).all()
-
-    last_deliv: dict[int, datetime] = {}
-    for fid, t in list(vs) + list(co):
-        if t is not None:
-            prev = last_deliv.get(int(fid))
-            last_deliv[int(fid)] = t if (prev is None or t > prev) else prev
-
-    incidents: list[dict] = []
-    for t in txns:
-        fid = int(t.fan_id)
-        occ = t.occurred_at
-        ld = last_deliv.get(fid)
-        if ld is not None and occ is not None and ld > occ:
-            continue  # he got SOMETHING after paying → delivered, not an incident
-        key_msg = t.message_id if t.message_id is not None else ("tx" + str(t.id))
-        incidents.append({
-            "kind": "paid_undelivered",
-            "fan_id": fid,
-            "incident_key": f"undelivered:{key_msg}",
-            "message_ids": [int(t.message_id)] if t.message_id else [],
-            "item_ids": [], "overlap_media": [],
-            "wrongful_cents": int(t.amount_cents or 0),
-            "last_charge_at": occ,
-            "evidence": {"amount_cents": int(t.amount_cents or 0), "tx_kind": t.kind,
-                         "occurred_at": occ.isoformat() if occ else None},
-        })
-    return incidents
-
-
-# The registry: (name, detector_fn, gate_config_key). A gate of None = always on.
-# Add a mistake class = add one row. dup_charge always runs; the fuzzier classes
-# ship OFF and an operator opts in per-account.
-_DETECTORS = [
-    ("dup_charge", _detect_dup_charges, None),
-    ("paid_undelivered", _detect_paid_undelivered, "detect_undelivered"),
-    # ("wrong_item", _detect_wrong_item, "detect_wrong_item"),          # slot ready
-    # ("price_mismatch", _detect_price_mismatch, "detect_price_mismatch"),
-]
-
-
-async def _detect_all(account_id: str, cfg: dict, now: datetime,
-                      only_fan_ids: set[int] | None = None) -> list[dict]:
-    out: list[dict] = []
-    for name, fn, gate in _DETECTORS:
-        if gate and not cfg.get(gate):
-            continue
-        try:
-            out.extend(await fn(account_id, cfg, now, only_fan_ids))
-        except Exception:
-            log.warning("make_right detector %s errored account=%s", name,
-                        account_id, exc_info=True)
-    # Most-hurt first (biggest wrongful charge), stable by key.
-    out.sort(key=lambda inc: (-int(inc.get("wrongful_cents") or 0), inc["incident_key"]))
-    return out
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # REMEDIATION
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -635,7 +316,7 @@ def _free_folders(cfg: dict, tip_cfg: dict, wrongful_cents: int) -> list[str]:
     else auto-pick the tier by the wrongful basis."""
     tier_name = str(cfg.get("gift_tier") or "").strip().lower()
     if tier_name:
-        return tip_reward._tier_folders(tip_cfg, tier_name)
+        return tip_reward_config.tier_folders(tip_cfg, tier_name)
     tier = tip_reward._pick_tier(max(0, int(wrongful_cents or 0)), tip_cfg)
     return [f for f in (tier.get("folders") if tier else []) if str(f).strip()]
 
@@ -645,7 +326,7 @@ async def _exclude_media(account_id: str, fan_id: int) -> set[int]:
     the apology is never itself a repeat of the mistake. Union of tip_reward's
     seen-set (every VaultSend) with ownership.py's owned-set (purchased
     VaultSend + paid-message media + non-free delivered offers)."""
-    seen = await tip_reward._seen_media(account_id, fan_id)
+    seen = await ownership.seen_media(account_id, fan_id)
     owned = await ownership.owned_or_seen_media(account_id, fan_id)
     return seen | owned
 
@@ -658,9 +339,9 @@ async def _pull_unseen(client, account_id: str, fan_id: int, folders: list[str],
     folders = [f for f in (folders or []) if str(f).strip()]
     if not folders or count <= 0 or client is None:
         return []
-    by_name = await asyncio.to_thread(tip_reward._resolve_folders, client, folders)
+    by_name = await asyncio.to_thread(_vault_pick.resolve_folders, client)
     exclude = await _exclude_media(account_id, fan_id)
-    return await asyncio.to_thread(tip_reward._gather_unseen, client, folders,
+    return await asyncio.to_thread(_vault_pick.gather_unseen, client, folders,
                                    by_name, exclude, count)
 
 
@@ -710,16 +391,26 @@ def _fan_first_name(fan: Fan | None, voice: str = "her") -> str:
     return _voice.blocks(voice).fan_address
 
 
+def _step_rng(account_id: str, incident_key: str, step: int) -> Random:
+    """THE seed for every apology/gift draw — preview/send parity rests on the
+    open (step 0) and each follow-up step drawing from a byte-identical stream,
+    so the frame a preview shows for an incident is the frame the real open
+    sends. Single home; never inline the f-string."""
+    return Random(f"make_right:{account_id}:{incident_key}:{step}")
+
+
 def _apology_bubbles(fan: Fan | None, cfg: dict, rng: Random,
                      kind: str = _DEFAULT_APOLOGY_KIND,
                      voice: str = "her") -> list[str]:
     """The apology turn — one warm bubble, worded to match the MISTAKE `kind`. An
-    operator `apology_caption` overrides it. `{name}` → the fan's given/pet name."""
+    operator `apology_caption` overrides it, except for the kinds whose wording is
+    policy (_FIXED_WORDING_KINDS). `{name}` → the fan's given/pet name."""
     name = _fan_first_name(fan, voice)
     override = str(cfg.get("apology_caption") or "").strip()
     _frames = _apology_frames(voice)
     frames = _frames.get(kind) or _frames[_DEFAULT_APOLOGY_KIND]
-    frame = override if override else rng.choice(frames)
+    frame = (override if (override and kind not in _FIXED_WORDING_KINDS)
+             else rng.choice(frames))
     return [frame.replace("{name}", name)]
 
 
@@ -1036,15 +727,15 @@ async def _open_exchange(client, account_id: str, fan_id: int, incident: dict,
     wrongful_cents; `rem_extra` is the lane's own ledger fields
     (refund_flagged+message_ids+overlap_media, or trigger_message_id).
 
-    The rng is seeded HERE, from fan+incident_key at draw index 0 — so the
-    frame a preview shows for this incident is the frame the real open sends
-    (the seeding contract documented on _APOLOGY_FRAMES). A one-turn `steps`
+    The rng is seeded HERE via _step_rng(account_id, incident_key, 0) — the
+    seeding contract's single home — so the frame a preview shows for this
+    incident is the frame the real open sends. A one-turn `steps`
     closes resolved immediately; otherwise the row opens in_progress and the
     silence self-check is scheduled."""
     if not await ax.acquire_fan_lease(account_id, fan_id, "make_right"):
         return "lease_busy"
     try:
-        rng = Random(f"make_right:{account_id}:{incident['incident_key']}:0")
+        rng = _step_rng(account_id, incident["incident_key"], 0)
         ok, media = await _do_step(client, account_id, fan_id, steps[0], cfg,
                                    tip_cfg, rng, fan, wpm, indicator, now,
                                    kind=incident["kind"])
@@ -1104,7 +795,7 @@ async def _advance_phase(account_id: str, cfg: dict, tip_cfg: dict, client, wpm,
         silent = (now - last_dt) if last_dt else None
         replied = await _fan_replied_since(account_id, fid, last_iso)
         fan = await _get_fan(account_id, fid)
-        rng = Random(f"make_right:{account_id}:{r.incident_key}:{step}")
+        rng = _step_rng(account_id, r.incident_key, step)
 
         if replied:
             if not await ax.acquire_fan_lease(account_id, fid, "make_right"):
@@ -1232,7 +923,7 @@ async def _run_payload_apology(account_id: str, cfg: dict, hd: dict, *,
             or should_skip_muted_creator(fan) or bool(getattr(fan, "is_bot", False))):
         return {**base, "action": "excluded"}
 
-    tip_cfg = await tip_reward._load_config(account_id)
+    tip_cfg = await tip_reward_config._load_config(account_id)
     # The recovery runs longer than one turn (`apology_free_steps`), and every turn
     # past the first is REPLY-DRIVEN: `_advance_phase` only moves when he writes
     # back, nudges once at `nudge_hours`, and closes to an operator at
@@ -1253,7 +944,7 @@ async def _run_payload_apology(account_id: str, cfg: dict, hd: dict, *,
     steps = ["apology_gift" if cfg.get("open_with_gift") else "apology"]
     steps += ["free"] * extra
     if dry_run:
-        rng = Random(f"make_right:{account_id}:{incident_key}:0")
+        rng = _step_rng(account_id, incident_key, 0)
         return {**base, "dry_run": True, "action": "would_open", "steps": steps,
                 "apology": _apology_bubbles(
                     fan, cfg, rng, kind,
@@ -1262,9 +953,17 @@ async def _run_payload_apology(account_id: str, cfg: dict, hd: dict, *,
     client = await asyncio.to_thread(ax._make_client, account_id)
     wpm = await load_typing_wpm(account_id)
     indicator = await load_typing_indicator(account_id)
-    outcome = await _open_exchange(client, account_id, fan_id, incident, steps,
-                                   cfg, tip_cfg, fan, wpm, indicator, now,
-                                   rem_extra={"trigger_message_id": trigger_mid})
+    # _open_exchange propagates exceptions (lease still released) so each caller
+    # keeps its own error accounting — a bare escape here would fail the job with
+    # no resolution_log row, and the next sweep would re-apologize to the fan.
+    try:
+        outcome = await _open_exchange(client, account_id, fan_id, incident, steps,
+                                       cfg, tip_cfg, fan, wpm, indicator, now,
+                                       rem_extra={"trigger_message_id": trigger_mid})
+    except Exception:
+        log.warning("make_right hard-decline open failed account=%s fan=%s",
+                    account_id, fan_id, exc_info=True)
+        return {**base, "status": "error", "action": "send_failed"}
     if outcome == "opened":
         log.info("make_right apology opened account=%s fan=%s key=%s steps=%d",
                  account_id, fan_id, incident_key, len(steps))
@@ -1303,7 +1002,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     only_raw = payload.get("only_fan_ids")
     only_fan_ids = {int(x) for x in only_raw} if only_raw else None
 
-    tip_cfg = await tip_reward._load_config(account_id)
+    tip_cfg = await tip_reward_config._load_config(account_id)
     # The objection lane opens MULTI-TURN exchanges (`apology_free_steps`) and is
     # independent of the scanner's two switches — so its exchanges must be able to
     # CONTINUE where the scanner is off, which is most accounts. Without this an
@@ -1395,7 +1094,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # Same rng seed as _open_exchange, so the preview shows the exact
                 # frame a real open would send. Both draws live ONLY here — a real
                 # open must not burn a vault lookup (gift_preview) it never uses.
-                rng = Random(f"make_right:{account_id}:{inc['incident_key']}:0")
+                rng = _step_rng(account_id, inc["incident_key"], 0)
                 apology = _apology_bubbles(
                     fan, cfg, rng, inc["kind"],
                     (await _load_voice_blocks(account_id)).voice)[0]

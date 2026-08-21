@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Mass Message</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -378,7 +377,13 @@
   /* ===== Mass Message page-specific ===== */
   .main{overflow-y:auto;padding-bottom:40px}
   .sec-utc{color:var(--muted)}
-  .mm-grid{display:grid;grid-template-columns:1.45fr 1fr;gap:24px;align-items:start}
+  .mm-grid{display:grid;grid-template-columns:1.05fr 1fr;gap:24px;align-items:start}
+  /* the audience column now carries the full OF list universe — let its labels
+     stack instead of squeezing the chips */
+  .mm-grid .fx-aud-lbl{width:72px;flex:0 0 72px}
+  .mm-grid .fx-check{align-items:flex-start;line-height:1.4}
+  .mm-grid .fx-check .bx{margin-top:1px}
+  .mm-grid .fx-check .sub{display:block;margin-left:0}
 
   /* media tray inside the composer */
   .tray{display:flex;gap:10px;padding:12px 14px;border-top:1px solid var(--border-soft)}
@@ -401,13 +406,13 @@
   .tbl-wrap{overflow-x:auto;margin-top:12px}
   .tbl{width:100%;border-collapse:collapse;font-size:13px}
   .tbl th{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted2);
-    text-align:left;padding:8px 12px;border-bottom:1px solid var(--border)}
-  .tbl td{padding:12px;border-bottom:1px solid var(--border-soft);color:#ddd;vertical-align:middle;white-space:nowrap}
+    text-align:left;padding:8px 10px;border-bottom:1px solid var(--border)}
+  .tbl td{padding:10px;border-bottom:1px solid var(--border-soft);color:#ddd;vertical-align:middle;white-space:nowrap}
   .tbl tbody tr:last-child td{border-bottom:0}
   .msgcell{display:flex;align-items:center;gap:10px;min-width:0}
   .mthumb{width:36px;height:36px;border-radius:8px;flex:0 0 auto;border:1px solid var(--border)}
   .mthumb.none{background:#1c1c1c;display:flex;align-items:center;justify-content:center;color:#6a6a6a}
-  .mtext{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ddd}
+  .mtext{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ddd}
   .pbadge{display:inline-block;font-size:10.5px;font-weight:700;color:#9db1fb;
     background:rgba(65,102,246,.13);border-radius:6px;padding:2px 7px;flex:0 0 auto}
   .pbadge.free{color:#8a8a8a;background:#1c1c1c;border:1px solid var(--border-soft)}
@@ -421,6 +426,140 @@
   .exl-h{font-size:12.5px;font-weight:600;color:#ddd;margin-bottom:8px;display:flex;align-items:center;gap:8px}
   .exl-c{font-size:11px;color:var(--muted);font-weight:500}
   .exl-sub{font-size:11.5px;color:var(--muted2);margin-top:7px}
+
+  /* ---- live additions ---- */
+  .tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+  /* a vault id whose thumbnail the relay can't serve still has to read as a
+     real attachment, not a broken image */
+  .tile.nothumb,.repmedia .rt.nothumb{background:repeating-linear-gradient(45deg,#1e1e1e,#1e1e1e 6px,#242424 6px,#242424 12px)}
+  .repmedia .rt.nothumb::after{content:"no thumb";position:absolute;inset:0;display:flex;
+    align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#6a6a6a;text-align:center}
+  .tile .rm{position:absolute;top:4px;left:4px;width:18px;height:18px;border-radius:50%;
+    background:rgba(0,0,0,.62);color:#fff;font-size:12px;line-height:16px;text-align:center;cursor:pointer;z-index:2}
+  .tile .rm:hover{background:#e05b5b}
+  .tray{flex-wrap:wrap}
+  .listbox{max-height:96px;overflow-y:auto;align-content:flex-start;padding-right:2px;
+    scrollbar-width:thin;scrollbar-color:#3a3a3a transparent}
+  .listbox::-webkit-scrollbar{width:6px}
+  .listbox::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:3px}
+
+  /* revenue chart (bars sized from /admin/stats/per-automation) */
+  .revchart{display:flex;flex-direction:column;gap:9px}
+  .revrow{display:flex;align-items:center;gap:12px;font-size:12.5px}
+  .revrow .k{width:150px;flex:0 0 150px;color:#ddd;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .revrow .track{flex:1;height:16px;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:8px;overflow:hidden;display:block;min-width:60px}
+  .revrow .revbar{display:block;height:100%;background:linear-gradient(90deg,#4166f6,#67d1ae);border-radius:8px}
+  .revrow .revbar.zero{background:#2f2f2f}
+  .revrow .v{width:96px;flex:0 0 96px;text-align:right;color:var(--green);font-weight:600}
+  .revrow .v.zero{color:var(--muted2);font-weight:500}
+  .revrow .n{width:118px;flex:0 0 118px;text-align:right;color:var(--muted2)}
+  .revaxis{display:flex;gap:12px;font-size:11px;color:var(--muted2);margin-top:4px}
+  .revaxis .k{width:150px;flex:0 0 150px}
+  .revaxis .sc{flex:1;display:flex;justify-content:space-between;min-width:60px}
+  .revaxis .pad{width:214px;flex:0 0 214px}
+
+  /* repeat-from-pool editor — the kit hides .fx-tc-knobs until the card is
+     "on", but the pool has to be editable while the rule is still OFF (that is
+     exactly when you write it), so this card always shows its body. */
+  #cardRepeat .fx-tc-knobs{display:flex}
+  .poolh{display:flex;align-items:center;gap:10px;font-size:11px;font-weight:700;letter-spacing:.07em;
+    text-transform:uppercase;color:var(--muted2);margin-bottom:9px}
+  .poolh span:not(.addln){letter-spacing:0;text-transform:none;font-weight:500;color:var(--muted)}
+  .addln{margin-left:auto;font-size:11.5px;font-weight:600;color:#7d97f8;cursor:pointer;letter-spacing:0;text-transform:none}
+  .addln:hover{color:#9db1fb}
+  #repTexts .fx-input{height:34px;font-size:13px;background:#1c1c1c;margin-bottom:7px}
+  .repmedia{display:flex;gap:7px;flex-wrap:wrap}
+  .repmedia .rt{width:44px;height:44px;border-radius:8px;border:1px solid var(--border);overflow:hidden;
+    background:#161616;flex:0 0 auto;position:relative}
+  .repmedia .rt img{width:100%;height:100%;object-fit:cover;display:block}
+  .repmedia .more{width:44px;height:44px;border-radius:8px;border:1px dashed #3d3d3d;color:var(--muted2);
+    display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex:0 0 auto}
+
+  /* history extras */
+  .tbl td.when{color:#cfcfcf;font-variant-numeric:tabular-nums}
+  .tbl td.when small{display:block;color:var(--muted2);font-size:11px}
+  .mmark{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;color:var(--muted);
+    background:#1c1c1c;border:1px solid var(--border-soft);border-radius:6px;padding:2px 6px;flex:0 0 auto}
+  .btn-uns{height:26px;padding:0 10px;font-size:11.5px;border-radius:7px}
+
+  /* vault picker modal */
+  .vp-back{position:fixed;inset:0;background:rgba(0,0,0,.66);z-index:9995;display:flex;
+    align-items:center;justify-content:center}
+  .vp{background:#232323;border:1px solid var(--border);border-radius:14px;width:860px;max-width:92vw;
+    max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+  .vp-h{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border);
+    font-size:15px;font-weight:600;color:#fff}
+  .vp-h .cap{font-size:12.5px;font-weight:400;color:var(--muted)}
+  .vp-body{flex:1;overflow-y:auto;padding:16px 20px}
+  .vp-grid{display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(104px,1fr));grid-auto-rows:112px;gap:10px}
+  /* folder-organized vault: breadcrumb + folder rows */
+  .vp-crumb{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px}
+  .vp-back-btn{display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:#fff;
+    background:#1b1b1b;border:1px solid var(--border);border-radius:8px;padding:5px 10px 5px 6px;font-weight:600}
+  .vp-back-btn:hover{border-color:var(--accent)}
+  .vp-back-btn svg{width:16px;height:16px}
+  .vp-sep{color:var(--muted)}
+  .vp-here{color:var(--muted);font-weight:600}
+  .vp-folders{display:flex;flex-direction:column;gap:8px}
+  .vfolder{display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:10px;cursor:pointer;
+    background:#1b1b1b;border:1px solid var(--border)}
+  .vfolder:hover{border-color:var(--accent);background:#1f1f1f}
+  .vfolder.all{background:#20233a;border-color:#33407a}
+  .vf-ic{width:34px;height:34px;flex:0 0 34px;display:flex;align-items:center;justify-content:center;
+    border-radius:8px;background:#2a2a2a;color:var(--accent)}
+  .vfolder.all .vf-ic{color:#7f9bff}
+  .vf-ic svg{width:19px;height:19px}
+  .vf-meta{flex:1;min-width:0}
+  .vf-name{font-size:14px;font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vf-count{font-size:12px;color:var(--muted);margin-top:1px}
+  .vf-chev{color:var(--muted);display:flex;align-items:center}
+  .vf-chev svg{width:18px;height:18px}
+  .vp-load{color:var(--muted);font-size:13px;padding:6px 2px}
+  .vp-honest{padding:22px 4px;text-align:center}
+  .vp-honest-t{font-size:14px;font-weight:600;color:#fff;margin-bottom:5px}
+  .vp-honest-d{font-size:12.5px;color:var(--muted);line-height:1.5}
+  .vp-i{position:relative;height:100%;border-radius:9px;overflow:hidden;border:2px solid transparent;
+    background:#161616;cursor:pointer}
+  .vp-i img{width:100%;height:100%;object-fit:cover;display:block}
+  .vp-i.on{border-color:var(--accent)}
+  .vp-i.on::after{content:"✓";position:absolute;top:5px;right:6px;width:19px;height:19px;border-radius:50%;
+    background:var(--accent);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .vp-i .id{position:absolute;left:0;right:0;bottom:0;padding:2px 0;text-align:center;font-size:9px;
+    font-weight:700;background:rgba(0,0,0,.6);color:#dcdcdc}
+  .vp-i .vid{position:absolute;top:5px;left:6px;font-size:9px;font-weight:700;color:#fff;
+    background:rgba(0,0,0,.55);border-radius:4px;padding:1px 4px}
+  .vp-f{display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:1px solid var(--border)}
+
+  /* composer popovers (emoji / gif / template) — inline strips under the bar */
+  .cmpanel{display:none;padding:12px 14px;border-top:1px solid var(--border-soft);background:#181818}
+  .cmpanel.open{display:block}
+  .emgrid{display:grid;grid-template-columns:repeat(12,1fr);gap:2px}
+  .emgrid button{border:0;background:transparent;font-size:18px;line-height:1;padding:5px 0;border-radius:6px;cursor:pointer}
+  .emgrid button:hover{background:#2a2a2a}
+  .gifhead{display:flex;gap:8px;margin-bottom:10px}
+  .gifgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;max-height:220px;overflow-y:auto;
+    scrollbar-width:thin;scrollbar-color:#3a3a3a transparent}
+  .gifgrid::-webkit-scrollbar{width:6px}.gifgrid::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:3px}
+  .gifgrid .gi{position:relative;height:84px;border-radius:8px;overflow:hidden;border:1px solid var(--border);
+    background:#161616;cursor:pointer}
+  .gifgrid .gi img{width:100%;height:100%;object-fit:cover;display:block}
+  .gifgrid .gi:hover{border-color:var(--accent)}
+  .gifchip-in{display:inline-flex;align-items:center;gap:10px;background:#1c1c1c;border:1px solid var(--border);
+    border-radius:10px;padding:6px 8px}
+  .gifchip-in img{width:52px;height:52px;object-fit:cover;border-radius:7px;display:block}
+  .gifchip-in .gx{width:22px;height:22px;border-radius:6px;background:#262626;color:#ccc;border:0;cursor:pointer;
+    font-size:13px;line-height:1}
+  .gifchip-in .gx:hover{background:#e05b5b;color:#fff}
+  #tplList{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto}
+  .tpl-i{display:flex;align-items:flex-start;gap:10px;padding:9px 11px;border:1px solid var(--border-soft);
+    border-radius:9px;background:#1c1c1c;cursor:pointer;text-align:left}
+  .tpl-i:hover{border-color:var(--accent)}
+  .tpl-i .tt{flex:1;min-width:0;font-size:12.5px;color:#ddd;line-height:1.4}
+  .tpl-i .tm{font-size:10.5px;color:var(--muted2);margin-top:3px;display:flex;gap:8px}
+  .tpl-i .tp{font-size:10.5px;font-weight:700;color:#9db1fb;background:rgba(65,102,246,.13);border-radius:6px;
+    padding:2px 7px;flex:0 0 auto}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -451,7 +590,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -530,7 +668,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -562,7 +700,7 @@
         </div>
         <div class="sec-utc">One message, blasted to the audience you pick — free or PPV.</div>
         <div class="head-right">
-          <div class="dropdown"><span style="width:22px;height:22px;border-radius:50%;background:linear-gradient(140deg,#e58fb1,#8f5fe8);display:inline-block"></span>Aria
+          <div class="dropdown"><span style="width:22px;height:22px;border-radius:50%;background:linear-gradient(140deg,#e58fb1,#8f5fe8);display:inline-block"></span><span id="hdrModel">…</span>
             <span class="cv"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           </div>
         </div>
@@ -570,16 +708,16 @@
 
       <!-- live status -->
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Ready — Aria connected</span>
-        <span class="fx-st"><i></i>Last blast 2 h ago · 1,204 fans</span>
-        <span class="fx-st"><i></i>Auto-unsend armed · 4 h</span>
-        <span class="fx-st"><i></i>Weekly repeat on</span>
+        <span class="fx-st ok" id="stReady"><i></i>Connecting…</span>
+        <span class="fx-st" id="stLast"><i></i>Last blast —</span>
+        <span class="fx-st" id="stUnsend"><i></i>Auto-unsend —</span>
+        <span class="fx-st" id="stSched"><i></i>— scheduled on OF</span>
       </div>
 
       <!-- ============ PRIMARY: NEW BLAST ============ -->
-      <div class="fx-card">
+      <div class="fx-card" id="cardNewBlast">
         <div class="fx-card-h">New blast
-          <span style="margin-left:auto;font-size:12.5px;font-weight:500;color:var(--muted)">sends from <b style="color:#ddd;font-weight:600">Aria</b> — media comes from her vault</span>
+          <span style="margin-left:auto;font-size:12.5px;font-weight:500;color:var(--muted)">sends from <b style="color:#ddd;font-weight:600" id="sendsFrom">…</b> — media comes from her vault</span>
         </div>
         <div class="fx-card-sub" style="margin-bottom:16px">Write it, pick who gets it, hit send. Price is prefilled at $24 — clear it for a free blast.</div>
 
@@ -587,121 +725,169 @@
           <!-- left: composer -->
           <div>
             <div class="fx-composer">
-              <textarea placeholder="Write the message…">hey 💕 the new Beach set is finally here — 12 pics I've never posted anywhere. want the first look?</textarea>
-              <div class="tray">
-                <div class="tile g1"><span class="ttag free">FREE preview</span></div>
-                <div class="tile g2"><span class="lk"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="ttag">$24 to unlock</span></div>
-                <div class="tile g3"><span class="lk"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="ttag">$24 to unlock</span></div>
-                <div class="tile addt">
+              <textarea placeholder="Write the message…" id="composerText"></textarea>
+              <div class="tray" id="trayDemo">
+                <div class="tile addt" id="tileAdd">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
                   Vault
                 </div>
               </div>
               <div class="fx-comp-bar">
-                <span class="fx-ci" title="Vault media"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg></span>
-                <span class="fx-ci" title="Emoji"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M8.5 14s1.2 1.8 3.5 1.8 3.5-1.8 3.5-1.8" stroke-linecap="round"/><circle cx="9" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r=".9" fill="currentColor" stroke="none"/></svg></span>
-                <span class="fx-ci" title="Template"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M8 9h8M8 13h8M8 17h5" stroke-linecap="round"/></svg></span>
+                <span class="fx-ci" id="ciImg" title="Vault media"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8" stroke-linejoin="round"/></svg></span>
+                <span class="fx-ci" id="ciEmoji" title="Emoji"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M8.5 14s1.2 1.8 3.5 1.8 3.5-1.8 3.5-1.8" stroke-linecap="round"/><circle cx="9" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r=".9" fill="currentColor" stroke="none"/></svg></span>
+                <span class="fx-ci" id="ciGif" title="GIF"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M8 10.2H6.6v3.6H8m0-3.6a1.4 1.4 0 0 0-1.4 1.4M11 10.2v3.6M14 13.8v-3.6h2.4M14 12h1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                <span class="fx-ci" id="ciTemplate" title="Template"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M8 9h8M8 13h8M8 17h5" stroke-linecap="round"/></svg></span>
                 <div class="fx-comp-price" title="PPV price — locks media until paid">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-                  $<input value="24">
+                  $<input value="24" id="priceInput">
                 </div>
-                <button class="fx-btn ghost" style="height:32px;margin-left:auto"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Schedule</button>
-                <button class="fx-btn" style="height:32px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>Send</button>
+                <button class="fx-btn ghost" style="height:32px;margin-left:auto" id="btnSchedule"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round"/></svg>Schedule</button>
+                <button class="fx-btn" style="height:32px" id="btnSend"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>Send</button>
               </div>
+              <!-- emoji picker (client-side, inserts at cursor) -->
+              <div class="cmpanel" id="emojiPanel"><div class="emgrid" id="emojiGrid"></div></div>
+              <!-- gif picker (GET /api/of/v2/giphy/proxy/gifs/*) -->
+              <div class="cmpanel" id="gifPanel">
+                <div class="gifhead"><input class="fx-input" id="gifSearch" placeholder="Search GIFs — blank = trending" style="height:32px"><button class="fx-btn ghost" id="gifGo" style="height:32px">Search</button></div>
+                <div class="gifgrid" id="gifGrid"><span style="font-size:12px;color:var(--muted2)">loading trending…</span></div>
+              </div>
+              <!-- template picker (GET /api/of/v2/messages/templates) -->
+              <div class="cmpanel" id="tplPanel"><div id="tplList"><span style="font-size:12px;color:var(--muted2)">loading templates…</span></div></div>
             </div>
-            <div class="fx-kv" style="margin-top:9px">The first tile stays free as the teaser</div>
+            <!-- attached GIF chip -->
+            <div id="gifChip" style="display:none;margin-top:9px"></div>
+            <div class="fx-kv" style="margin-top:9px" id="trayKv">Attach vault media before pricing a blast — OF rejects a priced send with nothing to unlock.</div>
             <div class="fx-note" style="margin-top:8px"><span>Mass messages can't use fan names — one message goes to everyone. Need names? <a href="outreach-broadcast.html" style="color:#9db1fb;text-decoration:none">Broadcast</a> sends personal 1:1 nudges.</span></div>
           </div>
 
           <!-- right: audience + auto-unsend -->
           <div>
             <div class="fx-audience">
-              <div class="fx-aud-row"><span class="fx-aud-lbl">Send to</span>
-                <div class="fx-seg" data-single><button>Online now</button><button class="on">Everyone</button><button>Repliers</button></div>
+              <div class="fx-aud-row" style="align-items:flex-start"><span class="fx-aud-lbl" style="margin-top:6px">Send to</span>
+                <div style="flex:1;min-width:0">
+                  <div class="fx-chips listbox" id="incLists"><span style="font-size:12.5px;color:var(--muted2)">loading OF lists…</span></div>
+                  <div style="display:flex;flex-direction:column;gap:1px;margin-top:6px">
+                    <label class="fx-check" id="ckOnline"><span class="bx"></span>Online fans only <span class="sub">online_only</span></label>
+                    <label class="fx-check" id="ckRepliers"><span class="bx"></span>Only fans chatted with in the last 24 h <span class="sub">recent_chat_hours — resolved from the local DB</span></label>
+                  </div>
+                </div>
               </div>
-              <div class="fx-aud-row"><span class="fx-aud-lbl">Spend tier</span>
-                <div class="fx-chips" data-single><span class="fx-chip on">Any spend</span><span class="fx-chip">Never paid</span><span class="fx-chip">$1–25</span><span class="fx-chip">$25–100</span><span class="fx-chip">$100+</span></div>
+              <div class="fx-aud-row" style="align-items:flex-start"><span class="fx-aud-lbl" style="margin-top:6px">Exclude</span>
+                <div class="fx-chips listbox" id="excLists" style="flex:1;min-width:0"></div>
               </div>
-              <div class="fx-aud-row"><span class="fx-aud-lbl">Skipping</span>
-                <div class="fx-chips"><span class="fx-chip on">PPV exclude list · 412</span><span class="fx-chip on">Bought in last 24 h</span><span class="fx-chip on">Chatted in last 1 h</span><span class="fx-chip on">Online only</span></div>
+              <div class="fx-aud-row" id="rowSpend" style="align-items:flex-start"><span class="fx-aud-lbl" style="margin-top:6px">Spend tier</span>
+                <div style="flex:1;min-width:0">
+                  <div class="fx-chips" data-single id="spendChips"></div>
+                  <div class="fx-aud-reach" id="spendNote" style="margin-top:6px"></div>
+                </div>
               </div>
-              <div class="fx-aud-reach">Estimated reach: <b>3,481 fans</b> — Everyone minus 412 excluded</div>
+              <div class="fx-aud-row" style="align-items:flex-start"><span class="fx-aud-lbl" style="margin-top:6px">Skipping</span>
+                <div class="fx-chips"><span class="fx-chip on" id="chipPpvEx" style="pointer-events:none" title="Auto-attached to every priced blast — server-side">PPV exclude list · …</span><span class="fx-chip on" id="chipDmEx" style="pointer-events:none" title="Auto-attached to every free blast — server-side">DM exclude list · …</span><span class="fx-chip on" id="chipInbound" title="Skip fans who messaged us in the last hour">Chatted in last 1 h</span><span class="fx-chip on" id="chipReplied" title="Skip fans we already DMed in the last 12 h">We DMed in last 12 h</span></div>
+              </div>
+              <div class="fx-aud-row"><span class="fx-aud-lbl">Funnel</span>
+                <select class="fx-select" id="selFunnel" style="max-width:280px"><option value="">No funnel — one-shot blast</option></select>
+              </div>
+              <div class="fx-aud-reach" id="audReach">Estimated reach: <b>…</b></div>
             </div>
             <hr class="fx-hr" style="margin:14px 0">
-            <label class="fx-check on"><span class="bx"></span>Auto-unsend unsold after 4 h<span class="sub">pulls the blast back from fans who didn't buy</span></label>
+            <label class="fx-check on" id="ckUnsend"><span class="bx"></span>Auto-unsend unsold after <span id="unsendHrsLbl">4</span> h<span class="sub">pulls the blast back from fans who didn't buy</span></label>
             <div class="fx-note" style="margin-top:10px">Buyers keep it forever — auto-unsend only removes the message from fans who never unlocked it.</div>
           </div>
         </div>
       </div>
 
-      <!-- ============ REPEAT FROM POOL ============ -->
-      <div class="fx-togglecard on">
+      <!-- ============ AUTO-UNSEND SWEEP (unsend_messages rule) ============ -->
+      <div class="fx-card" id="cardUnsend">
+        <div class="fx-card-h">Auto-unsend sweep
+          <span class="fx-st" id="unsRuleState" style="height:24px;font-size:11.5px;padding:0 10px;font-weight:500;margin-left:10px"><i></i>loading…</span>
+          <button class="fx-btn ghost" id="unsSave" style="height:32px;margin-left:auto">Save policy</button>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:14px">The standing sweep that pulls old broadcasts back, per class. This is the account's real
+          <code style="color:#9db1fb">unsend_messages</code> rule — the checkbox in the composer only sets <code style="color:#9db1fb">unsend_after_hours</code> on the one blast you're about to send.</div>
+        <div class="fx-grid3" id="unsGrid">
+          <div class="fx-field"><label>Free text blasts — unsend after (h) <span style="color:var(--muted2)">mass_text_hours</span></label><input class="fx-input" id="unsText" placeholder="off"></div>
+          <div class="fx-field"><label>Blasts with media (h) <span style="color:var(--muted2)">mass_media_hours</span></label><input class="fx-input" id="unsMedia" placeholder="off"></div>
+          <div class="fx-field"><label>Priced PPV blasts (h) <span style="color:var(--muted2)">mass_price_hours</span></label><input class="fx-input" id="unsPrice" placeholder="off"></div>
+        </div>
+        <div class="fx-kv" style="margin-top:10px" id="unsMeta">—</div>
+      </div>
+
+      <!-- ============ BLAST REVENUE BY AUTOMATION ============ -->
+      <div class="fx-card" id="cardRev">
+        <div class="fx-card-h">Attributed revenue by automation
+          <select class="fx-select" id="revRange" style="width:150px;height:32px;margin-left:auto"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:12px">OF's group-message feed carries <b>no per-blast revenue</b> — that column in the table below is honestly blank. What the relay <i>does</i> attribute is revenue per automation, which is the only real answer to "did the outreach earn".</div>
+        <div class="revchart" id="revBars"></div>
+      </div>
+
+      <!-- ============ REPEAT FROM POOL (mass_premade rule) ============ -->
+      <div class="fx-togglecard" id="cardRepeat">
         <div class="fx-tc-row">
           <div class="fx-tc-ico">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.9-6.2" stroke-linecap="round"/><path d="M20 3v4h-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </div>
           <div class="fx-tc-body">
             <div class="fx-tc-title">Repeat from pool</div>
-            <div class="fx-tc-desc">Keeps blasting on its own — picks the next pre-made message from the pool and sends it on a randomized timer.</div>
+            <div class="fx-tc-desc">Keeps blasting on its own — one random line from the text pool plus one random photo from the media pool, on a fixed timer. This is the account's <code style="color:#9db1fb">mass_premade</code> rule.</div>
+            <div class="fx-tc-desc" id="repLast" style="margin-top:6px">…</div>
           </div>
-          <span class="fx-tc-state">Running</span>
-          <span class="fx-switch on"></span>
+          <span class="fx-tc-state">…</span>
+          <span class="fx-switch" id="repSw"></span>
         </div>
-        <div class="fx-tc-knobs">
-          <div class="fx-field" style="width:230px">
-            <label>Send every</label>
-            <select class="fx-select"><option selected>3–5 h (randomized)</option><option>1–2 h</option><option>2–3 h</option><option>5–8 h</option><option>8–12 h</option></select>
+        <div class="fx-tc-knobs" id="repKnobs">
+          <div style="width:100%">
+            <div class="fx-grid3">
+              <div class="fx-field"><label>Fire every (minutes)</label><input class="fx-input" id="repEvery"></div>
+              <div class="fx-field"><label>Auto-unsend each copy after (h)</label><input class="fx-input" id="repUnsend" placeholder="off"></div>
+              <div class="fx-field"><label>Send to lists <span style="color:var(--muted2)">user_lists</span></label><input class="fx-input" id="repLists" placeholder="fans, following"></div>
+              <div class="fx-field"><label>Skip fans we DMed in the last (h)</label><input class="fx-input" id="repRepl" placeholder="off"></div>
+              <div class="fx-field"><label>Skip fans who wrote us in the last (h)</label><input class="fx-input" id="repInb" placeholder="off"></div>
+              <div class="fx-field"><label>&nbsp;</label>
+                <label class="fx-check" id="repOnline"><span class="bx"></span>Online fans only <span class="sub">online_only</span></label>
+              </div>
+            </div>
+            <div style="display:flex;gap:24px;margin-top:16px;align-items:flex-start;flex-wrap:wrap">
+              <div style="flex:1;min-width:300px">
+                <div class="poolh">Text pool <span id="repTextN"></span>
+                  <span class="addln" id="repAddLine">+ Add line</span>
+                </div>
+                <div id="repTexts"></div>
+              </div>
+              <div style="flex:1;min-width:300px">
+                <div class="poolh">Media pool <span id="repMediaN"></span>
+                  <span class="addln" id="repEditMedia">Edit ids</span>
+                </div>
+                <div class="repmedia" id="repMedia"></div>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:16px">
+              <button class="fx-btn" id="repSave" style="height:32px">Save pool</button>
+              <span style="font-size:12px;color:var(--muted2)">Saves payload + cadence on the rule. Turning the rule on is a separate, confirmed click.</span>
+            </div>
           </div>
-          <span style="font-size:12px;color:var(--muted2)">Ava: 2 h · the graded vault: 5 h</span>
         </div>
       </div>
 
       <!-- ============ RECENT SENDS ============ -->
-      <div class="fx-card">
+      <div class="fx-card" id="cardRecent">
         <div class="fx-card-h">Recent sends
-          <span style="margin-left:auto;font-size:12.5px;font-weight:500;color:var(--muted)">Last 30 days · <a href="outreach-scheduled.html" style="color:#9db1fb;text-decoration:none">see scheduled</a></span>
+          <span id="histCount" style="font-size:12.5px;font-weight:500;color:var(--muted)"></span>
+          <span style="margin-left:auto;display:flex;align-items:center;gap:10px">
+            <label class="fx-check" id="ckHideUnsent" style="padding:0"><span class="bx"></span><span style="font-size:12.5px">Hide unsent</span></label>
+            <select class="fx-select" id="histDays" style="width:132px;height:32px"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select>
+            <button class="fx-btn ghost" id="histReload" style="height:32px" title="Re-read the relay's cached copy">Reload</button>
+            <button class="fx-btn ghost" id="histRefresh" style="height:32px" title="Pull fresh rows from OF into the relay cache">Refresh from OF</button>
+            <a href="outreach-scheduled.html" style="color:#9db1fb;text-decoration:none;font-size:12.5px">see scheduled</a>
+          </span>
         </div>
         <div class="tbl-wrap">
           <table class="tbl">
             <thead>
-              <tr><th>Message</th><th>Audience</th><th style="text-align:right">Sent</th><th style="text-align:right">Revenue</th><th>State</th></tr>
+              <tr><th>Sent at</th><th>Message</th><th>Kind</th><th style="text-align:right">Sent</th><th style="text-align:right">Viewed</th><th>State</th><th></th></tr>
             </thead>
-            <tbody>
-              <tr>
-                <td><div class="msgcell"><span class="mthumb g1"></span><span class="mtext">hey 🌊 the new Beach set is finally here — want the first look?</span><span class="pbadge">$24</span></div></td>
-                <td>Everyone</td>
-                <td style="text-align:right">1,204</td>
-                <td style="text-align:right;color:#67d1ae;font-weight:600">$312.00</td>
-                <td><span class="stchip ok">Delivered</span></td>
-              </tr>
-              <tr>
-                <td><div class="msgcell"><span class="mthumb none"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="mtext">good morning ☀️ who's up? first 20 replies get a surprise</span><span class="pbadge free">free</span></div></td>
-                <td>Online now</td>
-                <td style="text-align:right">214</td>
-                <td style="text-align:right;color:var(--muted)">$0.00</td>
-                <td><span class="stchip un">Auto-unsent · 4 h</span></td>
-              </tr>
-              <tr>
-                <td><div class="msgcell"><span class="mthumb g5"></span><span class="mtext">the VIP set drops tonight 👀 want on the list?</span><span class="pbadge">$24</span></div></td>
-                <td>Everyone</td>
-                <td style="text-align:right;color:var(--muted)">—</td>
-                <td style="text-align:right;color:var(--muted)">—</td>
-                <td><span class="stchip sc">Scheduled · Fri 8:00 PM</span></td>
-              </tr>
-              <tr>
-                <td><div class="msgcell"><span class="mthumb g3"></span><span class="mtext">throwback from the Teasers folder — did you catch this one?</span><span class="pbadge">$12</span></div></td>
-                <td>Repliers</td>
-                <td style="text-align:right">96</td>
-                <td style="text-align:right;color:#67d1ae;font-weight:600">$84.00</td>
-                <td><span class="stchip ok">Delivered</span></td>
-              </tr>
-              <tr>
-                <td><div class="msgcell"><span class="mthumb g4"></span><span class="mtext">quick hello + a free pic, just because 💛</span><span class="pbadge free">free</span></div></td>
-                <td>Everyone</td>
-                <td style="text-align:right">3,402</td>
-                <td style="text-align:right;color:var(--muted)">$0.00</td>
-                <td><span class="stchip un">Auto-unsent · 4 h</span></td>
-              </tr>
+            <tbody id="histBody">
+              <!-- rows rendered by wire-js from GET /admin/mass-messages -->
             </tbody>
           </table>
         </div>
@@ -721,40 +907,51 @@
             <div class="fx-adv-group"><h4>Exclude lists</h4>
               <div class="fx-grid2">
                 <div>
-                  <div class="exl-h">PPV blasts skip <span class="exl-c">412 fans</span></div>
-                  <div class="fx-chips"><span class="fx-chip on">MASSPPVEXCLUDE · 412</span><span class="fx-chip">Recent refunds · 9</span></div>
-                  <div class="exl-sub">Auto-attached to every priced blast. Untick for a one-off.</div>
+                  <div class="exl-h">PPV blasts skip <span class="exl-c" id="exlPpvCount">… fans</span></div>
+                  <div class="fx-chips"><span class="fx-chip on" id="exlPpvChip" style="pointer-events:none">MASSppvEXCLUDE · …</span><span class="fx-chip" id="exlAutoChip" style="pointer-events:none" title="Funnel answered-once dedup list — server-managed">Auto_Exclude · …</span></div>
+                  <div class="exl-sub">Auto-attached to every priced blast, server-side.</div>
                 </div>
                 <div>
-                  <div class="exl-h">DM blasts skip <span class="exl-c">178 fans</span></div>
-                  <div class="fx-chips"><span class="fx-chip on">MASSdmEXCLUDE · 178</span></div>
+                  <div class="exl-h">DM blasts skip <span class="exl-c" id="exlDmCount">… fans</span></div>
+                  <div class="fx-chips"><span class="fx-chip on" id="exlDmChip" style="pointer-events:none">MASSdmEXCLUDE · …</span></div>
                   <div class="exl-sub">Applied to free (unpriced) blasts only.</div>
                 </div>
               </div>
               <div class="fx-kv" style="margin-top:10px">Edit who's on these lists in <a href="growth-smart-lists.html" style="color:#9db1fb;text-decoration:none">Smart lists</a>.</div>
             </div>
 
-            <div class="fx-adv-group"><h4>Repeat &amp; auto-unsend timer</h4>
-              <label class="fx-check on"><span class="bx"></span>Repeat this blast weekly<span class="sub">each copy schedules its own auto-unsend</span></label>
-              <div class="fx-grid3" style="margin-top:10px">
-                <div class="fx-field"><label>Repeat every</label><select class="fx-select"><option>Week</option><option>Day</option><option>Month</option></select></div>
-                <div class="fx-field"><label>Times to repeat</label><input class="fx-input" value="1"></div>
-                <div class="fx-field"><label>Auto-unsend each copy after (hrs)</label><input class="fx-input" value="4"></div>
+            <div class="fx-adv-group"><h4 id="advRepeatH">Auto-unsend timer (this blast)</h4>
+              <div class="fx-grid3">
+                <div class="fx-field"><label>Auto-unsend this blast after (hrs)</label><input class="fx-input" value="4" id="inUnsendHrs"></div>
+                <div class="fx-field" id="fldRepeatNote" style="grid-column:span 2;justify-content:flex-end">
+                  <div class="fx-note" style="margin:0">The queue body takes <code style="color:#9db1fb">unsend_after_hours</code> for the one send you're firing.
+                    A <b>recurring</b> blast is a different object — that's the <a href="#" id="lnkRepeat" style="color:#9db1fb;text-decoration:none">Repeat from pool</a> rule above; OF's queue endpoint has no repeat-N-times field.</div>
+                </div>
               </div>
             </div>
 
             <div class="fx-adv-group"><h4>PPV extras</h4>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Free preview tiles</label><input class="fx-input" value="1"></div>
-                <div style="grid-column:span 2;display:flex;align-items:flex-end">
-                  <label class="fx-check"><span class="bx"></span>Paywall the caption text too<span class="sub">fans see nothing until they unlock</span></label>
+                <div class="fx-field" id="advPreviewField"><label>Free preview tiles <span style="color:var(--muted2)">previews</span></label>
+                  <select class="fx-select" id="selPreviews"><option value="0">0 — every tile locked</option><option value="1" selected>1 — first tile free</option><option value="2">2 — first two free</option><option value="3">3 — first three free</option></select>
                 </div>
+                <div style="grid-column:span 2;display:flex;align-items:flex-end">
+                  <label class="fx-check" id="ckLockedText"><span class="bx"></span>Paywall the caption text too<span class="sub">fans see nothing until they unlock</span></label>
+                </div>
+              </div>
+              <div class="fx-kv" style="margin-top:8px" id="prevKv">—</div>
+            </div>
+
+            <div class="fx-adv-group"><h4>Online targeting extras</h4>
+              <div class="fx-grid3">
+                <div class="fx-field"><label>Also pull fans with unread msgs <span style="color:var(--muted2)">unread_limit</span></label><input class="fx-input" id="advUnread" placeholder="off — up to N"></div>
+                <div class="fx-field"><label>Cap recent-chat include to <span style="color:var(--muted2)">recent_chat_limit</span></label><input class="fx-input" id="advRecentCap" placeholder="off — N fans"></div>
+                <div class="fx-field" style="justify-content:flex-end"><div class="fx-kv" style="margin:0">These ADD fans on top of your lists — the server resolves them at send time. Blank = not applied.</div></div>
               </div>
             </div>
 
-            <div class="fx-adv-group"><h4>Media &amp; models</h4>
-              <label class="fx-check"><span class="bx"></span>Send from every model<span class="sub">text-only — vault media is per-account</span></label>
-              <div class="fx-note warn" style="margin-top:10px">Media attachments are <b>this model's</b> vault items. An all-models blast goes text-only — attach media per account instead.</div>
+            <div class="fx-adv-group"><h4 id="advMediaH">Media &amp; models</h4>
+              <div class="fx-note warn" style="margin-top:0">Media attachments are <b>this model's</b> vault items — a vault id is meaningless on another account, and the queue endpoint sends from exactly one creator. To blast the roster, switch creator and send again; there is no all-models fan-out on this endpoint.</div>
             </div>
 
           </div>
@@ -860,5 +1057,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="outreach-mass-message.js" id="wire-js"></script>
 </body>
 </html>

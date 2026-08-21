@@ -152,6 +152,12 @@ function blankPpv(): PpvItem {
 
 const DISCOUNT_CAPTION = "{off} off today babe 🙈 was {was} now just {now}";
 
+// House-default send caps — canonical copy lives in ppv_send._DEFAULT_PPV_CAPS
+// and rides in on the API's `defaults` payload; this is the ONE client-side
+// fallback literal (fetch-error edge only). Values and prose both render from
+// the merged `capDef` below, so a server-side default bump shows up here.
+const CAP_DEFAULTS = { per_day: 2, per_week: 14, per_month: 60 };
+
 export default function PPVLibraryTab({ accountId }: { accountId: string | null }) {
   const cfgQ = usePpvLibraryConfig(accountId);
   const saveM = useSavePpvLibraryConfig(accountId);
@@ -227,6 +233,21 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     Math.round((cfgQ.data?.price_ceil_cents ?? PRICE_CEIL) / 100),
   );
 
+  // Displayed house caps: the API-served defaults win, CAP_DEFAULTS only fills
+  // in when the payload is missing — the single displayed truth for both the
+  // input fallbacks and the header/footer prose.
+  const capDef = useMemo(() => {
+    // Merge key-by-key, keeping only real numbers — a null/absent wire value
+    // must fall back to CAP_DEFAULTS, never shadow it through the spread.
+    const wire = cfgQ.data?.defaults?.ppv_caps ?? {};
+    const num = (v: unknown, d: number) => (typeof v === "number" ? v : d);
+    return {
+      per_day: num(wire.per_day, CAP_DEFAULTS.per_day),
+      per_week: num(wire.per_week, CAP_DEFAULTS.per_week),
+      per_month: num(wire.per_month, CAP_DEFAULTS.per_month),
+    };
+  }, [cfgQ.data]);
+
   const pools = cfgQ.data?.pools ?? Object.keys(POOL_LABELS);
   const captionPools = cfgQ.data?.caption_pools ?? {};
   const feedPools = cfgQ.data?.feed_pools ?? Object.keys(FEED_POOL_LABELS);
@@ -250,10 +271,9 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     // blast per 12h) — show THAT, not 0s, so the tab reflects what actually
     // runs. A stored dict is authoritative per key (explicit 0 = off).
     const caps = c.ppv_caps;
-    const capDef = cfgQ.data?.defaults?.ppv_caps ?? {};
-    setCapDay(caps ? caps.per_day ?? 0 : capDef.per_day ?? 2);
-    setCapWeek(caps ? caps.per_week ?? 0 : capDef.per_week ?? 14);
-    setCapMonth(caps ? caps.per_month ?? 0 : capDef.per_month ?? 60);
+    setCapDay(caps ? caps.per_day ?? 0 : capDef.per_day);
+    setCapWeek(caps ? caps.per_week ?? 0 : capDef.per_week);
+    setCapMonth(caps ? caps.per_month ?? 0 : capDef.per_month);
     setReachAll(c.reach_all ?? true);
     const ph = c.pause_hours ?? 0;
     setPauseOn(ph > 0);
@@ -261,7 +281,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     // backend `defaults` blob doesn't carry these keys — fall back to 3/200 here
     setPriceMin(Math.round((c.price_min_cents ?? PRICE_FLOOR) / 100));
     setPriceMax(Math.round((c.price_max_cents ?? PRICE_CEIL) / 100));
-  }, [cfgQ.data]);
+  }, [cfgQ.data, capDef]);
 
   if (!accountId) return <div className="text-sm text-fg-dim">Pick an account above.</div>;
   if (cfgQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
@@ -601,7 +621,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
           0 = no limit. A hit cap holds a PPV and releases it when the window frees. */}
       <div className="rounded-lg border border-border p-3 space-y-2">
         <div className="text-xs font-medium text-fg">
-          Max PPVs sent (whole account) — default 2 / 14 / 60 · 0 = no limit
+          Max PPVs sent (whole account) — default {capDef.per_day} / {capDef.per_week} / {capDef.per_month} · 0 = no limit
         </div>
         <div className="flex flex-wrap gap-4">
           {([
@@ -630,7 +650,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
             ? <>Your current setting → <b>at most one blast every ~{fmtGap(capGapH)}</b>.</>
             : <><b>All three at 0 → no spacing</b> — several PPVs can blast the same fan
               minutes apart.</>}{" "}
-          Default 2/day · 14/wk · 60/mo (= every 12h).
+          Default {capDef.per_day}/day · {capDef.per_week}/wk · {capDef.per_month}/mo (= every 12h).
         </div>
       </div>
 

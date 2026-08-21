@@ -22,7 +22,8 @@ Who it talks to (code-side gates, never prompt-side):
   • blacklist / skip_list respected, EXCEPT welcome_chatter_for_info's graduation reasons
     ("spent"/"too_long"/"info") — those mean "graduated from the gather loop",
     which is exactly the population ai_chatter exists for,
-  • promo-spam guard ($0 spend + source=creator_we_follow) — the jaka problem,
+  • promo-spam guard (creator_we_follow + $0 + no exchange + actually blasted
+    promo — load_promo_spam_ids) — the jaka problem,
   • fans mid-mass-funnel stay owned by reply_mass_funnel,
   • a fan a HUMAN chatter messaged within `resume_after_manual_hours` is left
     alone (cautious resume — the bot never barges into a human-run convo),
@@ -114,12 +115,11 @@ from . import _prompt_shape  # block grouping / facts ablation / task line
 from . import sell_lane  # THE gate every priced send passes through (all engines)
 from . import _sell_signal  # the model's own "he asked to buy" line (shadow)
 # ppv_send owns the ONE price authority (`price_bounds`); ownership.py owns
-# the ONE ownership check (`owners_of_media`, keyed on MEDIA — a fan who
-# bought a clip in a mass blast has no content_offers row at all). Importing
-# them rather than growing a second ceiling / a second ownership notion here
-# is deliberate.
+# the ONE ownership check (`owned_or_seen_media`, keyed on MEDIA — a fan who
+# bought a clip in a mass blast has no content_offers row at all; see the
+# `_owned_or_seen_media` alias below). Importing them rather than growing a
+# second ceiling / a second ownership notion here is deliberate.
 from .ppv_send import price_bounds
-from ownership import owners_of_media as _owners_of_media
 from ._common import (
     CONTENT_ASK_RE, ESCALATION_RE, NONNATIVE_OUTPUTS, NONNATIVE_REGISTER,
     BIO_CONSISTENCY_GUARDRAIL,
@@ -146,13 +146,18 @@ from ._common import (
     quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, thread_heat, typing_delay_seconds,
 )
+from ._wordfilter import (  # compliance word filter
+    banned_hit_summary, filter_banned, load_banned_words,
+)
+from ._clock import clock_block, clock_line
 from .fan_state import fan_state, set_fan_state
+from .tip_reward_config import image_describe_flags
 # Deliberate sibling reuse — keeps the texting voice byte-compatible with
 # welcome_chatter_for_info instead of forking 500 lines of tuned style machinery.
 from .welcome_chatter_for_info import (
     _BREATHER_VARIANTS, _EXTRACT_HISTORY_TAIL, _HISTORY_TAIL, _MSG_CLIP,
     _NOID_PAUSE, _REPLY_MAX_CHARS, _REPLY_TEMPERATURE, _STYLE_VARIANTS,
-    _bump_attempt, _clock_line, _dedupe_lead_reaction, _extract_and_fill,
+    _bump_attempt, _dedupe_lead_reaction, _extract_and_fill,
     _load_mid_funnel_fans,
     _good_examples, _load_persona, _looks_like_echo, _mark_question_asked,
     _mark_reply_sent,
@@ -221,7 +226,6 @@ _GRADUATION_SKIPS = frozenset({"spent", "too_long", "info"})
 # (human territory) — liftable per-account via cfg["engage_old_fans"], which
 # engages them in gentle mode (see old_fan_question_every in _DEFAULTS).
 _OLD_FAN_SKIP = "old_fan_pre_ai"
-
 
 def skip_reason_blocks(reason: str | None, *, engage_old_fans: bool) -> bool:
     """Does this skip_list row actually close the thread to ai_chatter?
@@ -1656,20 +1660,12 @@ async def _load_catalog(account_id: str) -> list[CatalogItem]:
             if _item_media(it) and (it.is_free_teaser or _sellable(it))]
 
 
-async def _seen_media(account_id: str, fan_id: int) -> set[int]:
-    async with get_session() as s:
-        ids = (await s.execute(
-            select(VaultSend.media_id).where(
-                VaultSend.account_id == str(account_id),
-                VaultSend.fan_id == int(fan_id))
-        )).scalars().all()
-    return {int(x) for x in ids}
-
-
-# The fan → owned-media reader lives in ownership.py beside its inverse
-# (`owners_of_media`); this alias keeps the module-local name every call
-# site and test uses.
+# The fan → media readers live in ownership.py beside their inverse
+# (`owners_of_media`); these aliases keep the module-local names every call
+# site and test uses. `_seen_media` was a second, byte-identical copy of
+# ownership.seen_media until it was folded back into it.
 _owned_or_seen_media = ownership.owned_or_seen_media
+_seen_media = ownership.seen_media
 
 
 async def _open_offers(account_id: str, fan_id: int | None = None) -> list[ContentOffer]:
@@ -2675,7 +2671,7 @@ async def _maybe_discount_resend(client, account_id: str, cfg: dict,
     # no content_offers row at all) — media-keyed, never catalog-keyed. HERO media
     # only: owning the free tease frames doesn't make the discounted payoff his.
     hero = (await _hero_media_map(account_id, [item]))[int(item.id)]
-    if fan_id in await _owners_of_media(account_id, hero):
+    if (await _owned_or_seen_media(account_id, fan_id)) & set(hero):
         await _resolve_offer(int(offer.id), status="cancelled", resolved_by="owned")
         await _close_ladder(account_id, fan_id, upsell.STATUS_TAPPED)
         return False
@@ -3536,11 +3532,12 @@ async def _run_aftercare(account_id: str, payload: dict, cfg: dict) -> dict:
         if (bool(cfg.get("gift_enabled")) and not regret_active
                 and await _session_paid_rungs(account_id, fan_id, now) >= 2):
             seen = await _seen_media(account_id, fan_id)
+            owned = await _owned_or_seen_media(account_id, fan_id)
             items = await _load_catalog(account_id)
             for it in items:
                 media = _item_media(it)
                 if (media and not any(m in seen for m in media)
-                        and fan_id not in await _owners_of_media(account_id, media)):
+                        and not (owned & set(media))):
                     gift_media = media
                     break
         if gift_media:
@@ -3996,7 +3993,8 @@ async def _save_ladder(account_id: str, fan_id: int, **vals) -> None:
         )
 
 
-async def _close_ladder(account_id: str, fan_id: int, status: str, **extra) -> None:
+async def _close_ladder(account_id: str, fan_id: int, status: str, *,
+                        offers_paused_until: datetime | None = None) -> None:
     """The ONE way a ladder ends — hard stop, tap-out, session TTL, a skip_list row
     (of_restricted / manual_restrict / unreachable all land there), or the account's
     dead-session flag. Resets the rung so a fan who comes back years later opens
@@ -4004,11 +4002,15 @@ async def _close_ladder(account_id: str, fan_id: int, status: str, **extra) -> N
     discount state — a new session earns its own cut, it does not inherit the last
     one's 'already cut' bar. companion/cooldown windows are time-based and left to
     lapse on their own (a close must not un-companion a fan who asked to just talk).
-    `extra` rides in the SAME upsert — a close that must also stamp a pause (the
-    hard decline) stays one atomic write, never close-then-pause in two."""
-    await _save_ladder(account_id, fan_id, status=status, rung_index=0,
-                       hot_until=None, unpaid_rungs=0, session_idle_at=None,
-                       objection_at=None, discount_count=0, **extra)
+    `offers_paused_until` rides in the SAME upsert — a close that must also stamp
+    a pause (the hard decline) stays one atomic write, never close-then-pause in
+    two. It is the ONLY extra column a close may touch; omitted (None) leaves it
+    alone."""
+    vals: dict = dict(status=status, rung_index=0, hot_until=None, unpaid_rungs=0,
+                      session_idle_at=None, objection_at=None, discount_count=0)
+    if offers_paused_until is not None:
+        vals["offers_paused_until"] = offers_paused_until
+    await _save_ladder(account_id, fan_id, **vals)
 
 
 async def _park_pending_offer(account_id: str, fan_id: int,
@@ -5140,12 +5142,10 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         "something, say yes warmly and let it arrive.")
     sell_section = f"\n\n{sell.block.strip()}\n\n" if has_sell else "\n\n"
 
-    # The prompt clock ("" when the account has no tz configured → byte-equal
-    # prompt) — same block as welcome_chatter_for_info. "what time is it where you are?" is
-    # the classic bot trap, and a model with no clock invents one.
-    clock_block = (
-        f"RIGHT NOW for you it is {clock} — never claim a different time of "
-        "day.\n\n" if clock else "")
+    # The prompt clock (clock_block: "" when the account has no tz configured →
+    # byte-equal prompt) — same block as welcome_chatter_for_info. "what time is
+    # it where you are?" is the classic bot trap, and a model with no clock
+    # invents one.
 
     # TODAY's day, read at the creator-local hour. "" when the account has no day
     # log — byte-equal prompt, same discipline as the clock block above. Rendered
@@ -5193,7 +5193,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         + f"{offers_line} "
         "He may send several texts — read all, reply to the latest.\n\n"
         f"{v.painful_texting + chr(10) + chr(10) if painful_on else ''}"
-        f"{clock_block}{day_sys}"
+        f"{clock_block(clock)}{day_sys}"
         f"{need_block}{dodge_note}{call_him}\n\n"
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         # Register (text young and casual), NOT a claim about her age — derived
@@ -5581,6 +5581,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     extract_claims_only = bool(cfg.get("closer_extract_claims_only", True))
     bio_gate_on = bool(cfg.get("persona_facts_on_ask_only", True))
     prompt_sells = bool(cfg.get("prompt_sell_catalog", False))
+    banned_words, banned_words_mode = await load_banned_words(account_id)  # compliance word filter (default: none)
     stickers_on = await load_cat_stickers_flag(account_id)    # cat reaction gifs (default ON)
     sticker_skip_w, sticker_solo_w, sticker_gap_min = \
         await load_cat_sticker_tuning(account_id)             # per-account rate knobs
@@ -5669,13 +5670,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     draft_ready = bool(rhythm_resume and payload.get("draft_parts"))
 
     cfg_row = await _load_cfg_row(account_id)
-    tz_off = (rhythm.tz_offset_for(getattr(cfg_row, "timezone", None),
-                                   getattr(cfg_row, "utc_offset", None))
-              if rhythm_on else None)
     # Prompt clock: independent of the rhythm flag — the chat model must know
     # HER local time even when human-rhythm pacing is off. None ⇒ no clock line.
     clock_tz = rhythm.tz_offset_for(getattr(cfg_row, "timezone", None),
                                     getattr(cfg_row, "utc_offset", None))
+    tz_off = clock_tz if rhythm_on else None
     # HER calendar day, for the opener ration (_openers.DAILY_CAP). Same offset the
     # prompt clock uses; an account with no timezone yields "" and the ration does
     # not apply, which is the pre-ration behaviour rather than a guessed boundary.
@@ -5757,17 +5756,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # media home) and read here — None ⇒ off, don't even look per fan. Does NOT ride the
     # gate: the images ARE the lead-up, so they warm even an account with no catalog. The
     # spend brakes below still apply (a broke/declined/companion fan never reaches it).
-    from automations import tip_reward as _tip_reward
-    teaser_cfg = await _tip_reward.hot_teaser_config(account_id)
+    from automations import teaser_select as _teaser
+    teaser_cfg = await _teaser.hot_teaser_config(account_id)
     # Conversational teaser ladder — NOT gated on heat; fires during ordinary chat
     # every N of his messages, climbing free → $10 → $50. None ⇒ off.
-    convo_teaser_cfg = await _tip_reward.convo_teaser_config(account_id)
+    convo_teaser_cfg = await _teaser.convo_teaser_config(account_id)
     # Can she actually read a picture he sends? (vision describe at ingest — see
     # webhook_dispatch.on_inbound_image). Gates the "send me one and I'll rate it"
     # bot-accusation dare: promising a rating she can't deliver is worse than not
     # daring at all. Read once per run, not per fan.
     describe_on, _describe_seed, _describe_scope = \
-        await _tip_reward.image_describe_flags(account_id)
+        await image_describe_flags(account_id)
     # 🚫 THE PROMPT DOES NOT SELL — ONE GATE, HERE, at the shelf. Everything the
     # catalogue reaches in this sweep is downstream of this one name (`catalog_items`
     # decides whether a sell block is built), so emptying the shelf is what "she has
@@ -5888,7 +5887,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_not_turn = 0    # we (or nobody) spoke last
     rhythm_waiting = 0      # she's mid-pause for this fan (wake_at in the future)
     run_inline_s = 0.0      # cumulative inline hold this run() (the global-slot budget)
-    skipped_spam = 0        # promo-spam: $0 + creator_we_follow
+    skipped_spam = 0        # promo-spam: creator_we_follow + $0 + no exchange + blasted
     skipped_muted_creator = 0  # muted creator we follow — HARD skip (durable)
     skipped_whale = 0       # at/over the spend gate → human territory
     skipped_not_payer = 0   # payer floor: never bought content → welcome_chatter_for_info's
@@ -6076,6 +6075,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     paced_bubbles = 0       # bubbles 1+ that went through pacing.bubble_pace
     pace_drifts = 0         # …of those, how many drew a real "she stopped" pause
     paid_state_refreshed = 0  # PPVs the fan had unlocked that our is_paid still called unpaid
+    blocked_banned = 0      # compliance word filter: replies dropped for a banned word (block mode)
     errors = 0
     # A reply we chose not to send is NOT an error, and folding the two together
     # cost hours: `errors` climbing on a healthy account read as flakiness, when
@@ -7031,7 +7031,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                                          if fan_id in old_fan_ids
                                                          else 0),
                                               buyer_facts=buyer_facts,
-                                              clock=_clock_line(clock_tz),
+                                              clock=clock_line(clock_tz),
                                               day=day,
                                               sell_signal=signal_on,
                                               v=v)
@@ -7326,7 +7326,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     and not (fan_ladder is not None and fan_ladder.offers_paused_until
                              and fan_ladder.offers_paused_until > now)):
                 try:
-                    teaser = await _tip_reward.pick_hot_teaser(
+                    teaser = await _teaser.pick_hot_teaser(
                         client, account_id, fan_id,
                         lifetime_spend_cents=int(getattr(f, "lifetime_spend_cents", 0) or 0),
                         tcfg=teaser_cfg, now=now)
@@ -7377,7 +7377,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     _dp = max(upsell.OF_PRICE_FLOOR_CENTS,
                               min(_dp, _prev["price_cents"] - 1))
                     if 0 < _dp < _prev["price_cents"]:   # strictly cheaper, else stop
-                        _tstate = _tip_reward.teaser_state(f)
+                        _tstate = _teaser.teaser_state(f)
                         _rg = int(_tstate.get("rung") or 0)
                         teaser = {"media_ids": _prev["media_ids"], "price_cents": _dp,
                                   "is_free": False, "convo": True, "rung": _rg,
@@ -7413,8 +7413,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 if pending is None and offer_item is None:
                     _tcfg = {**convo_teaser_cfg,
                              "after": min(int(convo_teaser_cfg.get("after") or 20), 10)}
-                _tstate = _tip_reward.teaser_state(f)
-                _since = _tip_reward.teaser_last_at(_tstate)
+                _tstate = _teaser.teaser_state(f)
+                _since = _teaser.teaser_last_at(_tstate)
                 # Adaptive ladder climb/soften signal: did HER last teaser sell? Only
                 # her own teaser unlock counts (Message.is_paid on that id) — an
                 # ai_chatter catalog buy never moves this ladder. Queried only in
@@ -7427,7 +7427,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # underneath — leaving a man who just paid on a streak toward the
                 # circuit breaker.
                 _t_sold = False
-                _t_chk = (_tip_reward.teaser_sale_check_msg(_tstate)
+                _t_chk = (_teaser.teaser_sale_check_msg(_tstate)
                           if _tcfg.get("adaptive") else None)
                 if _t_chk:
                     _t_sold = await _teaser_sold(account_id, fan_id, _t_chk)
@@ -7438,7 +7438,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                if _tcfg.get("adaptive") else 0)
                 try:
                     _msgs_since = await _fan_msgs_since(account_id, fan_id, _since)
-                    teaser = await _tip_reward.pick_convo_teaser(
+                    teaser = await _teaser.pick_convo_teaser(
                         client, account_id, fan_id, tcfg=_tcfg, state=_tstate,
                         msgs_since_last=_msgs_since, last_sold=_t_sold,
                         max_paid_cents=_t_max_paid, now=now)
@@ -7599,6 +7599,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # free teaser) → the catalog's static price, exactly as before.
             quote = quotes.get(int(offer_item.id)) if offer_item is not None else None
             ask_cents = int(quote.price_cents) if quote is not None else 0
+            # ── Compliance word filter. filter_banned owns the policy (whole-turn
+            # block, scan-before-typo); here we only react to its verdict. Called
+            # BEFORE the nonnative/typo layers below — that ordering is the helper's
+            # documented contract. Empty list → parts come back unchanged.
+            scanned, bw_hits = filter_banned(parts, banned_words, banned_words_mode)
+            if scanned is None:
+                blocked_banned += 1
+                log.warning("ai_chatter BLOCKED reply — banned word(s) %r "
+                            "account=%s fan=%s", banned_hit_summary(bw_hits),
+                            account_id, fan_id)
+                continue
+            if bw_hits:
+                log.info("ai_chatter masked banned word(s) %r account=%s fan=%s",
+                         banned_hit_summary(bw_hits), account_id, fan_id)
+            parts = scanned
             name_protect = [n for n in (f.real_name, f.generated_nickname,
                                         f.of_display_name) if n]
             if nonnative_on:
@@ -8195,7 +8210,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if teaser is not None and sent_ok and teaser_msg_id:
                 # A convo-ladder teaser climbs to its next rung; a hot teaser leaves the
                 # rung alone (set_rung=None).
-                await _tip_reward.record_hot_teaser(
+                await _teaser.record_hot_teaser(
                     account_id, fan_id, media_ids=teaser["media_ids"],
                     message_id=teaser_msg_id, price_cents=teaser["price_cents"],
                     is_free=teaser["is_free"], set_rung=teaser.get("next_rung"),
@@ -8321,6 +8336,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "ratings_rescued": ratings_rescued,
         "spend_capped": spend_capped,
         "ppv_drops": ppv_drops,
+        "blocked_banned": blocked_banned,
         "paced_bubbles": paced_bubbles,
         "pace_drifts": pace_drifts,
         "errors": errors,

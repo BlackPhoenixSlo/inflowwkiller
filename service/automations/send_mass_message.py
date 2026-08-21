@@ -66,6 +66,9 @@ from attribution import (
 )
 import automation_executor as ax  # shared _make_client seam (tests patch ax._make_client)
 from automation_registry import register
+from automations._wordfilter import (  # compliance word filter
+    banned_hit_summary, filter_banned, load_banned_words,
+)
 from db.engine import get_session
 from db.models import FunnelAccountMedia, ListMember, MassMessageFunnel, MassRun
 from event_transcoder import _parse_iso, _to_cents
@@ -232,6 +235,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if not recipients and not user_lists and not online_only and not filters:
         log.warning("send_mass_message: empty audience — skipping")
         return {"status": "skipped", "reason": "empty_audience"}
+
+    # ── Compliance word filter (operator-editable banned-word list) ──────
+    # Scanned ONCE here, before the single OF broadcast call. filter_banned owns the
+    # policy (whole-turn block; empty list → text unchanged); this site only reacts to
+    # the verdict. A block returns cleanly — nothing is minted yet, so there's no
+    # dangling run. Automations that don't route through here scan at their own send
+    # chokepoint with the same helper.
+    _banned, _banned_mode = await load_banned_words(account_id)
+    _scanned, _hits = filter_banned([text], _banned, _banned_mode)
+    if _scanned is None:
+        _uniq = banned_hit_summary(_hits)
+        log.warning("send_mass_message: BLOCKED broadcast — banned word(s) %r "
+                    "account=%s", _uniq, account_id)
+        return {"status": "skipped", "reason": "banned_words", "hits": _uniq}
+    if _hits:
+        log.info("send_mass_message: masked banned word(s) %r account=%s",
+                 banned_hit_summary(_hits), account_id)
+    text = _scanned[0]
 
     price = payload.get("price") or 0
     media_files = _int_list(payload.get("media_files"))

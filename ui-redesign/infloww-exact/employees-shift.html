@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Shift schedule</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -417,12 +416,51 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="sh-css">
+  .sh-note{background:#141414;border:1px solid #262626;border-radius:12px;padding:15px 18px;margin-bottom:18px}
+  .sh-note-t{font-size:14.5px;font-weight:600;color:#cfcfcf;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .sh-note-d{font-size:13.5px;color:#9a9a9a;line-height:1.6;margin-top:7px}
+  .sh-note code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:#9aa8d8}
+  select.sf-drop{appearance:none;-webkit-appearance:none;background:transparent;color:#cfcfcf;font-family:inherit;
+    font-size:14.5px;padding:0 34px 0 14px;cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237a7a7a' stroke-width='2'><path d='M6 9l6 6 6-6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 12px center;display:inline-flex}
+  select.sf-drop option{background:#1c1c1c;color:#e6e6e6}
+  .wknav{width:34px;height:34px;border:1px solid #2a2a2a;border-radius:8px;display:inline-flex;align-items:center;
+    justify-content:center;color:#9a9a9a;cursor:pointer}
+  .wknav:hover{border-color:#3a3a3a;color:#e6e6e6}
+  #sh-weeklbl{justify-content:center;min-width:230px;color:#e6e6e6;cursor:default}
+  .sh-scan{font-size:12.5px;color:#6a6a6a;margin-left:10px}
+  .sh-warn{align-items:flex-start;line-height:1.55}
+  .wc-emp{gap:5px}
+  .wc-av{display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff}
+  .wc-emptot{font-size:11px;color:#7a7a7a}
+  .wc-cell{padding:8px 6px}
+  .shift{background:rgba(65,102,246,.14);border:1px solid rgba(65,102,246,.4);border-left:3px solid #4166f6;
+    border-radius:8px;padding:8px 9px}
+  .shift .hrs{font-size:12px;font-weight:600;color:#cdd8ff;white-space:normal;overflow-wrap:anywhere;line-height:1.35}
+  .shift .cnt{font-size:11.5px;color:#8a93b8;margin-top:3px}
+  .shift .acs{font-size:11px;color:#7a7a7a;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sh-empty{border:1px solid #232323;border-top:0;background:#141414;padding:46px 30px;text-align:center;
+    color:#8a8a8a;font-size:14px;line-height:1.6}
+  .sh-empty b{color:#cfcfcf;display:block;margin-bottom:6px}
+  .loglist{border:1px solid #232323;border-radius:10px;overflow:hidden}
+  .logrow{display:grid;grid-template-columns:200px 190px 1fr 150px;gap:10px;padding:12px 18px;
+    border-top:1px solid #1e1e1e;font-size:13.5px;color:#d0d0d0;background:#161616}
+  .logrow:first-child{border-top:0}
+  .logrow.loghead{background:#1a1a1a;color:#8a8a8a;font-size:12.5px;font-weight:600;
+    text-transform:uppercase;letter-spacing:.05em}
+  .logrow.loghead div{color:#8a8a8a}
+  .logrow .lt{color:#8a8a8a}
+  .logrow .lo{color:#fff}
+  .logrow .la{word-break:break-word}
+  .logrow .lc{color:#8a8a8a}
+</style>
 </head>
 <body>
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -499,7 +537,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -520,10 +558,11 @@
       </div>
       <div class="version">Version 5.7.14</div>
     </aside>
-    <main class="page"><div class="shiftpage"><div class="sh-head"><div class="sh-title">Shift schedule <span class="sh-utc">UTC -10:00</span> <span class="i"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></div><span class="sh-gear"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1L16.5 3h-4l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L6 10.9a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.6c.1-.3.1-.6.1-.9z" stroke-linejoin="round"/></svg></span></div><div class="sh-tabsrow"><div class="sh-tabs"><div class="sh-tab on">Shift schedule</div><div class="sh-tab">Shift history</div></div><button class="btn-blue sh-create">Create shift(s)</button></div><div class="sh-filters"><div class="sf"><span>Employee group:</span><div class="sf-drop">Group<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div><div class="sf"><span>Employee:</span><div class="sf-drop">Employee<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div><div class="sf"><span>Creator:</span><div class="sf-drop">Creator<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div><div class="sf-right"><button class="btn-ghost">Reset</button><button class="btn-blue">Search</button></div></div><div class="sh-date"><span>Date:</span><div class="sf-drop wide">July 2026<span class="cv"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="5" width="16" height="16" rx="2.5"/><path d="M4 9.5h16M8 3v4M16 3v4" stroke-linecap="round"/></svg></span></div></div><div class="sh-warn"><span class="i"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>Shift times displayed do not automatically adjust for daylight saving time changes</div><div class="weekcal"><div class="wc-nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="wc-dh"><div class="dow">Sun</div><div class="dnum">19</div></div><div class="wc-dh"><div class="dow">Mon</div><div class="dnum">20</div></div><div class="wc-dh"><div class="dow">Tue</div><div class="dnum">21</div></div><div class="wc-dh today"><div class="dow">Wed</div><div class="dnum">22</div></div><div class="wc-dh"><div class="dow">Thu</div><div class="dnum">23</div></div><div class="wc-dh"><div class="dow">Fri</div><div class="dnum">24</div></div><div class="wc-dh"><div class="dow">Sat</div><div class="dnum">25</div></div><div class="wc-nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div><div class="wc-body"><div class="wc-emp"><div class="wc-av"></div><div class="wc-emplbl">Ava R. - Aur...</div></div><div class="wc-cell"></div><div class="wc-cell"></div><div class="wc-cell"></div><div class="wc-cell"></div><div class="wc-cell"></div><div class="wc-cell"></div><div class="wc-cell"></div><div class="wc-cell"></div></div></div></main>
+    <main class="page"><div class="shiftpage"><div class="sh-head"><div class="sh-title">Shift schedule <span class="sh-utc" id="sh-tz">local time</span> <span class="i" title="Times are rendered in your browser's zone from tz-naive UTC relay stamps"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></div><span class="sh-gear" id="sh-refresh" title="Reload the audit window"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16M4 20v-4h4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="sh-tabsrow"><div class="sh-tabs" id="sh-tabs"><div class="sh-tab on" data-shtab="week">Observed week</div><div class="sh-tab" data-shtab="log">Recent activity</div></div><button class="btn-blue sh-create" id="sh-create">Create shift(s)</button></div><div class="sh-note"><div class="sh-note-t" id="sh-note">No shift-scheduling backend</div><div class="sh-note-d">This relay has no shift table and no scheduling route — nothing here can be booked, so nothing pretends to be. What it does have is an audit trail of every call each operator made. The grid below is that: the hours each person was actually working, reconstructed from <code>GET /admin/audit</code>.</div></div><div class="sh-filters"><div class="sf"><span>Show:</span><select class="sf-drop" id="sh-kind"><option value="">All operators</option><option value="human">People only</option><option value="auto">Automation only</option></select></div><div class="sf"><span>Employee:</span><select class="sf-drop" id="sh-emp"><option value="">Any employee</option></select></div><div class="sf"><span>Creator:</span><select class="sf-drop" id="sh-acct"><option value="">Any creator</option></select></div><div class="sf-right"><button class="btn-ghost" id="sh-reset">Reset</button><button class="btn-blue" id="sh-today">This week</button></div></div><div class="sh-date"><span>Week:</span><span class="wknav" id="sh-prev" title="Previous week"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="sf-drop wide" id="sh-weeklbl">…</div><span class="wknav" id="sh-next" title="Next week"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="sh-scan" id="sh-live"><span id="sh-scan">scanning audit log…</span></span></div><div class="sh-warn" id="sh-warn"><span class="i"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span><span id="sh-warntxt">Loading…</span></div><div id="sh-weekwrap"><div class="weekcal" id="sh-weekhead"></div><div class="wc-body" id="sh-weekbody"></div></div><div id="sh-logwrap" style="display:none"></div></div></main>
   </div>
   <div class="help"><span class="help-dot"></span><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5z"/></svg></div>
 </div>
+<script src="_shared/fastt.js"></script>
 <script>
   // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
   (function(){
@@ -581,5 +620,6 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="employees-shift.js" id="wire-js"></script>
 </body>
 </html>

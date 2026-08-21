@@ -29,7 +29,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +44,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +86,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -200,7 +198,7 @@
 
   .main{background:#0d0d0d;padding:0;overflow:hidden;display:flex;flex-direction:column}
   .ghead{display:flex;align-items:center;gap:16px;padding:20px 28px 0}
-  .gtitle{font-size:21px;font-weight:600;color:#fff;display:flex;align-items:center;gap:9px}
+  .gtitle{font-size:21px;font-weight:600;color:#fff;display:flex;align-items:center;gap:9px;white-space:nowrap;flex:0 0 auto}
   .gtitle .utc{font-size:14px;font-weight:400;color:#8a8a8a}
   .gtitle .info{color:#6f6f6f;display:flex}
   .csel{display:flex;align-items:center;gap:10px;height:44px;padding:0 12px;border:1px solid #2c2c2c;border-radius:10px;background:#141414;color:#eee;font-size:15px;font-weight:500;cursor:pointer}
@@ -375,12 +373,117 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="vp-css">
+  /* collection state + tools chips in the header */
+  .vp-state{display:flex;align-items:center;gap:8px;height:44px;padding:0 14px;border:1px solid #2c2c2c;
+    border-radius:10px;background:#141414;color:#cfcfcf;font-size:14px;font-weight:500;white-space:nowrap}
+  .vp-state .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;background:#5a5a5a}
+  .vp-state .dot.on{background:#67d1ae}
+  .vp-state .dot.run{background:#e2a94e;animation:vp-pulse 1.1s ease-in-out infinite}
+  @keyframes vp-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .btn-tools{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 16px;border:1px solid #333;
+    border-radius:10px;background:transparent;color:#e6e6e6;font-size:14.5px;font-weight:500;font-family:inherit;cursor:pointer}
+  .btn-tools:hover{border-color:#3a3a3a;background:#161616}
+  /* tile affordances */
+  .vtile{position:relative;cursor:pointer;transition:box-shadow .12s,transform .06s;overflow:hidden}
+  .vtile[data-id]:hover{box-shadow:0 0 0 2px #4166f6 inset}
+  .vtile.pick{box-shadow:0 0 0 2px #4166f6 inset,0 0 0 4px rgba(65,102,246,.25)}
+  .vtile.vhovering{box-shadow:0 0 0 2px #4166f6 inset}
+  .vtile .vhover-cd{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.74);color:#fff;font:700 12px Inter,sans-serif;padding:4px 10px;border-radius:12px;z-index:3;pointer-events:none;display:inline-flex;align-items:center;gap:5px}
+  .vtile .vhover-cd::before{content:'';width:10px;height:10px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:vspin .7s linear infinite}
+  @keyframes vspin{to{transform:rotate(360deg)}}
+  .vt-badge{position:absolute;bottom:8px;right:8px;padding:3px 7px;border-radius:6px;background:rgba(0,0,0,.66);
+    color:#fff;font-size:11px;font-weight:600;line-height:1;pointer-events:none;display:flex;align-items:center;gap:4px}
+  .vt-dot{position:absolute;top:8px;left:8px;width:9px;height:9px;border-radius:50%;background:#67d1ae;
+    box-shadow:0 0 0 2px rgba(0,0,0,.4);pointer-events:none}
+  .vt-check{position:absolute;top:8px;right:8px;width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.75);
+    background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;color:transparent;font-size:13px;font-weight:800}
+  .vtile.sel .vt-check{background:#4166f6;border-color:#4166f6;color:#fff}
+  .vtile.sel{box-shadow:0 0 0 2px #4166f6 inset}
+  /* video preview affordances — parity with the chat vault picker */
+  .vtile .vplay{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;
+    border-radius:50%;background:rgba(0,0,0,.55);display:grid;place-items:center;cursor:pointer;
+    border:1.5px solid rgba(255,255,255,.85);transition:background .12s,transform .12s;z-index:3}
+  .vtile .vplay:hover{background:#4166f6;transform:translate(-50%,-50%) scale(1.08)}
+  .vtile .vplay svg{width:18px;height:18px;margin-left:2px;color:#fff}
+  .vtile .vlock{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.7);border-radius:6px;
+    padding:2px 6px;font-size:11px;font-weight:700;z-index:3}
+  .vpd-play{cursor:pointer}
+  .vid-back{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9996;display:flex;
+    align-items:center;justify-content:center;padding:24px}
+  .vid-wrap{position:relative;display:flex;flex-direction:column;align-items:center;max-width:90vw}
+  .vid-wrap video,.vid-wrap #vpFrame{max-width:88vw;max-height:80vh;border-radius:12px;background:#000;display:block}
+  .vid-x{position:absolute;top:-14px;right:-14px;width:34px;height:34px;border-radius:50%;background:#1c1c1c;
+    border:1px solid #3a3a3a;color:#fff;font-size:20px;line-height:1;display:grid;place-items:center;cursor:pointer;z-index:2}
+  .vid-x:hover{background:#2a2a2a}
+  .vid-note{color:#c9c9c9;font-size:12.5px;margin-top:12px;text-align:center;max-width:520px;line-height:1.5}
+  .vid-frames{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;justify-content:center}
+  .vid-frames b{width:8px;height:8px;border-radius:50%;background:#3a3a3a;cursor:pointer}
+  .vid-frames b.on{background:#ec4b9b}
+  /* folder row menu button */
+  .vcat .fmenu{position:absolute;right:10px;top:12px;display:none;gap:2px}
+  .vcat:hover .fmenu{display:flex}
+  .vcat .fmenu button{width:26px;height:26px;border:0;border-radius:6px;background:transparent;color:#9a9a9a;
+    cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .vcat .fmenu button:hover{background:#2a2a2a;color:#fff}
+  /* slide-over drawer */
+  .vp-scrim{position:absolute;inset:0;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .16s;z-index:70}
+  .vp-scrim.show{opacity:1;pointer-events:auto}
+  .vp-draw{position:absolute;top:0;right:0;bottom:0;width:430px;background:#181818;border-left:1px solid #2b2b2b;
+    transform:translateX(100%);transition:transform .18s ease;z-index:71;display:flex;flex-direction:column}
+  .vp-draw.show{transform:translateX(0)}
+  .vpd-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid #232323;flex:0 0 auto}
+  .vpd-head .t{font-size:14px;font-weight:600;color:#fff}
+  .vpd-x{margin-left:auto;width:30px;height:30px;border:1px solid #333;border-radius:8px;background:transparent;
+    color:#9a9a9a;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .vpd-x:hover{color:#fff;background:#222}
+  .vpd-body{flex:1;min-height:0;overflow-y:auto;padding:16px}
+  .vpd-media{width:100%;border-radius:10px;overflow:hidden;background:#000;margin-bottom:14px;position:relative;min-height:120px;
+    display:flex;align-items:center;justify-content:center}
+  .vpd-media img{width:100%;max-height:340px;object-fit:contain;display:block}
+  .vpd-play{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+  .vpd-play span{width:54px;height:54px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.7);
+    display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px;padding-left:4px}
+  .vpd-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+  .vpd-chip{padding:4px 9px;border-radius:7px;background:#212121;color:#c7c7c7;font-size:12.5px}
+  .vpd-lbl{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8a8a8a;margin:12px 0 5px}
+  .vpd-in{width:100%;padding:9px 11px;border-radius:8px;background:#141414;border:1px solid #2b2b2b;color:#eee;
+    font-family:inherit;font-size:14px;outline:none}
+  .vpd-in:focus{border-color:#4166f6}
+  textarea.vpd-in{resize:vertical;min-height:56px}
+  .vpd-row{display:flex;gap:10px}
+  .vpd-row>div{flex:1}
+  .vpd-note{font-size:12.5px;color:#8a8a8a;line-height:1.5;background:#141414;border:1px solid #262626;
+    border-radius:8px;padding:11px 13px}
+  .vpd-bar{display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid #232323;flex:0 0 auto;flex-wrap:wrap}
+  .vpd-lock{margin-left:5px;font-size:10px;color:#e2a94e}
+  .vpd-aifld{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12.5px;margin-top:6px}
+  .vpd-aifld dt{color:#8a8a8a;white-space:nowrap}
+  .vpd-aifld dd{color:#e8e8e8;margin:0}
+  /* tools drawer reuses vp-draw */
+  .tl-sec{border:1px solid #262626;border-radius:10px;padding:14px;margin-bottom:12px;background:#141414}
+  .tl-sec h4{font-size:14px;font-weight:600;color:#fff;margin:0 0 4px;display:flex;align-items:center;gap:8px}
+  .tl-sec p{font-size:12.5px;color:#8a8a8a;line-height:1.5;margin:0 0 10px}
+  .tl-run{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 14px;border:1px solid #333;border-radius:8px;
+    background:#1c1c1c;color:#eee;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer}
+  .tl-run:hover:not(:disabled){border-color:#4166f6}
+  .tl-run:disabled{opacity:.5;cursor:default}
+  .tl-run.busy{color:#e2a94e;border-color:#3a3116}
+  .tl-cnt{font-size:12.5px;color:#c7c7c7;margin-left:auto}
+  /* selection action bar */
+  .vp-selbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 22px 12px;padding:11px 14px;
+    border:1px solid rgba(65,102,246,.4);background:rgba(65,102,246,.07);border-radius:10px}
+  .vp-selbar .n{font-size:14px;font-weight:600;color:#fff}
+  .vp-selbar select,.vp-selbar button{height:34px;border-radius:8px;font-family:inherit;font-size:13px;cursor:pointer}
+  .vp-selbar select{background:#141414;border:1px solid #2b2b2b;color:#eee;padding:0 8px}
+  .vp-selbar .lnk{background:transparent;border:0;color:#8a8a8a}
+  .vp-selbar .lnk:hover{color:#fff}
+</style>
 </head>
 <body>
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
     <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
     <div class="modelswap" id="modelswap">
@@ -432,7 +535,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -457,14 +560,14 @@
     <main class="main">
       <div class="ghead"><div class="gtitle">Vault Pro</div><div class="csel"><span class="av"><span class="odot"></span></span>Aria<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="hact"><div class="learn"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 6c-2-1.5-5-1.5-7 0v11c2-1.5 5-1.5 7 0M12 6c2-1.5 5-1.5 7 0v11c-2-1.5-5-1.5-7 0M12 6v11" stroke-linejoin="round"/></svg>Learn</div><button class="btn-blue"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>Add media</button></div></div>
       <div class="gcols">
-        <aside class="cpanel" style="padding:14px 12px;gap:0">
+        <aside class="cpanel" style="padding:14px 12px;gap:0" id="vp-rail">
           <div class="vcustom"><div class="l">Custom <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h13M4 12h9M4 17h5" stroke-linecap="round"/></svg></div><div class="r"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg></div></div>
           <div class="vcat sel"><div class="vn">All media</div><div class="vc"><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-4 3 2 4-4 4 4" stroke-linejoin="round"/></svg> 837</span><span style="color:#4a4a4a">&middot;</span><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z" stroke-linejoin="round"/></svg> 105</span><span style="color:#4a4a4a">&middot;</span><span class="m"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" stroke-linecap="round"/></svg> 1</span><span style="color:#4a4a4a">&middot;</span><span class="m"><span class="gif">GIF</span> 2</span></div></div><div class="vcat"><div class="vn">Highlights</div><div class="vc"><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-4 3 2 4-4 4 4" stroke-linejoin="round"/></svg> 97</span><span style="color:#4a4a4a">&middot;</span><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z" stroke-linejoin="round"/></svg> 48</span></div><span class="dots"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></span></div><div class="vcat"><div class="vn">New content</div><div class="vc"><span class="mut" style="color:#6a6a6a">empty</span></div><span class="dots"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></span></div><div class="vcat"><div class="vn">Promo set</div><div class="vc"><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-4 3 2 4-4 4 4" stroke-linejoin="round"/></svg> 119</span><span style="color:#4a4a4a">&middot;</span><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z" stroke-linejoin="round"/></svg> 10</span></div><span class="dots"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></span></div><div class="vcat"><div class="vn">Teasers</div><div class="vc"><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-4 3 2 4-4 4 4" stroke-linejoin="round"/></svg> 58</span><span style="color:#4a4a4a">&middot;</span><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z" stroke-linejoin="round"/></svg> 2</span></div><span class="dots"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></span></div><div class="vcat"><div class="vn">Backgrounds</div><div class="vc"><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z" stroke-linejoin="round"/></svg> 3</span></div><span class="dots"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></span></div><div class="vcat"><div class="vn">AI set</div><div class="vc"><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-4 3 2 4-4 4 4" stroke-linejoin="round"/></svg> 29</span><span style="color:#4a4a4a">&middot;</span><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z" stroke-linejoin="round"/></svg> 6</span></div><span class="dots"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></span></div><div class="vcat"><div class="vn">Streams</div><div class="vc"><span class="mut" style="color:#6a6a6a">empty</span></div></div><div class="vcat"><div class="vn">Uploads</div><div class="vc"><span class="mut" style="color:#6a6a6a">empty</span></div></div><div class="vcat"><div class="vn">Stories</div><div class="vc"><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-4 3 2 4-4 4 4" stroke-linejoin="round"/></svg> 3</span></div></div><div class="vcat"><div class="vn">Posts</div><div class="vc"><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-4 3 2 4-4 4 4" stroke-linejoin="round"/></svg> 44</span><span style="color:#4a4a4a">&middot;</span><span class="m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z" stroke-linejoin="round"/></svg> 12</span></div></div>
         </aside>
         <section class="rpanel">
-          <div class="vtoprow"><div class="capsel">Caption <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4166f6" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="vsearch"><input placeholder="Search media by PPV caption"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4166f6" stroke-width="1.9"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg></div><div class="recent">Recent <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h13M4 12h9M4 17h5" stroke-linecap="round"/></svg></div></div>
+          <div class="vtoprow"><div class="capsel">Caption <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4166f6" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="vsearch"><input placeholder="Search media by PPV caption" id="vp-q"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4166f6" stroke-width="1.9"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg></div><div class="recent">Recent <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h13M4 12h9M4 17h5" stroke-linecap="round"/></svg></div></div>
           <div class="mrow"><span class="ml2">Media:</span><span class="seg-pill on" onclick="segpick(this)">All</span><span class="seg-pill" onclick="segpick(this)">Photo</span><span class="seg-pill" onclick="segpick(this)">Video</span><span class="seg-pill" onclick="segpick(this)">GIF</span><span class="seg-pill" onclick="segpick(this)">Audio</span><span class="rgt"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.7"><path d="M4 13a8 8 0 0 1 16 0"/><rect x="3" y="13" width="4" height="7" rx="2"/><rect x="17" y="13" width="4" height="7" rx="2"/></svg><div class="viewtog"><span class="on"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span><span><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" stroke-linecap="round"/></svg></span></div></span></div>
-          <div class="vgrid"><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div></div>
+          <div class="vgrid" id="vp-grid"><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div><div class="vtile"></div></div>
         </section>
       </div>
     </main>
@@ -529,5 +632,8 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="_shared/vault-media.js"></script>
+<script src="growth-vault-pro.js" id="wire-js"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Settings</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -20,13 +21,11 @@
     -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
   body{display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
   a{text-decoration:none;color:inherit}
-  .app{position:relative;width:1440px;height:900px;overflow:hidden;background:#161616;color:var(--text);display:flex;flex-direction:column}
+  /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+  .app{position:relative;width:1440px;height:100vh;overflow:hidden;background:#161616;color:var(--text);display:flex;flex-direction:column}
 
   /* ============ TOP BAR (verbatim from shell) ============ */
   .topbar{height:52px;flex:0 0 52px;background:var(--black);display:flex;align-items:center;padding:0 18px 0 20px;gap:14px}
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}.traffic .y{background:#febc2e}.traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -47,17 +46,44 @@
   /* ============ SHELL ============ */
   .shell{flex:1;display:flex;min-height:0}
 
-  /* ============ COLLAPSED ICON RAIL ============ */
-  .railbar{width:70px;flex:0 0 70px;background:#000;display:flex;flex-direction:column;align-items:center;padding:14px 0 12px}
-  .rail-logo{width:42px;height:42px;border-radius:12px;background:#141821;display:flex;align-items:center;justify-content:center;position:relative;margin-bottom:12px}
-  .rail-logo .pink{position:absolute;top:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:#ec4b9b;border:2px solid #000}
-  .rail-icons{display:flex;flex-direction:column;align-items:center;gap:5px;width:100%}
-  .rail-item{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#787878}
-  .rail-item:hover{background:#141414;color:#cfcfcf}
-  .rail-item.active{background:#1f1f1f;color:#fff}
-  .rail-item.cur{background:#171a24;color:var(--accent)}
-  .rail-div{width:26px;height:1px;background:#242424;margin:9px 0}
-  .rail-spacer{flex:1}
+  /* ============ SIDEBAR (canonical — copied from dashboard.html) ============ */
+  .sidebar{width:252px;flex:0 0 252px;background:var(--black);display:flex;flex-direction:column;padding:16px 14px 16px}
+  .creator{display:flex;align-items:center;gap:11px;padding:11px 12px;background:#181818;border:1px solid #2e2e2e;border-radius:12px;margin-bottom:16px}
+  .of-logo{width:30px;height:30px;border-radius:9px;background:linear-gradient(160deg,#3b82f6,#1d5ff0);display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .creator .name{font-size:15px;font-weight:600;color:#fff}
+  .creator .pink{width:8px;height:8px;border-radius:50%;background:#ec4b9b;margin-left:auto}
+  .creator .cv{color:var(--muted);display:flex}
+  .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
+  .nav-item{display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;text-decoration:none}
+  .nav-item:hover{background:#141414}
+  .nav-item .ico{width:22px;display:flex;align-items:center;justify-content:center;flex:0 0 22px;color:#9a9a9a}
+  .nav-item .lbl{flex:1;white-space:nowrap}
+  .nav-item .cv{color:#666;display:flex}
+  .nav-item.active{background:#1c1c1c;border:1px solid #2b2b2b;color:#fff;box-shadow:0 1px 0 rgba(255,255,255,.04), 0 2px 8px rgba(0,0,0,.4)}
+  .nav-item.active .ico{color:#fff}
+  .badge{background:#f2295b;color:#fff;font-size:11px;font-weight:700;line-height:1;padding:3px 5px;border-radius:9px;min-width:20px;text-align:center;flex:0 0 auto}
+  .popout{width:22px;height:22px;border:1px solid #333;border-radius:7px;margin-left:-2px;display:flex;align-items:center;justify-content:center;color:#9a9a9a;flex:0 0 auto}
+  .divider{height:1px;background:#1f1f1f;margin:12px 4px}
+  .spacer{flex:1}
+  .version{font-size:12.5px;color:#5a5a5a;padding:14px 12px 2px}
+  .nav{flex:1;min-height:0;overflow-y:auto;scrollbar-width:none}
+  .nav::-webkit-scrollbar{display:none}
+  .sbfoot{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;padding-top:8px;border-top:1px solid #1f1f1f;margin-top:6px}
+  /* ---- submenu ---- */
+  .nav-item.has-sub{cursor:pointer}
+  .nav-item.open{color:#fff;background:#141414}
+  .nav-item.open .ico{color:#fff}
+  .nav-item .chev svg{transition:transform .15s}
+  .nav-item.open .chev svg{transform:rotate(180deg)}
+  .subnav{display:none;flex-direction:column;gap:2px;padding-left:8px;margin:2px 0}
+  .subnav.open{display:flex}
+  .sub-item{display:flex;align-items:center;gap:11px;height:42px;padding:0 11px;border-radius:10px;color:var(--nav);font-size:14.5px;font-weight:500;cursor:pointer;text-decoration:none}
+  .sub-item .ico{width:22px;display:flex;align-items:center;justify-content:center;flex:0 0 22px;color:#8f8f8f}
+  .sub-item:hover{background:#141414}
+  .sub-item.active{background:#1c1c1c;border:1px solid #2b2b2b;color:#fff}
+  .sub-item.active .ico{color:#fff}
 
   /* ============ OVERLAY ============ */
   .overlay{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;background:#161616}
@@ -228,13 +254,89 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="st-css">
+  /* ---- settings: live-data additions (additive, same palette) ---- */
+  .loadnote{color:#8a8a8a;font-size:14.5px;padding:18px 0}
+  .card2{background:#191919;border:1px solid #2b2b2b;border-radius:12px;padding:22px 24px;margin-bottom:20px}
+  .card2 > .t{font-size:16px;font-weight:600;color:#fff;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .card2 > .d{font-size:13.5px;color:#8a8a8a;margin-top:7px;line-height:1.55}
+  .card2 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:#9aa8d8}
+  .kv{display:grid;grid-template-columns:210px 1fr;gap:10px 18px;margin-top:16px;font-size:14px}
+  .kv .k{color:#8a8a8a}
+  .kv .v{color:#eee;word-break:break-word}
+  .kv .v.good{color:#67d1ae}
+  .kv .v.warn{color:#e0b25a}
+  .kv .v.bad{color:#e05b5b}
+  .statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:14px;margin-top:18px}
+  .stat{background:#141414;border:1px solid #262626;border-radius:11px;padding:15px 16px}
+  .stat .sv{font-size:23px;font-weight:700;color:#fff;letter-spacing:-.4px}
+  .stat .sv.accent{color:#4166f6}
+  .stat .sv.green{color:#67d1ae}
+  .stat .sl{font-size:12.5px;color:#8a8a8a;margin-top:5px;line-height:1.4}
+  .idcard{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+  .idcard .pic{width:150px;height:150px;border-radius:12px;background:#242424;overflow:hidden;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;color:#6f6f6f;font-size:56px;font-weight:700}
+  .idcard .pic img{width:100%;height:100%;object-fit:cover;display:block}
+  .idcard .who{flex:1;min-width:280px}
+  .vchip{display:inline-flex;align-items:center;gap:5px;font:600 10.5px Inter,sans-serif;color:#67d1ae;
+    background:rgba(103,209,174,.12);border:1px solid rgba(103,209,174,.35);border-radius:99px;padding:2px 8px}
+  .covbar{height:12px;border-radius:7px;background:#242424;overflow:hidden;display:flex;margin-top:14px}
+  .covbar i{display:block;height:100%}
+  .covlegend{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:#8a8a8a}
+  .covlegend b{color:#e6e6e6;font-weight:600}
+  .lg{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:6px}
+  .minitbl{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:14px}
+  .minitbl th{text-align:left;color:#8a8a8a;font-weight:600;padding:9px 10px;border-bottom:1px solid #2a2a2a;
+    font-size:12.5px;text-transform:uppercase;letter-spacing:.05em}
+  .minitbl td{padding:11px 10px;border-bottom:1px solid #222;color:#d8d8d8;vertical-align:top}
+  .minitbl tr:last-child td{border-bottom:0}
+  .minitbl td .sub{color:#7a7a7a;font-size:12px;margin-top:3px}
+  .minitbl a.act{color:#6d8bfb;cursor:pointer;font-weight:500}
+  .scroll240{max-height:260px;overflow-y:auto}
+  .sel2{height:38px;background:#141414;border:1px solid #333;border-radius:8px;color:#e6e6e6;
+    font-family:inherit;font-size:13.5px;padding:0 10px}
+  .inp2{height:38px;background:#141414;border:1px solid #333;border-radius:8px;color:#e6e6e6;
+    font-family:inherit;font-size:13.5px;padding:0 12px}
+  .btn2{height:38px;padding:0 15px;border-radius:8px;border:1px solid #3a3a3a;background:#1c1c1c;color:#e8e8e8;
+    font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+  .btn2.pri{background:#4166f6;border-color:#4166f6;color:#fff}
+  .btn2.dim{color:#8a8a8a}
+  .rowline{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .rowline .sp{flex:1}
+  .chartbox{margin-top:18px;background:#141414;border:1px solid #262626;border-radius:12px;padding:18px 18px 10px}
+  .chartbox svg{display:block;width:100%;height:auto}
+  .taglist{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .tag{background:#232323;border:1px solid #333;border-radius:7px;padding:3px 9px;font-size:12.5px;color:#cfcfcf}
+  .fselect select{width:100%;height:100%;background:transparent;border:0;color:#eaeaea;font-family:inherit;
+    font-size:15px;outline:none;appearance:none;-webkit-appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2'><path d='M6 9l6 6 6-6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 2px center;padding-right:26px}
+  .fselect select option{background:#1b1b1b;color:#eaeaea}
+  .fselect.wired{padding-right:12px}
+  .chartlegend{display:flex;gap:20px;flex-wrap:wrap;margin-top:2px;padding:0 4px 10px;font-size:12.5px;color:#8a8a8a}
+  .chartlegend b{color:#e6e6e6;font-weight:600}
+  .dashrule{display:inline-block;width:16px;border-top:2px dashed #e0b25a;vertical-align:middle;margin-right:6px}
+  /* modal (shared with the access editor) */
+  .smod-back{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9990;display:flex;align-items:center;justify-content:center}
+  .smod{width:660px;max-width:92vw;max-height:80vh;background:#1c1c1c;border:1px solid #333;border-radius:14px;
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .smod-h{display:flex;align-items:center;gap:10px;padding:18px 22px;border-bottom:1px solid #2a2a2a;font-size:17px;font-weight:600;color:#fff}
+  .smod-h .x{margin-left:auto;color:#8a8a8a;cursor:pointer;font-size:22px;line-height:1;padding:0 4px}
+  .smod-b{padding:18px 22px;overflow-y:auto;font-size:14px;color:#d0d0d0;line-height:1.5}
+  .smod-f{padding:14px 22px;border-top:1px solid #2a2a2a;display:flex;gap:10px;justify-content:flex-end;align-items:center}
+  .smod-f .lft{margin-right:auto;color:#8a8a8a;font-size:13px}
+  .acheck{display:flex;align-items:center;gap:11px;padding:10px 4px;border-bottom:1px solid #222;cursor:pointer}
+  .cbx2{width:18px;height:18px;border:1.6px solid #4a4a4a;border-radius:4px;position:relative;flex:0 0 auto}
+  .cbx2.on{background:#4166f6;border-color:#4166f6}
+  .cbx2.on::after{content:"";position:absolute;left:5px;top:1px;width:4px;height:9px;border:solid #fff;
+    border-width:0 2px 2px 0;transform:rotate(45deg)}
+</style>
 </head>
 <body>
 <div class="app">
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
     </div>
@@ -280,30 +382,48 @@
   <!-- ================= SHELL ================= -->
   <div class="shell">
 
-    <!-- ===== COLLAPSED ICON RAIL ===== -->
-    <aside class="railbar">
-      <a class="rail-logo" href="dashboard.html">
-        <svg width="22" height="22" viewBox="0 0 28 28" fill="none"><circle cx="15" cy="14" r="7.5" stroke="#4166f6" stroke-width="3"/><circle cx="15" cy="14" r="2.5" fill="#4166f6"/><path d="M7.5 14 H2.5" stroke="#4166f6" stroke-width="3" stroke-linecap="round"/></svg>
+    <!-- ============ SIDEBAR (canonical — copied from dashboard.html) ============ -->
+    <aside class="sidebar">
+      <div class="creator">
+        <div class="of-logo">
+          <svg width="20" height="20" viewBox="0 0 28 28" fill="none">
+            <circle cx="15" cy="14" r="7.5" stroke="#fff" stroke-width="3"/>
+            <circle cx="15" cy="14" r="2.5" fill="#fff"/>
+            <path d="M7.5 14 H2.5" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="name">OnlyFans</div>
         <span class="pink"></span>
-      </a>
-      <div class="rail-icons">
-        <a class="rail-item" href="dashboard.html" title="Dashboard"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></a>
-        <a class="rail-item" href="ofmanager.html" title="OF Manager"><svg width="21" height="21" viewBox="0 0 24 24" fill="none"><path d="M12 3c-4 0-8 3-9 8 5 0 9-3 9-8z" fill="currentColor"/><circle cx="15" cy="14" r="5.5" stroke="currentColor" stroke-width="2"/><circle cx="15" cy="14" r="1.8" fill="currentColor"/></svg></a>
-        <a class="rail-item" href="analytics-creator-reports.html" title="Analytics"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 20V10M12 20V4M18 20v-7" stroke-linecap="round"/></svg></a>
-        <a class="rail-item" href="messages.html" title="Messages Pro"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l3.2 5.6L21 12l-5.8 3.4L12 21l-3.2-5.6L3 12l5.8-3.4L12 3z" stroke-linejoin="round"/></svg></a>
-        <a class="rail-item" href="growth-smart-messages.html" title="Growth"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4 4 3 3-3 4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
-        
+        <span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       </div>
-      <div class="rail-div"></div>
-      <div class="rail-icons">
-        <a class="rail-item" href="creators-manage.html" title="Creators"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="12" cy="10" r="2.4"/><path d="M8 16c.6-2 2.2-2.8 4-2.8s3.4.8 4 2.8" stroke-linecap="round"/></svg></a>
-        <a class="rail-item" href="employees-manage.html" title="Employees"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2.5"/><circle cx="12" cy="10" r="2.2"/><path d="M8.5 16c.6-1.8 2-2.5 3.5-2.5s2.9.7 3.5 2.5" stroke-linecap="round"/></svg></a>
+
+      <nav class="nav">
+        <a class="nav-item" href="dashboard.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span><span class="lbl">Dashboard</span></a>
+        <div class="nav-item has-sub" data-sub="ofm"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><path d="M14 7l3 3"/></svg></span><span class="lbl">OF Manager</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ofm"><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Home</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">New post</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Notifications</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Messages Basic</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Queue</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Collections</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Statements</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Statistics</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Bank</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">My profile</span></a><a class="sub-item" href="ofmanager.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">OF settings</span></a></div>
+        <div class="nav-item has-sub" data-sub="ana"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 20V10M12 20V4M18 20v-7" stroke-linecap="round"/></svg></span><span class="lbl">Analytics</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ana"><a class="sub-item" href="analytics-creator-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="10" r="2.3"/><path d="M8.5 16c.5-1.7 1.8-2.5 3.5-2.5s3 .8 3.5 2.5" stroke-linecap="round"/></svg></span><span class="lbl">Creator reports</span></a><a class="sub-item" href="analytics-employee-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M6 15.5c.4-1.5 1.5-2.2 3-2.2s2.6.7 3 2.2" stroke-linecap="round"/><path d="M14.5 9.5h3.5M14.5 13h3.5" stroke-linecap="round"/></svg></span><span class="lbl">Employee reports</span></a><a class="sub-item" href="analytics-fan-reports.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg></span><span class="lbl">Fan reports</span></a><a class="sub-item" href="analytics-message-dashboard.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l2-6 4 12 2-6h6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Message dashboard</span></a></div>
+        <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge" id="msg-badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
+        <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
+
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
+        <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
+        <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
+        <div class="nav-item has-sub" data-sub="tip"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M4 12h16M12 9v11" stroke-linecap="round"/><path d="M12 9c-4 0-5-1.6-5-3 0-1.2 1-2 2.2-2C11 4 12 6 12 9zm0 0c4 0 5-1.6 5-3 0-1.2-1-2-2.2-2C13 4 12 6 12 9z"/></svg></span><span class="lbl">Tips &amp; Rewards</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-tip"><a class="sub-item" href="tips-rewards.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tip Rewards</span></a><a class="sub-item" href="tips-ask.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tip Ask</span></a><a class="sub-item" href="tips-image-reply.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Image Reply &amp; Teasers</span></a><a class="sub-item" href="tips-make-right.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Make It Right</span></a></div>
+        <div class="nav-item has-sub" data-sub="fan"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="10" r="2.3"/><path d="M8.5 16c.5-1.7 1.8-2.5 3.5-2.5s3 .8 3.5 2.5" stroke-linecap="round"/></svg></span><span class="lbl">Fan Intelligence</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-fan"><a class="sub-item" href="fans-auto-learn.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-learn Fans</span></a><a class="sub-item" href="fans-sheets-export.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Sheets Export</span></a><a class="sub-item" href="fans-restrictions.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Restrictions</span></a></div>
+        <div class="nav-item has-sub" data-sub="con"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5" stroke-dasharray="2.6 2.4"/><path d="M12 9v6M9 12h6" stroke-linecap="round"/></svg></span><span class="lbl">Content &amp; Stories</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-con"><a class="sub-item" href="content-auto-posts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Posts</span></a><a class="sub-item" href="auto-stories.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Stories</span></a><a class="sub-item" href="content-create-post.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Create Post</span></a></div>
+        <div class="nav-item has-sub" data-sub="vai"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.5l1.7 4 4 1.7-4 1.7L12 15l-1.7-4L6.3 9.2l4-1.7z" stroke-linejoin="round"/><path d="M18 14.5l.9 2 2 .9-2 .9-.9 2-.9-2-2-.9 2-.9z" stroke-linejoin="round"/></svg></span><span class="lbl">Vault AI</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-vai"><a class="sub-item" href="vault-ai.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Manage</span></a><a class="sub-item" href="vault-describe.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-describe</span></a><a class="sub-item" href="vault-reminders.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reminder Cards</span></a><a class="sub-item" href="vault-review.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Review</span></a></div>
+
+        <div class="divider"></div>
+
+        <div class="nav-item has-sub" data-sub="cre"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="10" r="3"/><path d="M6.5 18.5a6 6 0 0 1 11 0"/></svg></span><span class="lbl">Creators</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-cre"><a class="sub-item" href="creators-manage.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="10" r="2.3"/><path d="M8.5 16c.5-1.7 1.8-2.5 3.5-2.5s3 .8 3.5 2.5" stroke-linecap="round"/></svg></span><span class="lbl">Manage creators</span></a><a class="sub-item" href="creators-proxy.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="6" rx="1.8"/><rect x="3" y="13" width="18" height="6" rx="1.8"/><circle cx="7" cy="8" r=".9" fill="currentColor" stroke="none"/><circle cx="7" cy="16" r=".9" fill="currentColor" stroke="none"/></svg></span><span class="lbl">Custom proxy</span></a></div>
+        <div class="nav-item has-sub" data-sub="emp"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="2"/><path d="M6 16c.5-1.8 1.7-2.5 3-2.5s2.5.7 3 2.5" stroke-linecap="round"/><path d="M14.5 9h4M14.5 13h4" stroke-linecap="round"/></svg></span><span class="lbl">Employees</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-emp"><a class="sub-item" href="employees-manage.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M6 15.5c.4-1.5 1.5-2.2 3-2.2s2.6.7 3 2.2" stroke-linecap="round"/><path d="M14.5 9.5h3.5M14.5 13h3.5" stroke-linecap="round"/></svg></span><span class="lbl">Manage employees</span></a><a class="sub-item" href="employees-shift.html"><span class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Shift schedule</span></a></div>
+
+      </nav>
+      <div class="sbfoot">
+        <a class="nav-item" href="settings.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke-linecap="round"/><circle cx="15" cy="7" r="2.4"/><circle cx="8" cy="17" r="2.4"/></svg></span><span class="lbl">Settings</span></a>
+        <a class="nav-item" href="#"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.8 2.8 0 0 1 5.3 1c0 1.8-2.7 2.2-2.7 3.8" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg></span><span class="lbl">Help center</span></a>
       </div>
-      <div class="rail-spacer"></div>
-      <div class="rail-icons">
-        <a class="rail-item cur" href="settings.html" title="Settings"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke-linecap="round"/><circle cx="15" cy="7" r="2.4"/><circle cx="8" cy="17" r="2.4"/></svg></a>
-        <a class="rail-item" href="#" title="Help center"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.8 2.8 0 0 1 5.3 1c0 1.8-2.7 2.2-2.7 3.8" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg></a>
-      </div>
+      <div class="version">Version 5.7.14</div>
     </aside>
 
     <!-- ===== OVERLAY ===== -->
@@ -337,208 +457,98 @@
           <!-- YOUR ACCOUNT -->
           <section class="panel show" data-panel="account">
             <div class="panel-head line">
-              <div class="panel-title">Your account</div>
+              <div class="panel-title" id="st-acct-title">Your account</div>
               <div class="panel-actions">
-                <button class="btn btn-outline">Change password</button>
-                <button class="btn btn-primary">Edit</button>
+                <button class="btn btn-outline" id="st-acct-signin">Sign in to fastt</button>
+                <button class="btn btn-primary" id="st-acct-rename">Rename creator</button>
               </div>
             </div>
-            <div class="subhead">Personal info</div>
-            <div class="field">
-              <span class="flabel">Picture</span>
-              <div class="picbox">if</div>
-            </div>
-            <div class="field">
-              <label class="flabel"><span class="req">*</span>Name</label>
-              <input class="finput" value="Alex Morgan" readonly>
-            </div>
-            <div class="field">
-              <label class="flabel">Email</label>
-              <input class="finput" value="chatter@agency.com" readonly>
-            </div>
-            <div class="field">
-              <label class="flabel"><span class="req">*</span>Team name</label>
-              <input class="finput" value="Aurora Agency" readonly>
-            </div>
-            <div class="field">
-              <label class="flabel">Telegram username (recommended)</label>
-              <input class="finput" placeholder="" >
-            </div>
+            <div id="st-acct-body" class="loadnote">Loading creator identity…</div>
           </section>
 
           <!-- YOUR PREFERENCES -->
           <section class="panel" data-panel="preferences">
-            <div class="panel-head line"><div class="panel-title">Your preferences</div></div>
-            <div class="subhead">Time settings</div>
-            <div class="field">
-              <label class="flabel">Regular time zone</label>
-              <div class="fselect">(UTC-10:00) Hawaii<span class="cv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
-            </div>
-            <div class="field">
-              <label class="flabel">Agency's time zone for creator reports, fan reports, tracking links and free trial links <span class="info"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span></label>
-              <div class="fselect">(UTC-10:00) Hawaii<span class="cv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
-            </div>
-            <div class="field">
-              <label class="flabel">Start weekly reports on</label>
-              <div class="fselect">Sunday<span class="cv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
-            </div>
-            <div class="field">
-              <label class="flabel">Language Settings <span class="beta">Beta</span></label>
-              <div class="fselect">English<span class="cv"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
-            </div>
-            <div class="field" style="max-width:760px">
-              <label class="flabel">Display</label>
-              <div class="disprow">
-                <div class="discard">
-                  <div class="prev"><div class="prow"><span class="pdot"></span><span class="pbar"></span></div><div class="prow"><span class="pdot"></span><span class="pbar sm b"></span></div></div>
-                  <div class="foot"><span class="radio"></span>Light mode</div>
-                </div>
-                <div class="discard dark sel">
-                  <div class="prev"><div class="prow"><span class="pdot"></span><span class="pbar"></span></div><div class="prow"><span class="pdot"></span><span class="pbar sm b"></span></div></div>
-                  <div class="foot"><span class="radio on"></span>Dark mode</div>
-                </div>
-              </div>
-            </div>
-            <div class="synccard">
-              <div class="t">Synchronize platform display settings</div>
-              <div class="d">Update your platform's display settings to match your chosen preferences on Infloww</div>
-              <div class="syncrow"><span class="nm">OnlyFans</span><span class="sw on"></span></div>
-            </div>
+            <div class="panel-head line"><div class="panel-title" id="st-pref-title">Your preferences</div></div>
+            <div id="st-pref-body" class="loadnote">Loading creator config…</div>
           </section>
 
           <!-- SECURITY (ORG) -->
           <section class="panel" data-panel="secorg">
             <div class="panel-head"><div class="panel-title">Security (organization)</div></div>
-            <div class="setrow">
-              <div class="txt"><div class="t">Two-factor authentication</div><div class="d">Not enabled</div></div>
-              <span class="sw sm"></span>
+            <div class="setrow" id="st-2fa">
+              <div class="txt"><div class="t">Two-factor authentication</div>
+                <div class="d" id="st-2fa-d">Checking relay sign-in…</div></div>
+              <span class="sw sm" id="st-2fa-sw"></span>
             </div>
+            <div id="st-secrets"></div>
+            <div id="st-audit"></div>
           </section>
 
           <!-- SECURITY (PERSONAL) -->
           <section class="panel" data-panel="secpers">
-            <div class="empty" style="padding:150px 0">
-              <div style="width:64px;height:64px;border-radius:50%;background:#3a3a3a;display:flex;align-items:center;justify-content:center;color:#0a0a0a;font-size:34px;font-weight:700">!</div>
-              <div style="font-size:19px;color:#fff;font-weight:500">Two-factor authentication is not required for your organization</div>
-            </div>
+            <div class="panel-head"><div class="panel-title" id="st-secp-title">Security (personal)</div></div>
+            <div id="st-secp-body" class="loadnote">Loading session + OnlyFans security state…</div>
           </section>
 
           <!-- BILLING -->
           <section class="panel" data-panel="billing">
             <div class="panel-head">
-              <div class="panel-title">Billing</div>
-              <div class="panel-actions">
+              <div class="panel-title" id="st-bill-title">Billing</div>
+              <div class="panel-actions" id="st-bill-actions">
                 <button class="btn btn-outline">Pricing plans</button>
                 <button class="btn btn-outline">Update card</button>
                 <button class="btn btn-outline">Cancel subscription</button>
                 <button class="btn btn-primary">Billing information</button>
               </div>
             </div>
-            <div class="subtabs"><div class="subtab on">Infloww subscription</div><div class="subtab">AI Copilot</div></div>
-            <div class="daterow">
-              <div class="refbtn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16M4 20v-4h4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-              <div class="drange"><span>Start month</span><span class="arw">→</span><span>End month</span><span class="cal"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9h16M8 3v4M16 3v4" stroke-linecap="round"/></svg></span></div>
+            <div class="subtabs" id="st-billtabs">
+              <div class="subtab on" data-sub="sub">Infloww subscription</div>
+              <div class="subtab" data-sub="ai">AI Copilot</div>
             </div>
-            <table class="tbl">
-              <thead><tr><th>Invoice ID</th><th>Period</th><th>Subscription fee</th><th>Discount</th><th>IGIC</th><th>Total amount</th><th>Operations</th></tr></thead>
-            </table>
-            <div class="empty" style="padding:60px 0">
-              <svg width="72" height="80" viewBox="0 0 72 80" fill="none"><path d="M14 8h30l14 14v46a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4z" fill="#5a5a5a"/><path d="M44 8v10a4 4 0 0 0 4 4h10z" fill="#6f6f6f"/><rect x="22" y="38" width="20" height="4.5" rx="2.25" fill="#4166f6"/><rect x="22" y="48" width="12" height="4.5" rx="2.25" fill="#4166f6"/></svg>
-              You don't have any invoices yet
+            <div id="st-bill-sub">
+              <div class="empty" style="padding:60px 0">
+                <svg width="72" height="80" viewBox="0 0 72 80" fill="none"><path d="M14 8h30l14 14v46a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4z" fill="#5a5a5a"/><path d="M44 8v10a4 4 0 0 0 4 4h10z" fill="#6f6f6f"/><rect x="22" y="38" width="20" height="4.5" rx="2.25" fill="#4166f6"/><rect x="22" y="48" width="12" height="4.5" rx="2.25" fill="#4166f6"/></svg>
+                <div style="text-align:center;max-width:520px;line-height:1.55">
+                  <div style="color:#e6e6e6;font-weight:600;margin-bottom:6px">No subscription or invoice store on this relay</div>
+                  fastt bills nothing and stores no invoices — there is no plan, card or invoice route in the
+                  relay's API. The only money this relay meters is LLM spend; that lives under
+                  <b style="color:#cfcfcf">AI Copilot</b>.
+                </div>
+              </div>
             </div>
+            <div id="st-bill-ai" style="display:none" class="loadnote">Loading AI spend…</div>
           </section>
 
           <!-- YOUR BALANCE -->
           <section class="panel" data-panel="balance">
-            <div class="panel-head line"><div class="panel-title">Your Balance</div></div>
-            <div class="infobanner">
-              <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span>
-              Your balance will be automatically applied towards your next invoice. For more information, please contact our finance team at <a href="#">support@infloww.com</a>.
-            </div>
-            <div class="bal-center">
-              <div class="lbl">Balance</div>
-              <div class="amt">💰 $0.00</div>
-            </div>
-            <div style="font-size:19px;font-weight:600;color:#fff;margin-bottom:8px">Transaction History</div>
-            <div class="empty" style="padding:40px 0">
-              <svg width="86" height="80" viewBox="0 0 86 80" fill="none"><rect x="20" y="34" width="46" height="26" rx="3" fill="#cfcfcf"/><rect x="26" y="20" width="34" height="20" rx="2" fill="#e6e6e6"/><rect x="30" y="52" width="26" height="16" rx="2" fill="#f0f0f0"/><circle cx="63" cy="24" r="8" fill="#dcdcdc"/><path d="M60 24h6M63 21v6" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>
-              You don't have any transactions yet
-            </div>
+            <div class="panel-head line"><div class="panel-title" id="st-bal-title">Your Balance</div></div>
+            <div id="st-bal-body" class="loadnote">Loading balances…</div>
           </section>
 
           <!-- ROLE SETTINGS -->
           <section class="panel" data-panel="role">
             <div class="panel-head">
-              <div class="panel-title">Role settings</div>
-              <div class="panel-actions"><button class="btn btn-primary">Add role</button></div>
+              <div class="panel-title" id="st-role-title">Role settings</div>
+              <div class="panel-actions"><button class="btn btn-primary" id="st-role-add">Add role</button></div>
             </div>
-            <div class="filterbar">
-              <span class="lb">By role :</span><div class="fi"><span class="muted">Role name</span></div>
-              <span class="lb">By status :</span><div class="fi sel">Status<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
-              <div class="sp"></div>
-              <button class="btn btn-outline">Reset</button>
-              <button class="btn btn-primary">Search</button>
-            </div>
-            <table class="tbl">
-              <thead><tr><th>Role</th><th>Description</th><th>Users</th><th>Status</th><th>Operations</th></tr></thead>
-              <tbody>
-                <tr><td class="type">Owner</td><td class="muted">Have permissions for the ent…</td><td>Aurora Agency</td><td><span class="sw sm lock"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
-                <tr><td class="type">Admin</td><td class="muted">Have permissions for the ent…</td><td>Aurora Agency</td><td><span class="sw sm lock"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
-                <tr><td class="type">Team Leader</td><td>Team Leader</td><td></td><td><span class="sw sm on"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
-                <tr><td class="type">Chatter</td><td>Chatter</td><td></td><td><span class="sw sm on"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
-                <tr><td class="type">Creator</td><td>Creator</td><td></td><td><span class="sw sm on"></span></td><td class="ops"><a href="#">Set permissions</a><a href="#">Edit</a><span class="trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td></tr>
-              </tbody>
-            </table>
+            <div id="st-role-body" class="loadnote">Loading principals + access grants…</div>
           </section>
 
           <!-- SALES SETTINGS -->
           <section class="panel" data-panel="sales">
             <div class="panel-head">
-              <div class="panel-title">Sales settings</div>
-              <div class="panel-actions"><a class="btn-ghost" href="#">Settings history</a><button class="btn btn-primary">Edit</button></div>
+              <div class="panel-title" id="st-sales-title">Sales settings</div>
+              <div class="panel-actions"><span class="lastupd" id="st-sales-window">window …</span></div>
             </div>
-            <div style="display:flex;align-items:flex-start;margin-bottom:6px">
-              <div style="font-size:17px;font-weight:600;color:#fff">Customize how employee earnings are calculated in your reports</div>
-              <div class="lastupd" style="margin-left:auto">Last updated on Jul 21, 2026 10:48 PM</div>
-            </div>
-            <div style="display:flex;align-items:center;margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid #242424">
-              <div style="font-size:14.5px;color:#cfcfcf">Multiple employees working on the same shift for the assigned Creator</div>
-              <span class="sw sm" style="margin-left:auto"></span>
-            </div>
-            <table class="tbl">
-              <thead><tr><th>Type</th><th></th><th>Attributed to</th></tr></thead>
-              <tbody>
-                <tr><td class="type">Message</td><td></td><td>Sale is attributed to message sender</td></tr>
-                <tr><td class="type">OF Mass Message</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="type">Auto-message</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="type" rowspan="5" style="vertical-align:middle">Tips</td><td class="sub">Tips from messages</td><td>Sale is attributed to the last Chatter who messaged the fan within <span class="numchip">1</span> hours and <span class="numchip">0</span> minutes of the Creator being tipped.</td></tr>
-                <tr><td class="sub">Tips from profile</td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="sub">Tips from posts</td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="sub">Tips from streams</td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="sub">Tips from stories</td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="type">Posts</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="type">Subscription</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="type">Streams</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
-                <tr><td class="type">Referrals</td><td></td><td class="muted">Sale is not attributed to anyone</td></tr>
-              </tbody>
-            </table>
-            <div style="font-size:14px;color:#8a8a8a;margin:18px 0 22px">If none of the above conditions are met, the sale is not attributed to anyone</div>
-            <div class="synccard" style="max-width:none">
-              <div class="syncrow" style="border-top:none;padding-top:0"><span class="nm">Exclude welcome messages</span><span class="sw sm" style="margin-left:auto"></span></div>
-              <div class="syncrow"><span class="nm">Exclude OnlyFans Service Fee (20%)</span><span class="sw sm" style="margin-left:auto"></span></div>
-            </div>
+            <div id="st-sales-body" class="loadnote">Loading attribution coverage…</div>
           </section>
 
           <!-- TIME TRACKING -->
           <section class="panel" data-panel="time">
             <div class="panel-head line">
-              <div class="panel-title">Time tracking</div>
-              <div class="panel-actions"><button class="btn btn-outline">Edit</button></div>
+              <div class="panel-title" id="st-time-title">Time tracking</div>
             </div>
-            <div class="setrow">
-              <div class="txt"><div class="t">Enable time tracking</div><div class="d">Track your team's work hours with a clock in and clock out function</div></div>
-              <span class="sw"></span>
-            </div>
+            <div id="st-time-body" class="loadnote">Loading observed activity…</div>
           </section>
 
           <!-- MESSAGING SETTINGS -->
@@ -547,18 +557,17 @@
             <div class="setrow">
               <div class="lead"><span class="ic"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h9M8 3v2M6 5c0 4 2 7 5 8M11 5c0 5-3 8-7 9" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 20l4-9 4 9M14.5 17h5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
               <div class="txt"><div class="t">AI translation</div><div class="d">Enable AI translation in Messages Pro for employees in your organization</div></div></div>
-              <span class="sw orange"></span>
+              <span class="sw" id="st-translate"></span>
             </div>
           </section>
 
           <!-- ABOUT INFLOWW -->
           <section class="panel" data-panel="about">
-            <div class="panel-head line"><div class="panel-title">About Infloww</div></div>
+            <div class="panel-head line"><div class="panel-title" id="st-about-title">About</div></div>
             <div class="about-center">
               <div class="iflogo"><svg width="60" height="60" viewBox="0 0 60 60" fill="none"><rect x="12" y="14" width="8" height="32" fill="#fff"/><path d="M28 14h20v7H36v6h10v7H36v12h-8V14z" fill="#fff"/></svg></div>
-              <div class="ver">Current version 5.7.14 (14)</div>
-              <div class="cli">client: - web: 29795554352-5.7.14-29795554352 lite: 5.7.14-29714636718 mp2: 5.7.14-29714612059</div>
-              <button class="btn btn-primary" style="margin-top:16px">Update to the latest version</button>
+              <div class="ver">fastt relay — Infloww skin</div>
+              <div id="st-about-body" class="loadnote" style="text-align:center">Loading build identifiers…</div>
             </div>
           </section>
 
@@ -583,6 +592,38 @@
     });
   });
 </script>
+<script>
+  // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
+  (function(){
+    if (window.__canonSb) return; window.__canonSb = 1;
+    // submenu expand/collapse
+    document.querySelectorAll('.nav-item.has-sub').forEach(function(it){
+      it.addEventListener('click', function(){
+        var s = document.getElementById('sub-' + it.dataset.sub);
+        var open = it.classList.toggle('open');
+        if (s) s.classList.toggle('open', open);
+      });
+    });
+    // auto-active: highlight the item matching this page, expand its section
+    var here = (location.pathname.split('/').pop() || 'dashboard.html');
+    var done = false;
+    document.querySelectorAll('.sidebar .nav-item[href], .sidebar .sub-item[href]').forEach(function(a){
+      if (done) return;
+      if (a.getAttribute('href') === here) {
+        done = true;
+        a.classList.add('active');
+        var sub = a.closest('.subnav');
+        if (sub) {
+          sub.classList.add('open');
+          var head = document.querySelector('.nav-item.has-sub[data-sub="' + sub.id.replace('sub-','') + '"]');
+          if (head) head.classList.add('open');
+        }
+        setTimeout(function(){ if (a.scrollIntoView) a.scrollIntoView({block:'center'}); }, 0);
+      }
+    });
+  })();
+  // ==== /CANONICAL SIDEBAR JS ====
+</script>
 <script id="ms-js">(function(){
   if(window.__msInit)return; window.__msInit=1;
   document.addEventListener('click',function(e){
@@ -601,5 +642,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="settings.js"></script>
 </body>
 </html>

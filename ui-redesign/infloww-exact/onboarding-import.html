@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Import Old Fans</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -365,6 +364,27 @@
   .imp-pl b{margin-left:auto;color:#ddd;font-weight:600}
   .imp-prog{height:6px;border-radius:3px;background:#3a3a3a;overflow:hidden}
   .imp-prog i{display:block;height:100%;width:0%;background:var(--accent);border-radius:3px}
+  .imp-prog.run i{background:linear-gradient(90deg,#4166f6,#67d1ae)}
+  .imp-state.ok{color:var(--green);border-color:rgba(103,209,174,.3);background:rgba(103,209,174,.08)}
+  .imp-state.warn{color:#e8cf9a;border-color:rgba(254,188,46,.3);background:rgba(254,188,46,.07)}
+  /* last-run breakdown */
+  .imp-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .imp-stat{background:#1c1c1c;border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
+  .imp-stat b{display:block;font-size:19px;font-weight:700;color:#fff;line-height:1.2;letter-spacing:-.3px}
+  .imp-stat b.zero{color:#6a6a6a}
+  .imp-stat span{display:block;font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.35}
+  .imp-runs{display:flex;flex-direction:column;gap:6px;margin-top:14px}
+  .imp-run{display:flex;align-items:center;gap:10px;background:#1c1c1c;border:1px solid var(--border-soft);
+    border-radius:9px;padding:7px 11px;font-size:12.5px;color:#c9c9c9}
+  .imp-run i{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#5a5a5a}
+  .imp-run i.ok{background:#3ec46a}.imp-run i.err{background:#f2295b}
+  .imp-run .ago{color:var(--muted)}
+  .imp-run .num{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
+  .imp-empty{background:#1c1c1c;border:1px dashed #3a3a3a;border-radius:10px;padding:18px;
+    text-align:center;color:var(--muted);font-size:13px;line-height:1.55}
+  .imp-empty b{color:#ddd}
+  .fx-kv.imp-hint{display:block;line-height:1.55}
+  .fx-kv.imp-hint b{color:#ddd;font-weight:600}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -395,7 +415,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -474,7 +493,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -514,22 +533,22 @@
         <div class="imp-sub">A one-time move-in for fans who subscribed before the AI existed — not a running automation. Flag them, learn them, then hand them over gently.</div>
 
         <div class="fx-status">
-          <span class="fx-st"><i></i>Off — never run</span>
-          <span class="fx-st"><i></i>1,284 fans predate the AI</span>
+          <span class="fx-st" id="im-st-run"><i></i>Loading…</span>
+          <span class="fx-st" id="im-st-batch"><i></i>…</span>
           <span class="fx-st warn"><i></i>Runs once per account</span>
-          <span class="fx-st"><i></i>Profiles by DeepSeek V4 Flash</span>
+          <span class="fx-st" id="im-st-model"><i></i>Profiles by …</span>
         </div>
 
         <!-- ===== primary: the wizard ===== -->
-        <div class="fx-togglecard">
+        <div class="fx-togglecard" id="im-card">
           <div class="fx-tc-row">
             <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 15V4" stroke-linecap="round"/><path d="M8 8l4-4 4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke-linecap="round"/></svg></div>
             <div class="fx-tc-body">
-              <div class="fx-tc-title">Import my existing fans</div>
-              <div class="fx-tc-desc">Runs the three steps below over all 1,284 fans who were already here before the AI. Nothing is messaged during the import.</div>
+              <div class="fx-tc-title" id="im-title">Import my existing fans</div>
+              <div class="fx-tc-desc" id="im-desc">Runs the three steps below over the fans who were already here before the AI. Nothing is messaged during the import.</div>
             </div>
-            <span class="fx-tc-state">Off</span>
-            <span class="fx-switch"></span>
+            <span class="fx-tc-state" id="im-state">…</span>
+            <span class="fx-switch" id="im-switch"></span>
           </div>
 
           <div class="imp-steps">
@@ -539,7 +558,7 @@
                 <div class="imp-t">Flag existing fans</div>
                 <div class="imp-d">Marks everyone as pre-AI so no automation blasts them by surprise. Until step 3, the AI simply skips these chats — they stay yours.</div>
               </div>
-              <span class="imp-state">Waiting</span>
+              <span class="imp-state" id="im-s1">…</span>
             </div>
             <div class="imp-step">
               <div class="imp-num">2</div>
@@ -547,7 +566,7 @@
                 <div class="imp-t">Build profiles</div>
                 <div class="imp-d">Auto-learn reads each old conversation and writes a profile per fan — name, job, interests, what they've bought — so the AI knows who "Mike R." is before it ever says hi.</div>
               </div>
-              <span class="imp-state">Waiting</span>
+              <span class="imp-state" id="im-s2">…</span>
             </div>
             <div class="imp-step">
               <div class="imp-num">3</div>
@@ -555,22 +574,33 @@
                 <div class="imp-t">Let the AI engage them</div>
                 <div class="imp-d">Flips old-fan engagement on: the AI starts working these chats in its gentler old-fan mode instead of skipping them.</div>
               </div>
-              <span class="imp-state">Waiting</span>
+              <span class="imp-state" id="im-s3">…</span>
             </div>
           </div>
 
           <div class="imp-foot">
             <div class="imp-progwrap">
-              <div class="imp-pl">Progress<b>0% · 0 of 1,284 fans</b></div>
-              <div class="imp-prog"><i style="width:0%"></i></div>
+              <div class="imp-pl">Progress<b id="im-pl">…</b></div>
+              <div class="imp-prog"><i id="im-bar" style="width:0%"></i></div>
             </div>
-            <button class="fx-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 5l12 7-12 7V5z" stroke-linejoin="round"/></svg>Start import</button>
+            <button class="fx-btn ghost" id="im-refresh" title="Re-read the run log">Refresh</button>
+            <button class="fx-btn" id="im-start"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 5l12 7-12 7V5z" stroke-linejoin="round"/></svg>Start import</button>
           </div>
         </div>
 
         <div class="fx-note warn" style="margin-bottom:16px">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex:0 0 auto;margin-top:1px"><path d="M12 4L3 19h18L12 4z" stroke-linejoin="round"/><path d="M12 10v4" stroke-linecap="round"/><circle cx="12" cy="16.6" r=".9" fill="currentColor" stroke="none"/></svg>
-          Run once per account. Old fans get the gentler old-fan cadence — an info question every 10th message.
+          <span>Run once per account. The import <b>never messages a fan</b> — it writes skip-list rows and builds profiles — but it does spend LLM budget while profiling.</span>
+        </div>
+
+        <!-- ===== last run ===== -->
+        <div class="fx-card" id="im-lastrun">
+          <div class="fx-card-h">Last import run
+            <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted)" id="im-lr-meta">loading…</span>
+          </div>
+          <div class="fx-card-sub" style="margin-bottom:12px">Straight from the run log — how many old fans the pass found, flagged and profiled.</div>
+          <div class="imp-stats" id="im-lr-stats"></div>
+          <div class="imp-runs" id="im-lr-runs"></div>
         </div>
 
         <!-- ===== advanced drawer ===== -->
@@ -582,22 +612,41 @@
               <span class="h">every real knob, grouped — for power users</span>
             </div>
             <div class="fx-adv-body" id="adv-import">
-              <div class="fx-adv-group"><h4>Batch</h4>
+              <div class="fx-adv-group"><h4>Target specific fans <span style="color:var(--muted2);font-weight:400;text-transform:none;letter-spacing:0">optional — overrides the batch below</span></h4>
+                <div class="fx-field">
+                  <label>@handles or fan IDs <span style="color:var(--muted2);font-weight:400">payload.usernames / payload.fan_ids — one per line, commas ok</span></label>
+                  <textarea class="fx-input" id="im-targets" placeholder="@mike_r&#10;@sarah99&#10;1234567"></textarea>
+                </div>
+                <div class="fx-kv imp-hint" style="margin-top:8px" id="im-targets-hint">Leave empty to import the recent-fans batch below. Fill this and the run imports exactly these fans — the batch size and order are ignored.</div>
+              </div>
+              <div class="fx-adv-group"><h4>Recent-fans batch <span style="color:var(--muted2);font-weight:400;text-transform:none;letter-spacing:0">used only when no fans are targeted above</span></h4>
                 <div class="fx-grid2">
-                  <div class="fx-field"><label>Batch size (fans per run)</label><input class="fx-input" value="200"></div>
+                  <div class="fx-field"><label>Batch size (fans per run) <span style="color:var(--muted2);font-weight:400">payload.recent_limit</span></label><input class="fx-input" id="im-batch" value="" placeholder="e.g. 200"></div>
                   <div class="fx-field"><label>Pick the batch by</label>
-                    <select class="fx-select"><option selected>Most recently subscribed</option><option>Most recently messaged</option></select>
+                    <select class="fx-select" id="im-by"><option value="subscribed">Most recently subscribed</option><option value="messaged">Most recently messaged</option></select>
+                  </div>
+                  <div class="fx-field"><label>Profiling cap <span style="color:var(--muted2);font-weight:400">payload.limit — forwarded to gen_info + apply_profiles</span></label><input class="fx-input" id="im-limit" value="" placeholder="unset = automation default"></div>
+                  <div class="fx-field"><label>Profiling model override <span style="color:var(--muted2);font-weight:400">payload.model — blank = account model</span></label><input class="fx-input" id="im-model" value="" placeholder="account default"></div>
+                  <div class="fx-field" style="justify-content:flex-end">
+                    <label class="fx-check" id="im-reprocess" style="padding-bottom:6px"><span class="bx"></span>Re-run fans already onboarded <span class="sub">payload.reprocess</span></label>
+                  </div>
+                </div>
+                <div class="fx-kv imp-hint" style="margin-top:8px" id="im-batch-hint">…</div>
+              </div>
+              <div class="fx-adv-group"><h4>Old-fan cadence</h4>
+                <div id="im-cadence">
+                  <div class="imp-empty" style="text-align:left">
+                    <b>Not an account setting.</b> Once old fans are engaged, the AI Chatter engine asks an info question every
+                    <b>10th</b> message — that number is <code>ai_chatter._DEFAULTS["old_fan_question_every"]</code>, a code
+                    default. <code>/admin/ai-chatter-config</code> exposes only <code>engage_old_fans</code> out of the old-fan
+                    family (its validator is an allowlist, so an unknown key is silently dropped), so there is nothing here to
+                    read or write — showing an editable box would be a lie.
                   </div>
                 </div>
               </div>
-              <div class="fx-adv-group"><h4>Old-fan cadence</h4>
-                <div class="fx-grid2">
-                  <div class="fx-field"><label>Info question every Nth message</label><input class="fx-input" value="10"></div>
-                </div>
-              </div>
               <div class="fx-adv-group" style="margin-bottom:4px"><h4>Safety</h4>
-                <label class="fx-check"><span class="bx"></span>Dry run <span class="sub">flag only — no profiles written, nothing pushed to OnlyFans</span></label>
-                <label class="fx-check"><span class="bx"></span>Write nicknames &amp; notes to OnlyFans <span class="sub">otherwise profiles stay in fastt only</span></label>
+                <label class="fx-check" id="im-flagonly"><span class="bx"></span>Dry run <span class="sub">flag only — no profiles written, nothing pushed to OnlyFans</span></label>
+                <label class="fx-check" id="im-push"><span class="bx"></span>Write nicknames &amp; notes to OnlyFans <span class="sub">otherwise profiles stay in fastt only</span></label>
               </div>
             </div>
           </div>
@@ -703,5 +752,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="onboarding-import.js" id="wire-js"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Broadcast</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -370,6 +369,17 @@
   .bc-mini.add:hover{border-color:var(--accent);color:#7d97f8}
   .bc-addline{font-size:12px;color:#7d97f8;cursor:pointer;display:inline-flex;align-items:center;gap:5px;margin-top:1px}
   .bc-hint{font-size:12px;color:var(--muted2);line-height:1.5;margin-top:8px}
+  /* real vault thumbs (GET /admin/vault-ai/thumb) instead of CSS gradients */
+  .bc-tile,.bc-mini{background:#161616;position:relative;overflow:hidden}
+  .bc-tile img,.bc-mini img{width:100%;height:100%;object-fit:cover;display:block}
+  .bc-mini.pick{cursor:pointer}
+  .bc-mini.pick:hover{border-color:var(--accent)}
+  .bc-tile.none,.bc-mini.none{background:#181818;border-style:dashed;display:flex;align-items:center;
+    justify-content:center;color:#5f5f5f;font-size:9px;font-weight:700;text-align:center;line-height:1.1}
+  .mn-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  #bc-mn-poolgrid .bc-pool h5 .hrs{font-size:11px;font-weight:500;color:var(--muted2)}
+  #bc-mn-poolgrid{grid-template-columns:1fr 1fr 1fr}
+  .bc-ob-row{display:flex;gap:10px;align-items:flex-start;font-size:12.5px;color:var(--muted);line-height:1.55}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -400,7 +410,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -479,7 +488,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -512,7 +521,7 @@
         <div class="head-right">
           <div class="dropdown">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg>
-            Aria
+            <span id="bc-hdr-model">…</span>
             <span class="cv"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           </div>
         </div>
@@ -520,38 +529,47 @@
       <div class="sec-sub">A friendly "you're around?" hello to fans who are online — the one place for every broadcast, big or small.</div>
 
       <!-- status strip -->
-      <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running — scans every 60 s</span>
-        <span class="fx-st ok"><i></i>214 fans online right now</span>
-        <span class="fx-st"><i></i>Pools ready · 9 lines · 4 times of day</span>
-        <span class="fx-st"><i></i>Quiet hours off — sends 24/7</span>
+      <div class="fx-status" id="bc-status">
+        <span class="fx-st ok" id="bc-st-run"><i></i>Loading…</span>
+        <span class="fx-st ok" id="bc-st-online"><i></i>— fans online</span>
+        <span class="fx-st" id="bc-st-pools"><i></i>Pools loading…</span>
+        <span class="fx-st" id="bc-st-quiet"><i></i>Quiet hours —</span>
       </div>
 
       <!-- master toggle (prod: Ava runs this, the graded vault doesn't) -->
-      <div class="fx-togglecard on">
+      <div class="fx-togglecard" id="bc-master">
         <div class="fx-tc-row">
           <div class="fx-tc-ico">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>
           </div>
           <div class="fx-tc-body">
-            <div class="fx-tc-title">Broadcast <span class="fx-st ok" style="height:24px;font-size:11.5px;padding:0 10px;font-weight:500"><i></i>Ava: on · the graded vault: off</span></div>
+            <div class="fx-tc-title">Broadcast <span class="fx-st ok" id="bc-rulestates" style="height:24px;font-size:11.5px;padding:0 10px;font-weight:500"><i></i>loading rules…</span></div>
             <div class="fx-tc-desc">Greets fans who are online with a time-of-day line and a photo. fastt watches who comes on, waits a natural minute, skips anyone mid-conversation — you just keep the message pools fresh.</div>
           </div>
-          <span class="fx-tc-state">Running</span>
-          <span class="fx-switch on"></span>
+          <span class="fx-tc-state">…</span>
+          <span class="fx-switch" id="bc-master-sw"></span>
         </div>
         <div class="fx-tc-knobs">
-          <div class="fx-kv"><b>214</b> fans online · scans every <b>60 s</b></div>
+          <div class="fx-kv" id="bc-kv-online"><b>—</b> fans online · scans every <b>— s</b></div>
           <div class="fx-kv">route: <b>personal 1:1 nudges</b></div>
-          <div class="fx-kv">cooldown: <b>12 h per fan</b></div>
+          <div class="fx-kv" id="bc-kv-cooldown">cooldown: <b>— h per fan</b></div>
         </div>
+      </div>
+
+      <!-- run-now action (outbound — explicit click + confirm) -->
+      <div style="display:flex;align-items:center;gap:12px;margin:-4px 0 16px;flex-wrap:wrap">
+        <button class="fx-btn ghost" id="bc-runnow" style="height:34px">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4l14 8-14 8z" stroke-linejoin="round"/></svg>
+          Run one detector pass now
+        </button>
+        <span style="font-size:12px;color:var(--muted2)" id="bc-runnow-cap">Scans who's online right now and queues nudges (they fire after their delay). Asks first.</span>
       </div>
 
       <div class="bc-grid">
 
         <!-- LEFT: audience + route note -->
         <div>
-          <div class="fx-card">
+          <div class="fx-card" id="bc-audience">
             <div class="fx-card-h">Who hears from you</div>
             <div class="fx-card-sub" style="margin-bottom:14px">Start with fans who are online right now — they answer 5&#215; more often.</div>
             <div class="fx-audience">
@@ -561,7 +579,7 @@
               <div class="fx-aud-row"><span class="fx-aud-lbl">Exclude</span>
                 <div class="fx-chips"><span class="fx-chip on">Chatted in last 12h</span><span class="fx-chip on">Muted / restricted</span><span class="fx-chip">Open PPV pending</span></div>
               </div>
-              <div class="fx-aud-reach">Estimated reach: <b>214 fans</b> online right now · 9 skipped (active chats)</div>
+              <div class="fx-aud-reach" id="bc-reach">Loading last scan…</div>
             </div>
           </div>
           <div class="fx-note" style="margin-bottom:0">
@@ -571,26 +589,37 @@
         </div>
 
         <!-- RIGHT: message pool preview -->
-        <div class="fx-card" style="margin-bottom:0">
-          <div class="fx-card-h">What goes out — Morning
-            <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted2)">rotates 3 lines</span>
+        <div class="fx-card" style="margin-bottom:0" id="bc-pool-card">
+          <div class="fx-card-h">What goes out — <span id="bc-cur-slot">…</span>
+            <span style="margin-left:auto;font-size:12px;font-weight:500;color:var(--muted2)" id="bc-rot-note">rotates — lines</span>
           </div>
-          <div class="fx-card-sub" style="margin-bottom:12px">One line per fan from the Morning pool — <b style="color:#ddd;font-weight:500">{name}</b> fills in automatically.</div>
-          <div class="bc-line"><span class="who">Aa</span>morning sleepyhead {name} ☀️ you're up early 👀</div>
-          <div class="bc-line"><span class="who">Aa</span>good morning {name} 💋 come start the day with me</div>
-          <div class="bc-line"><span class="who">Aa</span>heyy 🌸 online this morning? say hi 👀</div>
+          <div class="fx-card-sub" style="margin-bottom:10px">One line per fan from the <span id="bc-cur-slot2">current</span> pool — <b style="color:#ddd;font-weight:500">{name}</b> fills in automatically.</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <span style="font-size:12px;color:var(--muted2)">Preview time</span>
+            <select class="fx-select" id="bc-preview-hour" style="height:32px;width:auto;font-size:12.5px;padding:0 30px 0 10px">
+              <option value="">Now</option>
+              <option value="8">Morning · 8:00</option>
+              <option value="13">Midday · 13:00</option>
+              <option value="16">Afternoon · 16:00</option>
+              <option value="19">Evening · 19:00</option>
+              <option value="23">Night · 23:00</option>
+            </select>
+          </div>
+          <div class="bc-line"><span class="who">Aa</span>loading pool…</div>
           <div class="bc-media">
-            <div class="bc-tile sunrise"></div>
-            <div class="cap"><b>Teasers</b> folder · 1 of 4 photos rides along, a different one each send</div>
+            <div class="bc-tile" id="bc-media-tile"></div>
+            <div class="cap" id="bc-media-cap">loading…</div>
           </div>
           <hr class="fx-hr" style="margin:14px 0">
-          <div style="display:flex;align-items:center;gap:12px">
-            <button class="fx-btn ghost">
+          <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
+            <div class="fx-field" style="max-width:150px"><label style="font-size:11.5px">Test fan id <span style="color:var(--muted2)">(blank = sample)</span></label><input class="fx-input" id="bc-test-fan" style="height:34px" placeholder="e.g. ACCOUNT_ID"></div>
+            <button class="fx-btn ghost" id="bc-test-btn" style="height:34px">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg>
-              Send me a test
+              Compose a real sample
             </button>
-            <span style="font-size:12px;color:var(--muted2)">goes to your own chat, never to fans</span>
           </div>
+          <span style="font-size:12px;color:var(--muted2);display:block;margin-top:8px" id="bc-test-cap">Runs the live composer for that hour — resolves a real fan &amp; photo, sends nothing.</span>
+          <div id="bc-test-result" style="display:none;margin-top:12px"></div>
         </div>
       </div>
 
@@ -603,42 +632,45 @@
         </div>
         <div class="fx-adv-body" id="adv-bc">
 
+          <!-- Config kill-switch -->
+          <div class="fx-adv-group" id="bc-killgrp">
+            <h4>Master switch</h4>
+            <label class="fx-check" id="bc-ck-enabled"><span class="bx"></span>1:1 online nudges are allowed to send
+              <span class="sub">config <code style="color:#9db1fb">enabled</code> — nudge_online.py returns early the moment this is off, whatever the rule says</span></label>
+            <div class="bc-hint" id="bc-killhint">…</div>
+          </div>
+
           <!-- Slots editor -->
           <div class="fx-adv-group">
             <h4>Message pools — by time of day</h4>
             <div style="display:flex;align-items:center;gap:12px">
-              <div class="fx-seg" data-single><button class="on">Every day</button><button>Weekend override</button></div>
+              <div class="fx-seg" data-single id="bc-dayseg"><button class="on">Every day</button><button>Weekend override</button></div>
               <span style="font-size:12px;color:var(--muted2)">weekend pools win on Sat–Sun when set — Friday night ≠ Tuesday morning</span>
             </div>
-            <div class="bc-poolgrid">
-              <div class="bc-pool">
+            <div class="bc-poolgrid" id="bc-poolgrid">
+              <div class="bc-pool" data-pool="morning">
                 <h5>Morning <span class="hrs">5–12</span></h5>
-                <input class="fx-input" value="morning sleepyhead {name} ☀️ you're up early 👀">
-                <input class="fx-input" value="good morning {name} 💋 come start the day with me">
-                <input class="fx-input" value="heyy 🌸 online this morning? say hi 👀">
+                <input class="fx-input" value="loading…">
                 <span class="bc-addline">+ Add line</span>
-                <div class="bc-pool-media"><span class="bc-mini sunrise"></span><span class="bc-mini beach"></span><span class="bc-mini add">+</span><span style="font-size:11px;color:var(--muted2)">Teasers · rotates</span></div>
+                <div class="bc-pool-media"><span style="font-size:11px;color:var(--muted2)" data-role="imgcap">…</span></div>
               </div>
-              <div class="bc-pool">
+              <div class="bc-pool" data-pool="afternoon">
                 <h5>Afternoon <span class="hrs">12–18</span></h5>
-                <input class="fx-input" value="afternoon 😘 who's online? keep me company">
-                <input class="fx-input" value="bored this afternoon {name}? 😏 come chat">
+                <input class="fx-input" value="loading…">
                 <span class="bc-addline">+ Add line</span>
-                <div class="bc-pool-media"><span class="bc-mini beach"></span><span class="bc-mini add">+</span><span style="font-size:11px;color:var(--muted2)">Beach set · rotates</span></div>
+                <div class="bc-pool-media"><span style="font-size:11px;color:var(--muted2)" data-role="imgcap">…</span></div>
               </div>
-              <div class="bc-pool">
+              <div class="bc-pool" data-pool="evening">
                 <h5>Evening <span class="hrs">18–21</span></h5>
-                <input class="fx-input" value="evening {name} 🍷 come unwind with me">
-                <input class="fx-input" value="online tonight? i was hoping you'd show up 👀">
+                <input class="fx-input" value="loading…">
                 <span class="bc-addline">+ Add line</span>
-                <div class="bc-pool-media"><span class="bc-mini dusk"></span><span class="bc-mini add">+</span><span style="font-size:11px;color:var(--muted2)">VIP set · rotates</span></div>
+                <div class="bc-pool-media"><span style="font-size:11px;color:var(--muted2)" data-role="imgcap">…</span></div>
               </div>
-              <div class="bc-pool">
+              <div class="bc-pool" data-pool="night">
                 <h5>Night <span class="hrs">21–5</span></h5>
-                <input class="fx-input" value="up late {name}? 🌙 i'm still here">
-                <input class="fx-input" value="can't sleep either? 😏 keep me company">
+                <input class="fx-input" value="loading…">
                 <span class="bc-addline">+ Add line</span>
-                <div class="bc-pool-media"><span class="bc-mini noir"></span><span class="bc-mini add">+</span><span style="font-size:11px;color:var(--muted2)">Teasers · rotates</span></div>
+                <div class="bc-pool-media"><span style="font-size:11px;color:var(--muted2)" data-role="imgcap">…</span></div>
               </div>
             </div>
             <div class="bc-hint">{name}, {city}, {hobby}, {pet} fill from the fan's profile — anything unknown just disappears from the line.</div>
@@ -648,12 +680,12 @@
           <div class="fx-adv-group">
             <h4>Pacing — how human it feels</h4>
             <div class="fx-grid3">
-              <div class="fx-field"><label>Wait after they come online (min)</label><input class="fx-input" value="1"></div>
-              <div class="fx-field"><label>Plus random jitter (min)</label><input class="fx-input" value="1"></div>
-              <div class="fx-field"><label>Offline gap to count as "back" (min)</label><input class="fx-input" value="5"></div>
-              <div class="fx-field"><label>Max fans started per scan</label><input class="fx-input" value="25"></div>
-              <div class="fx-field"><label>Scan cap (fans checked)</label><input class="fx-input" value="200"></div>
-              <div class="fx-field"><label>Still online within (min)</label><input class="fx-input" value="30"></div>
+              <div class="fx-field"><label>Wait after they come online (min)</label><input class="fx-input" id="bc-delay" value=""></div>
+              <div class="fx-field"><label>Plus random jitter (min)</label><input class="fx-input" id="bc-jitter" value=""></div>
+              <div class="fx-field"><label>Offline gap to count as "back" (min)</label><input class="fx-input" id="bc-gap" value=""></div>
+              <div class="fx-field"><label>Max fans started per scan</label><input class="fx-input" id="bc-maxtick" value=""></div>
+              <div class="fx-field"><label>Scan cap (fans checked)</label><input class="fx-input" id="bc-scancap" value=""></div>
+              <div class="fx-field"><label>Still online within (min)</label><input class="fx-input" id="bc-onlinerecent" value=""></div>
             </div>
             <div class="bc-hint">The wait + jitter make it feel like she noticed them, not like a tripwire. Extras past the per-scan cap roll to the next minute — never dropped. If the fan left during the wait, the send is skipped.</div>
           </div>
@@ -662,12 +694,13 @@
           <div class="fx-adv-group">
             <h4>Per-fan rules — never be annoying</h4>
             <div class="fx-grid3">
-              <div class="fx-field"><label>One hello per fan every (h)</label><input class="fx-input" value="12"></div>
-              <div class="fx-field"><label>Give up after no-replies — never stops (99)</label><input class="fx-input" value="99"></div>
-              <div class="fx-field"><label>Leave live chats alone for (h)</label><input class="fx-input" value="6"></div>
+              <div class="fx-field"><label>One hello per fan every (h)</label><input class="fx-input" id="bc-cooldown" value=""></div>
+              <div class="fx-field"><label>Give up after no-replies — never stops (99)</label><input class="fx-input" id="bc-maxnoreply" value=""></div>
+              <div class="fx-field"><label>Leave live chats alone for (h)</label><input class="fx-input" id="bc-activeconvo" value=""></div>
             </div>
-            <div style="margin-top:10px">
-              <label class="fx-check on"><span class="bx"></span>Only fans who already got their welcome <span class="sub">and not within 1 h of it — no double hello</span></label>
+            <div style="margin-top:10px;display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap">
+              <label class="fx-check on" id="bc-ck-welcomed"><span class="bx"></span>Only fans who already got their welcome <span class="sub">require_welcomed — fixed server-side</span></label>
+              <div class="fx-field" style="max-width:210px"><label>Grace after welcome (h)</label><input class="fx-input" id="bc-welcomegrace" value=""></div>
             </div>
             <div class="bc-hint">Set to 99, she never gives up on a quiet fan — every time he shows up online, she still says hi (the 12 h cooldown keeps it from getting clingy).</div>
           </div>
@@ -677,21 +710,26 @@
             <h4>Quiet hours &amp; spend gates</h4>
             <div class="fx-grid3">
               <div class="fx-field"><label>No sends from</label>
-                <select class="fx-select"><option selected>Off — sends 24/7</option><option>22:00</option><option>23:00</option><option>00:00</option><option>01:00</option><option>02:00</option></select>
+                <select class="fx-select" id="bc-qh-from"><option selected>Off — sends 24/7</option><option>22:00</option><option>23:00</option><option>00:00</option><option>01:00</option><option>02:00</option></select>
               </div>
               <div class="fx-field"><label>Until</label>
-                <select class="fx-select"><option selected>—</option><option>06:00</option><option>07:00</option><option>08:00</option><option>09:00</option></select>
+                <select class="fx-select" id="bc-qh-until"><option selected>—</option><option>06:00</option><option>07:00</option><option>08:00</option><option>09:00</option></select>
               </div>
-              <div class="fx-field"><label>Timezone</label>
+              <div class="fx-field" id="bc-tz-field"><label>Timezone</label>
                 <select class="fx-select"><option selected>Creator-local (UTC-10:00)</option><option>UTC</option></select>
               </div>
             </div>
             <div class="fx-grid3" style="margin-top:12px">
-              <div class="fx-field"><label>Min lifetime spend</label><div class="fx-unit" data-unit="$"><input class="fx-input" placeholder="off" value=""></div></div>
-              <div class="fx-field"><label>Max lifetime spend</label><div class="fx-unit" data-unit="$"><input class="fx-input" placeholder="off" value=""></div></div>
-              <div class="fx-field"><label>Skip if spent more than (last 30d)</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="200"></div></div>
+              <div class="fx-field"><label>Min lifetime spend</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="bc-spend-min" placeholder="off" value=""></div></div>
+              <div class="fx-field"><label>Max lifetime spend</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="bc-spend-max" placeholder="off" value=""></div></div>
+              <div class="fx-field"><label>Recent-spend window (days)</label><input class="fx-input" id="bc-spend-days" placeholder="30" value=""></div>
             </div>
-            <div class="bc-hint">Quiet hours are off — if a fan is online at 3am, she's "up late too". The $200 gate keeps the broadcast off your hot spenders — they're already talking to the AI closer 1:1, and a generic hello would cheapen that thread.</div>
+            <div class="fx-grid3" style="margin-top:12px">
+              <div class="fx-field"><label>Min spend in window</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="bc-spend-recent-min" placeholder="off" value=""></div></div>
+              <div class="fx-field"><label>Max spend in window</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="bc-spend-recent" placeholder="off" value=""></div></div>
+              <div class="fx-field"><label>&nbsp;</label><span style="font-size:12px;color:var(--muted2);align-self:center">the recent gate measures spend inside the window above</span></div>
+            </div>
+            <div class="bc-hint">Quiet hours are off — if a fan is online at 3am, she's "up late too". The recent-spend gate keeps the broadcast off your hot spenders — they're already talking to the AI closer 1:1, and a generic hello would cheapen that thread. Leave any field blank to turn that gate off.</div>
           </div>
 
           <!-- Content mode -->
@@ -700,19 +738,92 @@
             <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap">
               <div style="display:flex;flex-direction:column;gap:6px">
                 <span style="font-size:12.5px;font-weight:500;color:#b9b9b9">Message flavor</span>
-                <div class="fx-seg" data-single><button class="on">Tease</button><button>Q&amp;A</button><button>Mix</button></div>
+                <div class="fx-seg" data-single id="bc-flavor"><button class="on">Tease</button><button>Q&amp;A</button><button>Mix</button></div>
               </div>
               <div style="display:flex;flex-direction:column;gap:6px">
                 <span style="font-size:12.5px;font-weight:500;color:#b9b9b9">When a fan comes back</span>
-                <div class="fx-seg" data-single><button class="on">New lines</button><button>Same line</button></div>
+                <div class="fx-seg" data-single id="bc-repeat"><button class="on">New lines</button><button>Same line</button></div>
               </div>
             </div>
             <div style="margin-top:14px;display:flex;flex-direction:column;gap:2px">
-              <label class="fx-check on"><span class="bx"></span>Info line opener <span class="sub">opens with a line about him — his city, his team, his day</span></label>
-              <label class="fx-check on"><span class="bx"></span>Attach an image to the info line <span class="sub">a rotating photo rides along</span></label>
-              <label class="fx-check"><span class="bx"></span>Nudge line <span class="sub">off — the info line alone is the opener, no extra "come chat" tacked on</span></label>
+              <label class="fx-check on" id="bc-ck-info"><span class="bx"></span>Info line opener <span class="sub">opens with a line about him — his city, his team, his day</span></label>
+              <label class="fx-check on" id="bc-ck-infoimg"><span class="bx"></span>Attach an image to the info line <span class="sub">a rotating photo rides along</span></label>
+              <label class="fx-check" id="bc-ck-nudgeline"><span class="bx"></span>Nudge line <span class="sub">a separate time-of-day greeting that leads the info line</span></label>
+              <div id="bc-nudgeline-sub" style="display:flex;gap:22px;flex-wrap:wrap;padding-left:28px;margin-top:2px">
+                <label class="fx-check on" id="bc-ck-nudgetext"><span class="bx"></span>Include text <span class="sub">nudge_line_text — off = image only</span></label>
+                <label class="fx-check on" id="bc-ck-nudgeimg"><span class="bx"></span>Attach image <span class="sub">nudge_line_image</span></label>
+              </div>
             </div>
-            <div class="bc-hint">Q&amp;A asks about something from the fan's profile — his dog, his city, his job. Mix uses Q&amp;A when there's a fact to ask about, tease otherwise.</div>
+            <div class="bc-hint">Q&amp;A asks about something from the fan's profile — his dog, his city, his job. Mix uses Q&amp;A when there's a fact to ask about, tease otherwise. The nudge line is a shorter greeting that can ride ahead of the info line.</div>
+          </div>
+
+          <!-- ============ MASS NUDGE (its own rule, its own pools) ============ -->
+          <div class="fx-adv-group" id="bc-mn">
+            <h4>Mass Nudge — one broadcast to everyone online</h4>
+            <div class="fx-note warn" style="margin-bottom:12px"><span><b>A different sender with a different config.</b>
+              The pools above belong to the personalised 1:1 nudge (<code>nudge_online</code>, config blob).
+              Mass Nudge (<code>mass_nudge</code>) sends <b>one</b> line + photo to every online fan at once and reads
+              its pools straight off the automation rule’s payload — nothing above touches it.</span></div>
+
+            <div class="mn-head">
+              <span class="fx-st" id="bc-mn-state"><i></i>loading rule…</span>
+              <span class="fx-st" id="bc-mn-last"><i></i>last run —</span>
+              <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+                <select class="fx-select" id="bc-mn-hour" style="height:32px;width:auto;font-size:12.5px;padding:0 28px 0 10px" title="hour to preview">
+                  <option value="">Now</option><option value="8">Morning · 8</option><option value="13">Midday · 13</option>
+                  <option value="16">Afternoon · 16</option><option value="19">Evening · 19</option><option value="23">Night · 23</option>
+                </select>
+                <button class="fx-btn ghost" id="bc-mn-preview" style="height:32px">Preview</button>
+                <button class="fx-btn green" id="bc-mn-sendnow" style="height:32px" title="broadcast one now — asks first">Send now</button>
+                <button class="fx-btn" id="bc-mn-save" style="height:32px">Save Mass Nudge</button>
+              </span>
+            </div>
+            <div id="bc-mn-result" style="display:none;margin-top:12px"></div>
+
+            <div class="fx-grid3" style="margin-top:12px">
+              <div class="fx-field"><label>Fire every (minutes)</label><input class="fx-input" id="bc-mn-every"></div>
+              <div class="fx-field"><label>Skip fans DMed in the last (h) <span style="color:var(--muted2)">exclude_replied_hours</span></label><input class="fx-input" id="bc-mn-repl"></div>
+              <div class="fx-field"><label>Skip fans who wrote us in the last (h) <span style="color:var(--muted2)">exclude_inbound_hours</span></label><input class="fx-input" id="bc-mn-inb"></div>
+              <div class="fx-field"><label>Auto-unsend after (h) <span style="color:var(--muted2)">unsend_after_hours</span></label><input class="fx-input" id="bc-mn-unsend" placeholder="off"></div>
+              <div class="fx-field"><label>Online-fan scan cap <span style="color:var(--muted2)">max_online</span></label><input class="fx-input" id="bc-mn-max" placeholder="500"></div>
+              <div class="fx-field"><label>&nbsp;</label>
+                <div style="display:flex;flex-direction:column;gap:2px">
+                  <label class="fx-check" id="bc-mn-ck-img"><span class="bx"></span>Attach the slot photo <span class="sub">with_image</span></label>
+                  <label class="fx-check" id="bc-mn-ck-online"><span class="bx"></span>Online fans only <span class="sub">online_only</span></label>
+                  <label class="fx-check" id="bc-mn-ck-dry"><span class="bx"></span>Dry run <span class="sub">resolve the audience, send nothing</span></label>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+              <div class="fx-seg" data-single id="bc-mn-dayseg"><button class="on">Every day</button><button>Weekend override</button></div>
+              <span style="font-size:12px;color:var(--muted2)">mass_nudge keeps its own six slots — morning_1/2, afternoon_1/2, evening, night</span>
+            </div>
+            <div class="bc-poolgrid" id="bc-mn-poolgrid"></div>
+            <div class="bc-hint">One line is drawn at random per fire, and one photo from that slot rides along when <b>with_image</b> is on. No <code>{name}</code> substitution here — a mass broadcast is the same text for everyone.</div>
+          </div>
+
+          <!-- ============ ONLINE BLAST ============ -->
+          <div class="fx-adv-group" id="bc-ob">
+            <h4>Online Blast</h4>
+            <div id="bc-ob-body" class="bc-hint">…</div>
+          </div>
+
+          <!-- ============ ROLL OUT TO MODELS ============ -->
+          <div class="fx-adv-group" id="bc-rollout" style="margin-bottom:6px">
+            <h4>Roll out this config to other models</h4>
+            <div class="fx-note" style="margin-bottom:12px"><span>Copies the <b>1:1 nudge pools + pacing + gates above</b> to every checked creator (text-only — vault photo ids are per-account). It writes each config <b>paused</b> — no rule is enabled, so nothing starts sending; flip each on from Automations when ready.</span></div>
+            <div class="mn-head" style="margin-bottom:10px">
+              <span class="fx-st" id="bc-ro-count"><i></i>0 selected</span>
+              <span style="margin-left:auto;display:flex;gap:8px">
+                <button class="fx-btn ghost" id="bc-ro-all" style="height:32px">All</button>
+                <button class="fx-btn ghost" id="bc-ro-none" style="height:32px">None</button>
+                <button class="fx-btn" id="bc-ro-apply" style="height:32px">Copy to selected (paused)</button>
+              </span>
+            </div>
+            <div id="bc-ro-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px 14px;max-height:180px;overflow:auto;border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px">
+              <span class="bc-hint" style="grid-column:1/-1">loading roster…</span>
+            </div>
           </div>
 
         </div>
@@ -817,5 +928,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="outreach-broadcast.js" id="bc-wire"></script>
 </body>
 </html>

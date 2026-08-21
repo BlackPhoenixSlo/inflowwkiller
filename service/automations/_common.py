@@ -31,6 +31,7 @@ from db.models import AccountAiConfig, Fan, Message, SkipList, Transaction
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+
 # The per-fan state blob lives in its own leaf module — see fan_state.py for why
 # storage does not belong in here. apply_typo_throttle below is a consumer like
 # any other; this is NOT a re-export, so importers go to the leaf directly.
@@ -237,7 +238,7 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
 
 
 # ── Muted-creator + manual "restrict from automations" skip-listing ─────────
-# Two DURABLE skip_list reasons that mean "no automation may ever message this
+# Three DURABLE skip_list reasons that mean "no automation may ever message this
 # fan" — a HARD block honoured by EVERY sender (unlike the welcome_chatter_for_info promo-spam
 # guard, which is reversible and only covers the gather opener):
 #   • 'muted_creator'   — auto: the fan is a creator we follow (subscribedBy) AND
@@ -252,9 +253,10 @@ async def _skip_and_rest(account_id, fan_id, now) -> None:
 #       skip_users=all /chats rows carry no isRestricted flag to key off).
 # Senders that already gate on FULL skip_list membership (welcome_chatter_for_info,
 # send_followup, ai_chatter[≠graduation]) honour all three
-# for free; the senders that DON'T (autoreply, tip_reward, send_welcome) and the
-# list-broadcasts (mass_nudge, online_blast) load `load_hard_skip_ids` and
-# exclude these explicitly.
+# for free. The priced/proactive senders and list-broadcasts load
+# `load_hard_skip_ids` and exclude these explicitly; the always-answer touches
+# (tip_reward's reward + image_reply, make_right's apology) gate on the narrower
+# `load_operator_stop_ids` instead — see both loaders below.
 MUTED_CREATOR_REASON = "muted_creator"
 MANUAL_RESTRICT_REASON = "manual_restrict"
 OF_RESTRICTED_REASON = "of_restricted"
@@ -263,7 +265,10 @@ OF_RESTRICTED_REASON = "of_restricted"
 # ladder offers-pause + a make_right apology instead of permanent silence — the
 # classifier misread a forwarded "unsubscribe and block anyone who…" game as a
 # threat and ghosted a real fan forever. The reason stays in the hard set so a
-# row an OPERATOR writes by hand (or a legacy row) is still honoured everywhere.
+# row an OPERATOR writes by hand (or a legacy row) is still honoured by every
+# reader — but only until the next boot's data catch-up converts/clears it
+# (db/engine.py decline-policy block, itself slated for deletion once every box
+# has booted once); a PERMANENT operator stop belongs in manual_restrict.
 LADDER_STOP_REASON = "ladder_stop"
 HARD_SKIP_REASONS = frozenset(
     {MUTED_CREATOR_REASON, MANUAL_RESTRICT_REASON, OF_RESTRICTED_REASON,
@@ -394,8 +399,10 @@ def should_skip_muted_creator(fan) -> bool:
 
 
 async def load_hard_skip_ids(account_id) -> set[int]:
-    """fan_ids this account has on skip_list under a HARD reason (muted_creator /
-    manual_restrict) — for the senders that don't already gate on skip_list."""
+    """fan_ids this account has on skip_list under ANY hard reason (muted_creator /
+    manual_restrict / of_restricted / ladder_stop) — i.e. OPERATOR_STOP_REASONS
+    plus ladder_stop. Use for priced/proactive sends and list-broadcasts; the
+    always-answer touches use load_operator_stop_ids below instead."""
     return await _load_skip_ids(account_id, HARD_SKIP_REASONS)
 
 
@@ -1047,6 +1054,20 @@ def _parse_style_config(raw) -> dict:
     return stored
 
 
+async def _load_json_col(account_id: str, col: str) -> dict:
+    """ONE fetch + tolerant parse of a JSON-blob column on account_ai_config —
+    absent row / NULL / parse error / non-dict → {}. Every per-account config
+    loader goes through here instead of re-cloning the fetch/parse block."""
+    async with get_session() as s:
+        cfg = await s.get(AccountAiConfig, str(account_id))
+    return _parse_style_config(getattr(cfg, col, None) if cfg else None)
+
+
+async def _load_style_json(account_id: str) -> dict:
+    """The style_config_json blob — the overwhelmingly common case, named."""
+    return await _load_json_col(account_id, "style_config_json")
+
+
 def _resolve_style_flag(stored: dict, automation: str, key: str) -> bool:
     """One realism flag, applying the tri-state default: an EXPLICIT stored value
     under `key` (True or False) wins verbatim; an ABSENT key falls back to the per-
@@ -1067,9 +1088,7 @@ async def load_style_flags(account_id: str) -> dict[str, bool]:
     flag False regardless."""
     if os.environ.get(_STYLE_FORCE_OFF_ENV):
         return {k: False for k in STYLE_AUTOMATIONS}
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
+    stored = await _load_style_json(account_id)
     # the humanizer flag is stored under the bare automation name (the typos_/
     # nonnative_ layers use a prefixed key — see their own loaders).
     return {k: _resolve_style_flag(stored, k, k) for k in STYLE_AUTOMATIONS}
@@ -1083,16 +1102,7 @@ async def load_painful_texting_flag(account_id: str) -> bool:
     set the key to false to A/B it off per account. STYLE_FORCE_OFF forces it off."""
     if os.environ.get(_STYLE_FORCE_OFF_ENV):
         return False
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    raw = getattr(cfg, "style_config_json", None) if cfg else None
-    if not raw:
-        return True
-    try:
-        stored = json.loads(raw) or {}
-    except Exception:
-        return True
-    val = stored.get(PAINFUL_TEXTING_KEY)
+    val = (await _load_style_json(account_id)).get(PAINFUL_TEXTING_KEY)
     return True if val is None else bool(val)
 
 
@@ -1173,61 +1183,28 @@ async def load_cat_stickers_flag(account_id: str) -> bool:
     it with the rest of the realism stack."""
     if os.environ.get(_STYLE_FORCE_OFF_ENV):
         return False
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    raw = getattr(cfg, "style_config_json", None) if cfg else None
-    if not raw:
-        return True
-    try:
-        stored = json.loads(raw) or {}
-    except Exception:
-        return True
-    val = stored.get(CAT_STICKERS_KEY)
+    val = (await _load_style_json(account_id)).get(CAT_STICKERS_KEY)
     return True if val is None else bool(val)
 
 
 async def load_cat_sticker_tuning(account_id: str) -> tuple[float, float, float]:
     """Per-account cat-sticker rate knobs → (skip_w 0-1, solo_w 0-1, gap_min).
-    Reads the cat_sticker_*_pct/_gap_min keys of style_config_json; absent/
-    NULL/parse-error/non-numeric → the house defaults in cat_stickers.py
-    (wide open: skip 0, solo 5%, gap 0)."""
-    from . import cat_stickers as _cs
-    defaults = (_cs.DEFAULT_SKIP, _cs.DEFAULT_SOLO, _cs.DEFAULT_GAP_MIN)
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    raw = getattr(cfg, "style_config_json", None) if cfg else None
-    if not raw:
-        return defaults
-    try:
-        stored = json.loads(raw) or {}
-    except Exception:
-        return defaults
 
-    def _num(key: str, default: float, scale: float, hi: float) -> float:
-        v = stored.get(key)
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            return default
-        return min(max(float(v) * scale, 0.0), hi)
-
-    return (_num(CAT_STICKER_SKIP_PCT_KEY, defaults[0], 0.01, 1.0),
-            _num(CAT_STICKER_SOLO_PCT_KEY, defaults[1], 0.01, 1.0),
-            _num(CAT_STICKER_GAP_MIN_KEY, defaults[2], 1.0, 7 * 24 * 60))
+    ONE implementation, in `cat_stickers`, which owns the keys, the defaults and
+    the scaling — this used to be a byte-identical second copy of that reader's
+    `_num` helper, so a clamp changed in one place silently disagreed with the
+    other. Kept as a name here because it is where every other per-account
+    load_* reader lives, and `test_style_config` walks this module for them."""
+    from . import cat_stickers as _cs   # lazy: _cs imports this module
+    cfg = await _cs.load_cat_sticker_config(account_id)
+    return (cfg.skip_w, cfg.solo_w, cfg.gap_min)
 
 
 async def load_strip_emojis(account_id: str) -> bool:
     """Read account_ai_config.style_config_json → the account-wide 'strip_emojis'
     bool. Absent/NULL/parse-error → False (the safe default: emojis kept, current
     behavior unchanged). When True, senders strip emojis at the send chokepoint."""
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    raw = getattr(cfg, "style_config_json", None) if cfg else None
-    if not raw:
-        return False
-    try:
-        stored = json.loads(raw) or {}
-    except Exception:
-        return False
-    return bool(stored.get("strip_emojis"))
+    return bool((await _load_style_json(account_id)).get("strip_emojis"))
 
 
 def typo_flag_key(automation: str) -> str:
@@ -1247,9 +1224,7 @@ async def load_typo_flags(account_id: str) -> dict[str, bool]:
     (ai_chatter ON, all others OFF). STYLE_FORCE_OFF forces every flag False."""
     if os.environ.get(_STYLE_FORCE_OFF_ENV):
         return {k: False for k in STYLE_AUTOMATIONS}
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
+    stored = await _load_style_json(account_id)
     return {k: _resolve_style_flag(stored, k, typo_flag_key(k)) for k in STYLE_AUTOMATIONS}
 
 
@@ -1468,9 +1443,7 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
     OFF). STYLE_FORCE_OFF forces every flag False."""
     if os.environ.get(_STYLE_FORCE_OFF_ENV):
         return {k: False for k in STYLE_AUTOMATIONS}
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    stored = _parse_style_config(getattr(cfg, "style_config_json", None) if cfg else None)
+    stored = await _load_style_json(account_id)
     return {k: _resolve_style_flag(stored, k, nonnative_flag_key(k)) for k in STYLE_AUTOMATIONS}
 
 
@@ -1501,18 +1474,15 @@ CAT_STICKERS_KEY = "cat_stickers"
 CAT_STICKER_SKIP_PCT_KEY = "cat_sticker_skip_pct"  # % of replies that hide the pack
 CAT_STICKER_SOLO_PCT_KEY = "cat_sticker_solo_pct"  # % nudged to a gif-ONLY reply
 CAT_STICKER_GAP_MIN_KEY = "cat_sticker_gap_min"    # per-fan minutes between stickers
+# The cat-sticker READER lives with the feature (cat_stickers.load_cat_sticker_config);
+# the keys stay here beside every other style_config_json key the API validates.
 
 
 async def load_factground_flag(account_id: str) -> bool:
     """Read account_ai_config.style_config_json → the 'factground_welcome_chatter_for_info' bool for
     Auto Convo's rich-profile personalization. Absent/NULL/parse-error → True (default
     ON); only an EXPLICIT stored False turns it off."""
-    async with get_session() as s:
-        cfg = await s.get(AccountAiConfig, str(account_id))
-    raw = getattr(cfg, "style_config_json", None) if cfg else None
-    # Through the parse chokepoint: FACTGROUND_KEY was renamed 2026-08-19, and
-    # only _parse_style_config maps a legacy blob's explicit False to it.
-    return bool(_parse_style_config(raw).get(FACTGROUND_KEY, True))
+    return bool((await _load_style_json(account_id)).get(FACTGROUND_KEY, True))
 
 
 # ── "Hard" thumb-typo injector (opt-in, deterministic) ────────────────

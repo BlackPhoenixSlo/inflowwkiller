@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — Tip Rewards</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -385,6 +384,63 @@
   .rw-tiles{display:flex;gap:5px;margin-left:auto;flex:0 0 auto}
   .rw-out{font-size:12.5px;color:var(--muted);flex:0 0 auto;width:150px;text-align:left}
   .rw-time{font-size:12px;color:var(--muted2);flex:0 0 auto;width:66px;text-align:right}
+
+  /* ---- set-it-up-before-you-switch-it-on: the tier editor stays reachable while OFF ---- */
+  #tr-card .fx-tc-knobs{display:flex}
+  #tr-card:not(.on) .fx-tc-knobs{opacity:.66}
+  #tr-offnote{display:none;width:100%}
+  #tr-card:not(.on) #tr-offnote{display:flex}
+
+  /* ---- tier editor ---- */
+  .tier-row{flex-wrap:wrap}
+  .tier-name{width:104px;flex:0 0 104px;height:28px;font-size:12.5px;font-weight:600;padding:0 9px}
+  .tier-cond .fx-unit{width:96px}
+  .tier-cond .fx-unit .fx-input{height:28px;font-size:12.5px}
+  .tier-cond .cndrow{display:flex;align-items:center;gap:8px}
+  .tier-del{width:26px;height:26px;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+    border:1px solid var(--border);border-radius:8px;color:var(--muted2);font-size:13px;cursor:pointer;margin-left:8px}
+  .tier-del:hover{color:#f2295b;border-color:rgba(242,41,91,.45)}
+  .tier-folder{flex-wrap:wrap;gap:8px}
+  .fchip{display:inline-flex;align-items:center;gap:8px;background:#232323;border:1px solid var(--border-soft);
+    border-radius:9px;padding:4px 9px 4px 4px;max-width:250px}
+  .fchip.empty{border-color:rgba(254,188,46,.35);background:rgba(254,188,46,.05)}
+  .fchip img.fthumb{width:30px;height:30px;border-radius:7px;object-fit:cover;flex:0 0 auto;
+    border:1px solid rgba(255,255,255,.08);background:#1c1c1c}
+  .fchip .ftile{width:30px;height:30px;border-radius:7px;flex:0 0 auto;border:1px solid rgba(255,255,255,.08)}
+  .fchip .fnm{display:block;font-size:12.5px;font-weight:600;color:#fff;line-height:1.25;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+  .fchip .fmt{display:block;font-size:11px;color:var(--muted2);margin-top:1px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+  .fchip.empty .fmt{color:#e8cf9a}
+  .tier-add{margin-top:10px}
+
+  /* ---- folder picker overlay ---- */
+  .fp-back{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9995;display:flex;align-items:center;justify-content:center}
+  .fp-panel{background:var(--card);border:1px solid var(--border);border-radius:12px;width:520px;max-height:76vh;
+    display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .fp-head{padding:16px 18px 10px;font-size:15px;font-weight:600;color:#fff}
+  .fp-head .sub{display:block;font-size:12.5px;font-weight:400;color:var(--muted);margin-top:3px}
+  .fp-list{overflow-y:auto;padding:4px 10px 8px;flex:1;min-height:0}
+  .fp-row{display:flex;align-items:center;gap:11px;padding:7px 9px;border-radius:9px;cursor:pointer}
+  .fp-row:hover{background:#1c1c1c}
+  .fp-row.on{background:rgba(65,102,246,.12);outline:1px solid rgba(65,102,246,.35)}
+  .fp-row img,.fp-row .ftile{width:34px;height:34px;border-radius:8px;object-fit:cover;flex:0 0 auto;
+    border:1px solid rgba(255,255,255,.08);background:#1c1c1c}
+  .fp-row .nm{font-size:13.5px;font-weight:600;color:#fff}
+  .fp-row .mt{font-size:11.5px;color:var(--muted2);margin-top:1px}
+  .fp-row .mt.warnc{color:#e8cf9a}
+  .fp-row .tick{margin-left:auto;width:18px;height:18px;border-radius:5px;border:1.5px solid #4a4a4a;
+    display:flex;align-items:center;justify-content:center;font-size:11px;color:transparent;flex:0 0 auto}
+  .fp-row.on .tick{background:var(--accent);border-color:var(--accent);color:#fff}
+  .fp-foot{display:flex;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border-soft)}
+
+  /* ---- reward-delivery evidence ---- */
+  .ev-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border-soft)}
+  .ev-row.first{border-top:0;margin-top:8px}
+  .ev-txt{font-size:13.5px;color:#ddd;min-width:0}
+  .ev-txt b{color:#fff;font-weight:600}
+  .ev-out{font-size:12.5px;color:var(--muted);margin-left:auto;flex:0 0 auto}
+  .ev-time{font-size:12px;color:var(--muted2);flex:0 0 auto;width:66px;text-align:right}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -415,7 +471,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -494,7 +549,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -530,30 +585,40 @@
         <p class="pg-sub">A fan tips → he instantly gets a free thank-you: unseen vault pics, sent within seconds. <b>Bigger tippers unlock nicer folders</b> — and it all runs on its own.</p>
 
         <!-- status strip -->
-        <div class="fx-status">
-          <span class="fx-st ok"><i></i>Running</span>
-          <span class="fx-st"><i></i>9 rewards sent this week</span>
-          <span class="fx-st"><i></i>21 pics given away</span>
-          <span class="fx-st"><i></i>Biggest tip rewarded: $120</span>
-          <span class="fx-st"><i></i>Last reward 2 h ago</span>
+        <div class="fx-status" id="tr-strip">
+          <span class="fx-st ok" id="tr-st-run"><i></i>Running</span>
+          <span class="fx-st" id="tr-st-count"><i></i>9 rewards sent this week</span>
+          <span class="fx-st" id="tr-st-size"><i></i>21 pics given away</span>
+          <span class="fx-st" id="tr-st-big"><i></i>Biggest tip rewarded: $120</span>
+          <span class="fx-st" id="tr-st-last"><i></i>Last reward 2 h ago</span>
+          <span class="fx-st" id="tr-st-fired"><i></i>—</span>
+          <span class="ft-static" id="tr-sample-badge" style="align-self:center">SAMPLE NUMBERS — mock-up, not real tips</span>
         </div>
 
         <!-- PRIMARY: toggle card -->
-        <div class="fx-togglecard on">
+        <div class="fx-togglecard on" id="tr-card">
           <div class="fx-tc-row">
             <div class="fx-tc-ico green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M4 12h16M12 9v11" stroke-linecap="round"/><path d="M12 9c-4 0-5-1.6-5-3 0-1.2 1-2 2.2-2C11 4 12 6 12 9zm0 0c4 0 5-1.6 5-3 0-1.2-1-2-2.2-2C13 4 12 6 12 9z"/></svg></div>
             <div class="fx-tc-body">
               <div class="fx-tc-title">Reward every tip with free pics</div>
-              <div class="fx-tc-desc">Fan tips → send unseen vault pics automatically. <b style="color:#ddd">$10 per image</b>, 1–5 images per tip, tips counted over 72 h. He never gets a pic he's already seen.</div>
+              <div class="fx-tc-desc" id="tr-desc">Fan tips → send unseen vault pics automatically. <b style="color:#ddd">$10 per image</b>, 1–5 images per tip, tips counted over 72 h. He never gets a pic he's already seen.</div>
             </div>
             <span class="fx-tc-state">Running</span>
-            <span class="fx-switch on"></span>
+            <span class="fx-switch on" data-k="enabled"></span>
           </div>
 
           <div class="fx-tc-knobs">
+            <div class="fx-note warn" id="tr-offnote" style="margin-bottom:14px">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="flex:0 0 auto;margin-top:1px"><path d="M12 4l9 16H3l9-16z" stroke-linejoin="round"/><path d="M12 10v4" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg>
+              <span><b>Set it up first.</b> This automation is <b>off</b> — nothing sends. Pick the folder each tier draws from below, then flip the switch. Editing while off is safe.</span>
+            </div>
+            <div class="fx-note warn" id="tr-nofolders" style="margin-bottom:14px;display:none;width:100%">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="flex:0 0 auto;margin-top:1px"><path d="M12 4l9 16H3l9-16z" stroke-linejoin="round"/><path d="M12 10v4" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg>
+              <span><b>On, but nothing will send.</b> No tier has a vault folder picked yet — every tipper falls through with nothing to give. Add a folder to at least the <b>Basic</b> tier below.</span>
+            </div>
             <div style="width:100%">
-              <div style="font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted2);margin-bottom:10px">Which folder each tipper pulls from <span style="font-weight:500;text-transform:none;letter-spacing:0">— everything he tipped in the last 72 h counts</span></div>
-              <div class="tiers">
+              <div style="font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted2);margin-bottom:10px">Which folder each tipper pulls from <span style="font-weight:500;text-transform:none;letter-spacing:0" id="tr-tiers-note">— everything he tipped in the last 72 h counts</span> <span class="ft-static" id="tr-tier-sample" style="text-transform:none;letter-spacing:0">SAMPLE FOLDERS — mock-up</span></div>
+              <div class="tiers" id="tr-tiers">
                 <div class="tier-row">
                   <span class="tier-badge basic">Basic</span>
                   <div class="tier-cond"><b>Any tip</b> — $0+<span>every tipper starts here</span></div>
@@ -585,7 +650,8 @@
                   <span class="tier-swap">Change folder</span>
                 </div>
               </div>
-              <label class="fx-check on" style="margin-top:10px"><span class="bx"></span>Reward even mid-offer <span class="sub">the thank-you still sends while a paid offer is open — the offer is never interrupted</span></label>
+              <button class="fx-btn ghost btn-sm tier-add" id="tr-tier-add" type="button" style="height:32px;font-size:12.5px">+ Add tier</button>
+              <label class="fx-check on" style="margin-top:10px" id="tr-always" data-mk="always_reward"><span class="bx"></span>Reward even mid-offer <span class="sub">the thank-you still sends while a paid offer is open — the offer is never interrupted</span></label>
             </div>
           </div>
 
@@ -599,19 +665,26 @@
             <div class="fx-adv-body" id="adv-tr">
               <div class="fx-adv-group"><h4>Reward size</h4>
                 <div class="fx-grid2">
-                  <div class="fx-field"><label>Dollars per image <span style="color:var(--muted2);font-weight:400">— 1 pic for every this much tipped</span></label><div class="fx-unit" data-unit="$"><input class="fx-input" value="10"></div></div>
-                  <div class="fx-field"><label>Tips counted over (hours) <span style="color:var(--muted2);font-weight:400">— the tier window</span></label><input class="fx-input" value="72"></div>
-                  <div class="fx-field"><label>Fewest images <span style="color:var(--muted2);font-weight:400">— even a $3 tip gets this many</span></label><input class="fx-input" value="1"></div>
-                  <div class="fx-field"><label>Most images <span style="color:var(--muted2);font-weight:400">— a whale tip never drains a folder</span></label><input class="fx-input" value="5"></div>
+                  <div class="fx-field"><label>Dollars per image <span style="color:var(--muted2);font-weight:400">— 1 pic for every this much tipped</span></label><div class="fx-unit" data-unit="$"><input class="fx-input" value="10" id="tr-dpi"></div></div>
+                  <div class="fx-field"><label>Tips counted over (hours) <span style="color:var(--muted2);font-weight:400">— the tier window</span></label><input class="fx-input" value="72" id="tr-window"></div>
+                  <div class="fx-field"><label>Fewest images <span style="color:var(--muted2);font-weight:400">— even a $3 tip gets this many</span></label><input class="fx-input" value="1" id="tr-min"></div>
+                  <div class="fx-field"><label>Most images <span style="color:var(--muted2);font-weight:400">— a whale tip never drains a folder</span></label><input class="fx-input" value="5" id="tr-max"></div>
+                </div>
+              </div>
+              <div class="fx-adv-group" id="tr-ctx"><h4>Match the reward to what he asked for <span style="text-transform:none;letter-spacing:0;font-weight:500">— the context matcher</span></h4>
+                <label class="fx-check" id="tr-ctx-on"><span class="bx"></span>Read the thread and swap in photos that match his ask <span class="sub">needs the Vault&nbsp;AI describe pass — if nothing clearly matches, the bundle falls back to the tier folders unchanged</span></label>
+                <div class="fx-grid2" style="margin-top:8px">
+                  <div class="fx-field"><label>Slots it may swap <span style="color:var(--muted2);font-weight:400">— how many of the bundle's pics can be replaced</span></label><input class="fx-input" id="tr-ctx-max"></div>
+                  <div class="fx-field"><label>Messages it reads <span style="color:var(--muted2);font-weight:400">— how far back in the thread it looks</span></label><input class="fx-input" id="tr-ctx-msgs"></div>
                 </div>
               </div>
               <div class="fx-adv-group"><h4>Thank-you caption</h4>
                 <div class="fx-field">
-                  <textarea class="fx-input" placeholder="omg thank you babe 🥰 here's a little something just for you…"></textarea>
+                  <textarea class="fx-input" placeholder="omg thank you babe 🥰 here's a little something just for you…" id="tr-caption"></textarea>
                   <span style="font-size:12px;color:var(--muted2)">Leave empty to send the pics with no text — media-only reads most natural.</span>
                 </div>
               </div>
-              <div class="fx-adv-group"><h4>Bundle scaling <span style="text-transform:none;letter-spacing:0;font-weight:500">— size big rewards by a photo budget instead of a flat count</span></h4>
+              <div class="fx-adv-group" id="tr-bundle"><h4>Bundle scaling <span style="text-transform:none;letter-spacing:0;font-weight:500">— size big rewards by a photo budget instead of a flat count</span> <span class="ft-static" style="text-transform:none;letter-spacing:0">STATIC DEMO — not saveable yet</span></h4>
                 <label class="fx-check"><span class="bx"></span>Scale bundles with the amount <span class="sub">off = the flat 1–5 count above</span></label>
                 <div class="fx-grid3" style="margin-top:8px">
                   <div class="fx-field"><label>Free taste pics</label><input class="fx-input" value="1"></div>
@@ -633,9 +706,16 @@
           <span>Looking for the free pic-back when a fan sends a photo, or the hot-chat teasers? They moved to their own page → <a href="tips-image-reply.html" style="color:inherit;text-decoration:underline">Image Reply &amp; Teasers</a>. Asking fans to tip lives on <a href="tips-ask.html" style="color:inherit;text-decoration:underline">Tip Ask</a>.</span>
         </div>
 
+        <!-- reward deliveries (run log) -->
+        <div class="fx-card" id="tr-fires">
+          <div class="fx-card-h"><span id="tr-fires-title">Rewards delivered</span> <span style="margin-left:6px;font-size:12.5px;font-weight:600;color:var(--green)" id="tr-fires-n">…</span></div>
+          <div class="fx-card-sub" id="tr-fires-sub">Every time the reward lane actually fired, straight off the automation run log.</div>
+          <div id="tr-fires-body"></div>
+        </div>
+
         <!-- this week -->
-        <div class="fx-card">
-          <div class="fx-card-h">Sent this week <span style="margin-left:6px;font-size:12.5px;font-weight:600;color:var(--green)">9 rewards</span></div>
+        <div class="fx-card" id="tr-week">
+          <div class="fx-card-h"><span id="tr-week-title">Sent this week</span> <span style="margin-left:6px;font-size:12.5px;font-weight:600;color:var(--green)" id="tr-week-n">9 rewards</span> <span class="ft-static" id="tr-week-sample">SAMPLE ROWS — mock-up, not real tips</span></div>
           <div class="fx-card-sub">Every reward is picked fresh — only pics that fan has never been sent before.</div>
           <div class="rw-row first">
             <div class="rw-av" style="background:linear-gradient(135deg,#7d97f8,#4166f6)">MR</div>
@@ -678,6 +758,7 @@
 
 </div>
 
+<script src="_shared/fastt.js"></script>
 <script>
   // ==== CANONICAL SIDEBAR JS (identical on every page — do not fork) ====
   (function(){
@@ -768,5 +849,6 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="tips-rewards.js" id="page-wiring"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>fastt — AI Chatter</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -225,6 +224,12 @@
   .fx-preset ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
   .fx-preset li{font-size:12px;color:#b9b9b9;display:flex;gap:6px;align-items:baseline}
   .fx-preset li::before{content:"·";color:var(--accent);font-weight:700}
+  /* a preset with no backend knob on THIS page — dimmed so it plainly reads as a
+     signpost, not a live selectable mode, but still clickable to explain why */
+  .fx-preset.na{opacity:.58;cursor:help}
+  .fx-preset.na:hover{border-color:var(--border)}
+  .fx-preset.na.sel{border-color:var(--border);background:#1c1c1c}
+  .fx-preset.na.sel::after{content:none}
 
   /* slider */
   .fx-sliderrow{margin:14px 0}
@@ -335,6 +340,40 @@
   /* misc */
   .fx-kv{display:flex;gap:8px;font-size:13px;color:var(--muted);padding:3px 0}
   .fx-kv b{color:#ddd;font-weight:500}
+  /* explanatory note inside an advanced group (block, wraps) */
+  .fx-kv2{font-size:12.5px;color:var(--muted2);line-height:1.5;padding:2px 0}
+  .fx-kv2 b{color:#b9b9b9;font-weight:600}
+  /* a group whose master switch is off — visible but plainly inert */
+  .grp-off{opacity:.42;pointer-events:none}
+  /* live monitor */
+  .mon-chip{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:11px;
+    font-size:11px;font-weight:600;background:rgba(138,138,138,.12);border:1px solid var(--border);color:#b9b9b9}
+  .mon-chip.warn{background:rgba(254,188,46,.1);border-color:rgba(254,188,46,.3);color:#e8cf9a}
+  .mon-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:26px}
+  .mon-h2{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--muted2);margin-bottom:8px}
+  .mon-h2 span{font-weight:500;letter-spacing:0;text-transform:none;color:var(--muted2);margin-left:6px}
+  .mon-row{display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--border-soft);
+    font-size:13px;color:#ddd}
+  .mon-row:first-child{border-top:0}
+  .mon-fan{color:var(--muted);flex:0 0 auto;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mon-item{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mon-px{color:#b9b9b9;font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .mon-when{color:var(--muted2);font-size:11.5px;flex:0 0 auto}
+  .mon-x{background:transparent;border:0;color:var(--muted2);cursor:pointer;font-size:14px;
+    line-height:1;padding:2px 4px;flex:0 0 auto}
+  .mon-x:hover{color:#e5735b}
+  .mon-badge{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:10px;
+    font-size:10.5px;font-weight:600;flex:0 0 auto;
+    background:rgba(138,138,138,.12);border:1px solid var(--border);color:#9a9a9a}
+  .mon-badge.open{background:rgba(254,188,46,.1);border-color:rgba(254,188,46,.3);color:#e8cf9a}
+  .mon-badge.ok{background:rgba(103,209,174,.12);border-color:rgba(103,209,174,.3);color:var(--green)}
+  .mon-cols>div{align-self:start}
+  #mon-offers{max-height:372px;overflow-y:auto;padding-right:4px}
+  #mon-offers::-webkit-scrollbar{width:8px}
+  #mon-offers::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:4px}
+  .mon-empty{font-size:12.5px;color:var(--muted2);padding:8px 0;line-height:1.5}
+  .mon-more{font-size:12px;color:var(--muted2);padding-top:9px}
   .fx-new{font-size:9px;font-weight:700;letter-spacing:.03em;background:var(--accent);color:#fff;
     padding:2px 6px;border-radius:5px;vertical-align:middle}
   .fx-hr{height:1px;background:var(--border-soft);margin:16px 0;border:0}
@@ -367,13 +406,25 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="sim-css">
+  .sim-bubbles{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:12px}
+  .sim-bubble{background:rgba(236,75,155,.12);border:1px solid rgba(236,75,155,.3);color:#f4c4dd;
+    border-radius:16px 16px 16px 4px;padding:8px 14px;font-size:14px;line-height:1.45;max-width:72%;
+    white-space:pre-wrap;word-break:break-word}
+  .sim-offer{display:inline-flex;align-items:center;gap:7px;margin-top:12px;height:30px;padding:0 13px;
+    border-radius:15px;background:rgba(103,209,174,.12);border:1px solid rgba(103,209,174,.32);
+    color:var(--green);font-size:12.5px;font-weight:600}
+  .sim-loading{display:flex;align-items:center;gap:9px;margin-top:14px;font-size:13px;color:var(--muted)}
+  .sim-spin{width:15px;height:15px;border-radius:50%;border:2px solid #3a3a3a;border-top-color:var(--accent);
+    animation:sim-rot .7s linear infinite}
+  @keyframes sim-rot{to{transform:rotate(360deg)}}
+</style>
 </head>
 <body>
 <div class="app">
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -452,7 +503,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -484,44 +535,39 @@
         </div>
         <div class="sec-utc" style="color:#8a8a8a">Chats every fan and sells for you — pick how hard she pushes.</div>
         <div class="head-right">
-          <div class="dropdown">
+          <div class="dropdown" id="hdr-persona-drop">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.7"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg>
-            Aria
+            <span id="hdr-persona">Aria</span>
             <span class="cv"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           </div>
           <span style="font-size:13px;font-weight:600;color:#cfcfcf">AI Chatter</span>
-          <span class="fx-switch on"></span>
+          <span class="fx-switch on" id="hdr-enabled"></span>
         </div>
       </div>
 
       <!-- live status strip -->
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running</span>
-        <span class="fx-st"><i></i>Always-on</span>
-        <span class="fx-st"><i></i>Full seller</span>
-        <span class="fx-st"><i></i>DeepSeek V4 Flash</span>
-        <span class="fx-st"><i></i>$0.03 today</span>
+        <span class="fx-st ok" id="st-run"><i></i><span id="st-run-t">Running</span></span>
+        <span class="fx-st"><i></i><span id="st-mode-t">Always-on</span></span>
+        <span class="fx-st"><i></i><span id="st-seller-t">Full seller</span></span>
+        <span class="fx-st"><i></i><span id="st-model-t">DeepSeek V4 Flash</span></span>
+        <span class="fx-st"><i></i><span id="st-cost-t">$0.03 today</span></span>
       </div>
 
       <!-- ============ PRIMARY: preset ladder + the 4 dials ============ -->
-      <div class="fx-card">
+      <div class="fx-card" id="card-how">
         <div class="fx-card-h">How she sells</div>
         <div class="fx-card-sub" style="margin-bottom:10px">Pick one. Every dial below follows the preset — change a dial and it just overrides that one thing.</div>
 
-        <div class="fx-presets">
-          <div class="fx-preset">
+        <div class="fx-presets" id="presets">
+          <div class="fx-preset na" data-preset="chat">
             <div class="pn">Chat only</div>
-            <div class="pt">Talks, never sells.</div>
-            <ul><li>Replies to every fan</li><li>No offers, no prices</li><li>Great while you learn the tool</li></ul>
+            <div class="pt">AI Chatter always sells — pure chat lives in Auto Convo.</div>
+            <ul><li>Replies to every fan</li><li>No offers, no prices</li><li>Set it over in Auto Convo, not here</li></ul>
           </div>
-          <div class="fx-preset">
-            <div class="pn">Chat + Sell</div>
-            <div class="pt">Sells when the fan leans in.</div>
-            <ul><li>Closer mode — waits for buying intent</li><li>PPV offers, up to 7/day per fan</li><li>Hands whales ($2,000+) to your team</li></ul>
-          </div>
-          <div class="fx-preset sel">
+          <div class="fx-preset sel" data-preset="aggressive">
             <div class="pn">Aggressive Seller</div>
-            <div class="pt">Creates the intent itself — your current setup (the graded vault · Ava).</div>
+            <div class="pt" id="preset-aggr-t">Creates the intent itself.</div>
             <ul><li>Opens offers proactively</li><li>Nudges a quiet fan after 15 min</li><li>Shortest patience between asks</li></ul>
           </div>
         </div>
@@ -530,19 +576,19 @@
 
         <div class="fx-sliderrow">
           <div class="fx-sl-head"><span class="fx-sl-name">Whale cutoff</span><span class="fx-sl-hint">above this lifetime spend the AI hands the fan to your team</span><span class="fx-rv">$2,000</span></div>
-          <input type="range" class="fx-range" min="100" max="5000" step="100" value="2000" data-fmt="$%v">
+          <input type="range" class="fx-range" id="sl-whale" min="100" max="5000" step="100" value="2000" data-fmt="$%v">
         </div>
         <div class="fx-sliderrow">
-          <div class="fx-sl-head"><span class="fx-sl-name">Offers per day</span><span class="fx-sl-hint">most paid asks any one fan sees in a day · the graded vault: 8</span><span class="fx-rv">7/day</span></div>
-          <input type="range" class="fx-range" min="1" max="12" step="1" value="7" data-fmt="%v/day">
+          <div class="fx-sl-head"><span class="fx-sl-name">Offers per day</span><span class="fx-sl-hint">most paid asks any one fan sees in a day · 0 = unlimited</span><span class="fx-rv">7/day</span></div>
+          <input type="range" class="fx-range" id="sl-offers" min="0" max="12" step="1" value="7" data-fmt="%v/day">
         </div>
         <div class="fx-sliderrow">
           <div class="fx-sl-head"><span class="fx-sl-name">Patience</span><span class="fx-sl-hint">fan messages between offers</span><span class="fx-rv">2 msgs</span></div>
-          <input type="range" class="fx-range" min="1" max="8" step="1" value="2" data-fmt="%v msgs">
+          <input type="range" class="fx-range" id="sl-patience" min="1" max="8" step="1" value="2" data-fmt="%v msgs">
         </div>
         <div class="fx-sliderrow">
           <div class="fx-sl-head"><span class="fx-sl-name">Backup reply timing</span><span class="fx-sl-hint">if your team hasn't answered</span><span class="fx-rv">7 min</span></div>
-          <input type="range" class="fx-range" min="1" max="60" step="1" value="7" data-fmt="%v min">
+          <input type="range" class="fx-range" id="sl-sla" min="1" max="60" step="1" value="7" data-fmt="%v min">
         </div>
 
         <div class="fx-note" style="margin-top:6px">
@@ -552,13 +598,26 @@
       </div>
 
       <!-- ============ Sound human ============ -->
-      <div class="fx-card fx-human">
-        <div class="fx-card-h">Sound human<span style="margin-left:auto"></span><span class="fx-switch on"></span></div>
+      <div class="fx-card fx-human" id="sh-card">
+        <div class="fx-card-h">Sound human<span style="margin-left:auto"></span><span class="fx-switch on" id="sh-master"></span></div>
         <div class="fx-card-sub" style="margin-bottom:8px">Short girl-voice bubbles, real thumb typos, non-native touches. Applied to every AI reply on this page.</div>
-        <label class="fx-check on"><span class="bx"></span>Natural voice + 3-bubble split</label>
-        <label class="fx-check on"><span class="bx"></span>Occasional thumb typos <span class="sub">*fix follows, max 1/hr</span></label>
-        <label class="fx-check on"><span class="bx"></span>Non-native English touches</label>
-        <label class="fx-check on"><span class="bx"></span>Strip all emojis</label>
+        <label class="fx-check on" data-style="ai_chatter"><span class="bx"></span>Natural voice + 3-bubble split</label>
+        <label class="fx-check on" data-style="typos_ai_chatter"><span class="bx"></span>Occasional thumb typos <span class="sub">*fix follows, max 1/hr</span></label>
+        <label class="fx-check on" data-style="nonnative_ai_chatter"><span class="bx"></span>Non-native English touches</label>
+        <label class="fx-check on" data-style="strip_emojis"><span class="bx"></span>Strip all emojis</label>
+        <label class="fx-check on" data-style="cat_stickers"><span class="bx"></span>Cat reaction stickers <span class="sub">🐱 a hand-picked gif now and then · capped 1/fan every few hrs</span></label>
+      </div>
+
+      <!-- ============ Test her (dry-run simulate) ============ -->
+      <div class="fx-card" id="sim-card">
+        <div class="fx-card-h" id="sim-h">Test her</div>
+        <div class="fx-card-sub" style="margin-bottom:12px">Type what a fan might say and see exactly how she'd reply — her bubbles and any offer — using this creator's live persona, catalog and pricing. Dry run: <b style="color:#c9d3ff">nothing is sent to any fan</b>. Costs one small model call.</div>
+        <div style="display:flex;gap:10px;align-items:stretch">
+          <textarea class="fx-input" id="sim-in" style="flex:1;min-height:44px;height:44px;padding-top:11px" placeholder="ngl im kinda in the mood.. u got anything for me? 🥵"></textarea>
+          <button class="fx-btn" id="sim-run" style="flex:0 0 auto;align-self:stretch">Run test</button>
+        </div>
+        <div class="fx-kv2" style="margin-top:6px">Tip: press ⌘/Ctrl + Enter to run.</div>
+        <div id="sim-out" style="margin-top:6px"></div>
       </div>
 
       <!-- ============ Advanced drawer ============ -->
@@ -574,84 +633,102 @@
             <div class="fx-adv-group"><h4>Selling mode</h4>
               <div class="fx-grid2" style="margin-bottom:12px">
                 <div class="fx-field"><label>When she works the inbox</label>
-                  <div class="fx-seg" data-single><button class="on">Always on</button><button>Backup — only missed chats</button></div>
-                </div>
-                <div class="fx-field"><label>What she offers</label>
-                  <div class="fx-seg" data-single><button class="on">PPV</button><button>Tips</button><button>Both</button></div>
+                  <div class="fx-seg" data-single data-seg="mode"><button class="on" data-val="always">Always on</button><button data-val="backup">Backup — only missed chats</button></div>
                 </div>
               </div>
-              <label class="fx-check" style="margin-bottom:10px"><span class="bx"></span>Closer mode <span class="sub">only prices a fan who shows real buying intent — chit-chat stays free</span></label>
-              <label class="fx-check on" style="margin-bottom:10px"><span class="bx"></span>Qualification gate <span class="sub">qualifies the fan before the first priced ask</span></label>
-              <label class="fx-check on" style="margin-bottom:10px"><span class="bx"></span>Engage old fans <span class="sub">also works fans who subscribed before the AI went live</span></label>
+              <label class="fx-check on" style="margin-bottom:10px" data-cfg="qualification_gate_enabled"><span class="bx"></span>Qualification gate <span class="sub">qualifies the fan before the first priced ask</span></label>
+              <div style="display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:10px">
+                <label class="fx-check on" style="padding-bottom:9px" data-cfg="engage_old_fans"><span class="bx"></span>Engage old fans <span class="sub">also works fans who subscribed before the AI went live</span></label>
+                <div class="fx-field" id="grp-oldfan" style="width:190px"><label>Get-to-know question every (replies)</label><input class="fx-input" id="adv-oldfan-every" value="10"></div>
+              </div>
               <div style="display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:12px">
-                <label class="fx-check on" style="padding-bottom:9px"><span class="bx"></span>Force the ask <span class="sub">makes an offer even if the fan never shows intent</span></label>
-                <div class="fx-field" style="width:150px"><label>After fan messages</label><input class="fx-input" value="9"></div>
+                <label class="fx-check on" style="padding-bottom:9px" data-cfg="force_ask"><span class="bx"></span>Force the ask <span class="sub">makes an offer even if the fan never shows intent</span></label>
+                <div class="fx-field" style="width:150px"><label>After fan messages</label><input class="fx-input" id="adv-ask-after" value="9"></div>
               </div>
               <div class="fx-grid3">
-                <div class="fx-field"><label>Resume after a human chats (hours — 0 = immediately)</label><input class="fx-input" value="0"></div>
-                <div class="fx-field"><label>Open-offer expiry (hours)</label><input class="fx-input" value="2"></div>
-                <div class="fx-field"><label>Max open offers per fan</label><input class="fx-input" value="2"></div>
+                <div class="fx-field"><label>Resume after a human chats (hours — 0 = immediately)</label><input class="fx-input" id="adv-resume" value="0"></div>
+                <div class="fx-field"><label>Open-offer expiry (hours)</label><input class="fx-input" id="adv-expiry-h" value="2"></div>
+                <div class="fx-field"><label>Max open offers per fan</label><input class="fx-input" id="adv-max-open" value="2"></div>
               </div>
             </div>
 
-            <div class="fx-adv-group"><h4>Tip ladder</h4>
-              <div class="fx-grid2" style="margin-bottom:12px">
-                <div class="fx-field"><label>Base ask</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="10"></div></div>
-                <div class="fx-field"><label>Step after a tip (×)</label><input class="fx-input" value="2.0"></div>
-                <div class="fx-field"><label>Floor — never ask below</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="5"></div></div>
-                <div class="fx-field"><label>Cap — never ask above</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="200"></div></div>
-              </div>
-              <div class="fx-grid2" style="margin-bottom:12px">
-                <div class="fx-field"><label>No-bite haircut, low (% of last ask)</label><input class="fx-input" value="65"></div>
-                <div class="fx-field"><label>No-bite haircut, high (% of last ask)</label><input class="fx-input" value="73"></div>
-              </div>
+            <div class="fx-adv-group"><h4>Pricing</h4>
               <div style="display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap">
-                <label class="fx-check on" style="padding-bottom:9px"><span class="bx"></span>Proven-spend floor <span class="sub">never ask below what he's already paid once</span></label>
-                <div class="fx-field" style="width:150px"><label>Floor = biggest buy ×</label><input class="fx-input" value="0.38"></div>
+                <label class="fx-check on" style="padding-bottom:9px" data-cfg="proven_spend_floor_enabled"><span class="bx"></span>Proven-spend floor <span class="sub">never ask below what he's already paid once</span></label>
+                <div class="fx-field" style="width:150px"><label>Floor = biggest buy ×</label><input class="fx-input" id="adv-psf-mult" value="0.38"></div>
               </div>
               <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:10px">
-                <label class="fx-check on"><span class="bx"></span>Smart pricing <span class="sub">adapts each ask to what this fan actually pays</span></label>
-                <label class="fx-check on"><span class="bx"></span>Post-buy rung <span class="sub">offers the next rung right after a purchase</span></label>
-                <label class="fx-check on"><span class="bx"></span>Free gift after 2 paid rungs <span class="sub">a thank-you drop to keep him warm</span></label>
+                <label class="fx-check on" data-cfg="smart_pricing_enabled"><span class="bx"></span>Smart pricing <span class="sub">adapts each ask to what this fan actually pays</span></label>
+                <label class="fx-check on" data-cfg="post_buy_rung_enabled"><span class="bx"></span>Post-buy rung <span class="sub">offers the next rung right after a purchase</span></label>
+                <label class="fx-check on" data-cfg="gift_enabled"><span class="bx"></span>Free gift after 2 paid rungs <span class="sub">a thank-you drop to keep him warm</span></label>
               </div>
             </div>
 
             <div class="fx-adv-group"><h4>Cadence &amp; stop rules</h4>
+              <label class="fx-check" style="margin-bottom:8px" data-cfg="cadence_enabled" id="ck-cadence"><span class="bx"></span><b style="font-weight:600">Cadence on</b> <span class="sub">master switch — she backs off after a burst instead of chatting/selling forever. With it off, every knob below does nothing.</span></label>
+              <div id="grp-cadence">
               <div class="fx-grid2" style="margin-bottom:12px">
-                <div class="fx-field"><label>Replies per burst — normal chat</label><input class="fx-input" value="10"></div>
-                <div class="fx-field"><label>Replies per burst — buying signal</label><input class="fx-input" value="20"></div>
-                <div class="fx-field"><label>Replies per burst — gone cold on an offer</label><input class="fx-input" value="5"></div>
-                <div class="fx-field"><label>Replies per burst — he sent a photo</label><input class="fx-input" value="25"></div>
+                <div class="fx-field"><label>Replies per burst — normal chat</label><input class="fx-input" id="adv-ml-baseline" value="10"></div>
+                <div class="fx-field"><label>Replies per burst — buying signal</label><input class="fx-input" id="adv-ml-buying" value="20"></div>
+                <div class="fx-field"><label>Replies per burst — gone cold on an offer</label><input class="fx-input" id="adv-ml-nosig" value="5"></div>
+                <div class="fx-field"><label>Replies per burst — he sent a photo</label><input class="fx-input" id="adv-ml-pic" value="25"></div>
+              </div>
+              <div class="fx-kv2" style="margin:-4px 0 10px">Proven-spender <b>floor</b> — a fan who has actually PAID this much recently gets at least this cap. It only ever RAISES the signal cap (cap = max(signal, spend)); 0 in either box turns that rule off.</div>
+              <div class="fx-grid2" id="grp-spend" style="margin-bottom:12px">
+                <div class="fx-field"><label>Spent in the last 30 days</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="adv-sp30-min" value=""></div></div>
+                <div class="fx-field"><label>→ cap (replies per burst)</label><input class="fx-input" id="adv-sp30-cap" value=""></div>
+                <div class="fx-field"><label>Spent in the last 7 days</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="adv-sp7-min" value=""></div></div>
+                <div class="fx-field"><label>→ cap (replies per burst)</label><input class="fx-input" id="adv-sp7-cap" value=""></div>
               </div>
               <div class="fx-grid2" style="margin-bottom:12px">
-                <div class="fx-field"><label>Silence that ends a burst (minutes)</label><input class="fx-input" value="60"></div>
-                <div class="fx-field"><label>Keep chatting after a buy (minutes)</label><input class="fx-input" value="25"></div>
+                <div class="fx-field"><label>Silence that ends a burst (minutes)</label><input class="fx-input" id="adv-session-gap" value="60"></div>
+                <div class="fx-field"><label>Keep chatting after a buy (minutes)</label><input class="fx-input" id="adv-post-buy" value="25"></div>
               </div>
               <div style="display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap">
-                <label class="fx-check on" style="padding-bottom:9px"><span class="bx"></span>Re-engage nudge <span class="sub">one gentle follow-up if he goes quiet on an open offer</span></label>
-                <div class="fx-field" style="width:150px"><label>Nudge after (minutes)</label><input class="fx-input" value="15"></div>
+                <label class="fx-check on" style="padding-bottom:9px" data-cfg="nudge_enabled"><span class="bx"></span>Re-engage nudge <span class="sub">one gentle follow-up if he goes quiet on an open offer</span></label>
+                <div class="fx-field" style="width:150px"><label>Nudge after (minutes)</label><input class="fx-input" id="adv-nudge-after" value="15"></div>
               </div>
+              </div><!-- /#grp-cadence -->
             </div>
 
             <div class="fx-adv-group"><h4>Safety</h4>
               <div class="fx-grid2" style="margin-bottom:12px">
-                <div class="fx-field"><label>Spend-velocity brake (per fan / 7 days)</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="600"></div></div>
-                <div class="fx-field"><label>Stop climbing after unpaid rungs</label><input class="fx-input" value="2"></div>
-                <div class="fx-field"><label>Haggle discount when he pushes back (%)</label><input class="fx-input" value="10"></div>
-                <div class="fx-field"><label>Teaser re-send discount (%)</label><input class="fx-input" value="20"></div>
+                <div class="fx-field"><label>Spend-velocity brake (per fan / 7 days)</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="adv-velocity" value="600"></div></div>
+                <div class="fx-field"><label>Stop climbing after unpaid rungs</label><input class="fx-input" id="adv-stop-unpaid" value="2"></div>
+                <div class="fx-field"><label>Haggle discount when he pushes back (%)</label><input class="fx-input" id="adv-haggle" value="10"></div>
+                <div class="fx-field"><label>Teaser re-send discount (%)</label><input class="fx-input" id="adv-teaser" value="20"></div>
               </div>
-              <label class="fx-check"><span class="bx"></span>Unsend expired offers <span class="sub">pulls the unbought PPV so the thread stays clean</span></label>
+              <label class="fx-check" data-cfg="unsend_expired_offer"><span class="bx"></span>Unsend expired offers <span class="sub">pulls the unbought PPV so the thread stays clean</span></label>
             </div>
 
             <div class="fx-adv-group" style="margin-bottom:4px"><h4>Model</h4>
               <div class="fx-grid2">
                 <div class="fx-field"><label>Chat model</label>
-                  <select class="fx-select"><option selected>DeepSeek V4 Flash</option><option>DeepSeek Chat</option><option>DeepSeek Reasoner</option></select>
+                  <select class="fx-select" id="adv-model"><option selected>DeepSeek V4 Flash</option><option>DeepSeek Chat</option><option>DeepSeek Reasoner</option></select>
                 </div>
-                <div class="fx-field"><label>Daily model-cost cap (per account)</label><div class="fx-unit" data-unit="$"><input class="fx-input" value="3.00"></div></div>
+                <div class="fx-field"><label>Daily model-cost cap (per account)</label><div class="fx-unit" data-unit="$"><input class="fx-input" id="adv-cost-cap" value="3.00"></div></div>
               </div>
             </div>
 
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Live monitor ============ -->
+      <div class="fx-card" id="mon-card">
+        <div class="fx-card-h" id="mon-h">Live monitor
+          <span class="mon-chip" id="mon-open">—</span>
+          <button class="fx-btn ghost" id="mon-refresh" style="margin-left:auto;height:32px;padding:0 14px;font-size:12.5px">Refresh</button>
+        </div>
+        <div class="fx-card-sub" style="margin-bottom:14px">Every content offer she has put in front of a fan, newest first — and the script pins that keep a multi-part scene in order.</div>
+        <div class="mon-cols">
+          <div>
+            <div class="mon-h2">Script pins</div>
+            <div id="mon-pins"></div>
+          </div>
+          <div>
+            <div class="mon-h2">Offers <span id="mon-count"></span></div>
+            <div id="mon-offers"></div>
           </div>
         </div>
       </div>
@@ -755,5 +832,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="ai-chatter.js" id="wire-js"></script>
 </body>
 </html>

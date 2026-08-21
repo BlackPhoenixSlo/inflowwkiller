@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>fastt — Auto-learn Fans</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -386,7 +385,7 @@
   .alp-meta{font-size:12.5px;color:var(--muted);margin-top:2px}
   .alp-row{display:flex;gap:10px;align-items:baseline;font-size:13px;color:var(--muted);padding:2px 0 6px}
   .alp-row b{color:#fff;font-weight:600}
-  .alp-lbl{font-size:12px;color:var(--muted2)}
+  .alp-lbl{font-size:12px;color:var(--muted2);white-space:nowrap}
   .alp-tags{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 4px}
   .alp-tag{height:26px;display:inline-flex;align-items:center;padding:0 10px;border-radius:13px;background:#1c1c1c;border:1px solid var(--border-soft);font-size:12px;color:#b9b9b9}
   .alp-sec{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted2);margin:14px 0 7px}
@@ -395,6 +394,36 @@
   .alp-q svg{flex:0 0 auto;margin-top:2px;color:#7d97f8}
   .alp-q.pink svg{color:#ec6ba8}
   .alp-foot{font-size:12px;color:var(--muted2);margin-top:12px;border-top:1px solid var(--border-soft);padding-top:10px}
+  .alp-ava img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+  .alp-lang{margin-left:auto;font-size:11px;color:#c9d3ff;background:rgba(65,102,246,.12);
+    border:1px solid rgba(65,102,246,.28);border-radius:11px;padding:2px 9px;align-self:flex-start}
+  .alp-empty{font-size:12.5px;color:var(--muted2);padding:3px 0 6px;line-height:1.5}
+  /* always-visible evidence row under the master toggle */
+  .al-facts{margin-top:14px;padding-top:13px;border-top:1px solid var(--border-soft);
+    display:flex;flex-direction:column;gap:5px}
+  /* .fx-kv is a flex row by default, which shreds a sentence with <b> in it */
+  .al-facts .fx-kv{display:block;line-height:1.55;padding:1px 0}
+  .al-facts .fx-kv b{color:#fff;font-weight:600}
+  /* last-pass panel */
+  .al-pass-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}
+  .al-pv{background:#1c1c1c;border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
+  .al-pv b{display:block;font-size:19px;font-weight:700;color:#fff;line-height:1.15;letter-spacing:-.3px}
+  .al-pv.zero b{color:var(--muted2)}
+  .al-pv.warn b{color:#e8cf9a}
+  .al-pv span{font-size:11.5px;color:var(--muted);display:block;margin-top:3px}
+  .al-hist{width:100%;border-collapse:collapse;margin-top:14px}
+  .al-hist th{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted2);
+    text-align:left;padding:7px 8px;border-bottom:1px solid var(--border-soft);white-space:nowrap}
+  .al-hist td{padding:7px 8px;border-bottom:1px solid var(--border-soft);font-size:12.5px;color:#cfcfcf;white-space:nowrap}
+  .al-hist tr:last-child td{border-bottom:0}
+  .al-hist .num{text-align:right;font-variant-numeric:tabular-nums}
+  .al-hist .dim{color:var(--muted2)}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+    background:rgba(255,255,255,.06);border-radius:4px;padding:1px 4px}
+  /* read-only constant: looks like a field, is not one (nothing exposes these) */
+  .al-ro{background:#1c1c1c;border:1px solid var(--border);border-radius:9px;color:#cfcfcf;
+    font-size:13.5px;line-height:1.4;padding:9px 12px;min-height:38px}
+  .al-ro b{color:#fff;font-weight:600}
 </style>
 <style id="ms-css">
   .modelswap{position:relative;margin-left:14px;z-index:60}
@@ -425,7 +454,6 @@
 
   <!-- ================= TOP BAR ================= -->
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/>
@@ -504,7 +532,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -539,30 +567,45 @@
 
       <!-- status strip -->
       <div class="fx-status">
-        <span class="fx-st ok"><i></i>Running</span>
-        <span class="fx-st"><i></i>Last pass 22 min ago</span>
-        <span class="fx-st"><i></i>DeepSeek Chat</span>
-        <span class="fx-st"><i></i>$0.04 today</span>
+        <span class="fx-st" id="al-st-run"><i></i>Loading…</span>
+        <span class="fx-st" id="al-st-last"><i></i>Last pass —</span>
+        <span class="fx-st" id="al-st-model"><i></i>—</span>
+        <span class="fx-st" id="al-st-cost"><i></i>profiling today —</span>
+        <span class="fx-st" id="al-st-life"><i></i>lifetime —</span>
       </div>
 
       <div class="al-cols">
         <div class="al-left">
 
           <!-- PRIMARY: the one toggle -->
-          <div class="fx-togglecard on">
+          <div class="fx-togglecard" id="al-card">
             <div class="fx-tc-row">
               <div class="fx-tc-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 19.5c.7-3.4 3.2-5.2 6.5-5.2s5.8 1.8 6.5 5.2" stroke-linecap="round"/></svg></div>
               <div class="fx-tc-body">
                 <div class="fx-tc-title">Auto-learn fans</div>
                 <div class="fx-tc-desc">AI reads every conversation and keeps a living profile per fan — real name, job, interests, what to ask next.</div>
               </div>
-              <span class="fx-tc-state">Running</span>
-              <span class="fx-switch on"></span>
+              <span class="fx-tc-state" id="al-state">…</span>
+              <span class="fx-switch" id="al-switch"></span>
             </div>
-            <div class="fx-tc-knobs">
-              <label class="fx-check on"><span class="bx"></span>Write nicknames &amp; notes to OnlyFans <span class="sub">notes save for active subscribers only</span></label>
-              <div class="fx-kv"><b>2,041</b> fans profiled · spend-tiered refresh · next pass in <b>38 min</b></div>
+            <!-- deliberately OUTSIDE .fx-tc-knobs: knobs are hidden while the rule
+                 is off (the shipped default), and this is the only real evidence
+                 on the page of what the last sweep actually did -->
+            <div class="al-facts">
+              <label class="fx-check" id="al-push-check"><span class="bx"></span>Write nicknames &amp; notes to OnlyFans <span class="sub">notes save for active subscribers only</span></label>
+              <div class="fx-kv" id="al-push-evi">last push <b>—</b></div>
+              <div class="fx-kv" id="al-kv"><b>—</b> fans profiled · spend-tiered refresh</div>
             </div>
+          </div>
+
+          <!-- gen_info's OWN last pass — the "why did nothing change" panel -->
+          <div class="fx-card" id="al-pass-card">
+            <div class="fx-card-h" style="margin-bottom:2px">Last profiling pass
+              <span style="margin-left:auto;font-size:13px;font-weight:400;color:var(--muted)" id="al-pass-when">—</span>
+            </div>
+            <div class="fx-card-sub" id="al-pass-verdict">Reading the run log…</div>
+            <div class="al-pass-grid" id="al-pass-grid"></div>
+            <div id="al-pass-hist"></div>
           </div>
 
           <div class="fx-note" style="margin-bottom:14px">Profiles feed everything — AI Chatter opens with his hobbies, offers land on his payday, and the fan drawer shows his story at a glance.</div>
@@ -577,35 +620,47 @@
               </div>
               <div class="fx-adv-body" id="adv-learn">
 
-                <div class="fx-adv-group"><h4>Refresh cadence — by spend tier</h4>
+                <div class="fx-adv-group" id="al-cadence-group"><h4>Refresh cadence — by spend tier</h4>
                   <div class="fx-grid3">
-                    <div class="fx-field"><label>Whales &amp; recent payers</label>
-                      <select class="fx-select"><option selected>Daily</option><option>Every 3 days</option><option>Weekly</option></select>
+                    <div class="fx-field"><label>Paying <span style="color:var(--muted2)">spent in the last 7 d, or ≥ $500 lifetime</span></label>
+                      <div class="al-ro">Every <b>2 days</b> · or <b>55</b> new msgs</div>
                     </div>
-                    <div class="fx-field"><label>Mid spenders &amp; new subs</label>
-                      <select class="fx-select"><option>Daily</option><option selected>Every 3 days</option><option>Weekly</option></select>
+                    <div class="fx-field"><label>Middle <span style="color:var(--muted2)">new sub &lt; 7 d, or a lapsed payer</span></label>
+                      <div class="al-ro">Every <b>2 days</b> · or <b>89</b> new msgs</div>
                     </div>
-                    <div class="fx-field"><label>Low spend / never paid</label>
-                      <select class="fx-select"><option>Daily</option><option>Every 3 days</option><option selected>Weekly</option></select>
+                    <div class="fx-field"><label>Cold <span style="color:var(--muted2)">$0 lifetime and not a new sub</span></label>
+                      <div class="al-ro">Every <b>7 days</b> · or <b>89</b> new msgs</div>
                     </div>
                   </div>
-                  <div class="fx-note" style="margin-top:12px">Big spenders stay freshest. A profile only rebuilds after the fan actually says something new — no new chat, no AI call.</div>
+                  <div class="fx-grid2" style="margin-top:12px">
+                    <div class="fx-field"><label>Rebuild gate — new messages from him since the last profile</label>
+                      <div class="al-ro"><b>8</b> new inbound messages</div>
+                    </div>
+                  </div>
+                  <div class="fx-note" style="margin-top:12px"><span>Read from <code>service/automations/gen_info.py</code>: the gate runs <b>first</b> — under
+                    <b>_MIN_NEW_MSGS = 8</b> new inbound messages a profile never rebuilds, whatever the tier. Past the gate it refreshes on
+                    <b>either</b> the time window <b>or</b> the new-message cap for that fan's spend tier
+                    (<b>_CADENCE_PAYING</b> 2 d / 55, <b>_CADENCE_MIDDLE</b> 2 d / 89, <b>_CADENCE_COLD</b> 7 d / 89).</span></div>
                 </div>
 
                 <div class="fx-adv-group"><h4>Who gets profiled</h4>
                   <div class="fx-grid2">
-                    <div class="fx-field"><label>Minimum messages from the fan</label><input class="fx-input" value="1"></div>
-                    <div class="fx-field"><label>Fans swept per pass</label><input class="fx-input" value="200"></div>
+                    <div class="fx-field" id="al-min-field"><label>Minimum messages from the fan</label><input class="fx-input" id="al-min-msgs" value="1"></div>
+                    <div class="fx-field"><label>Fans swept per pass</label><input class="fx-input" id="al-limit" value="200"></div>
                   </div>
-                  <label class="fx-check on" style="margin-top:8px"><span class="bx"></span>Skip other creators we follow <span class="sub">promo accounts never get profiled</span></label>
+                  <label class="fx-check on" id="al-skip-check" style="margin-top:8px"><span class="bx"></span>Skip muted creators, and promo blasters with $0 spend <span class="sub">two tests, both re-evaluated every pass</span></label>
+                  <div class="fx-note warn" style="margin-top:10px"><span>The blunt &ldquo;skip every creator we follow&rdquo; test was <b>retired on 2026-07-24</b> — OF's
+                    <code>creator_we_follow</code> flag only means we're subscribed to them, which is true of any fan a free page followed back, and it silently
+                    stopped profiling <b>71 real fans</b> for five weeks. Today <code>gen_info</code> skips a fan only when (i) we <b>muted</b> that creator's chat, or
+                    (ii) he is in the account's <b>promo-blaster set</b> <i>and</i> has spent <b>$0</b>. Any spend rescues him from the guard.</span></div>
                 </div>
 
                 <div class="fx-adv-group"><h4>Model &amp; budget</h4>
                   <div class="fx-grid2">
                     <div class="fx-field"><label>Profiling model</label>
-                      <select class="fx-select"><option selected>DeepSeek Chat</option><option>DeepSeek V4 Flash</option></select>
+                      <select class="fx-select" id="al-model"><option value="">Account default</option><option value="deepseek-chat">DeepSeek Chat</option><option value="deepseek-v4-flash">DeepSeek V4 Flash</option></select>
                     </div>
-                    <div class="fx-field"><label>Push nicknames to OF</label>
+                    <div class="fx-field" id="al-push-field"><label>Push nicknames to OF</label>
                       <select class="fx-select"><option selected>Nickname + note</option><option>Nickname only</option><option>Keep in fastt only</option></select>
                     </div>
                   </div>
@@ -614,8 +669,8 @@
 
                 <div class="fx-adv-group" style="margin-bottom:0"><h4>Force-refresh one fan</h4>
                   <div style="display:flex;gap:10px;align-items:center">
-                    <input class="fx-input" style="flex:1" placeholder="Fan name or ID — e.g. Mike R.">
-                    <button class="fx-btn ghost">Refresh now</button>
+                    <input class="fx-input" id="al-force-id" style="flex:1" placeholder="Fan ID — e.g. 137376434">
+                    <button class="fx-btn ghost" id="al-force-btn">Refresh now</button>
                   </div>
                   <div style="font-size:12px;color:var(--muted2);margin-top:7px">Skips every gate and rebuilds that fan's profile immediately.</div>
                 </div>
@@ -626,45 +681,17 @@
 
         </div>
 
-        <!-- EXAMPLE profile card -->
+        <!-- REAL profile card — one profiled fan, picked from the live roster -->
         <div class="al-right">
-          <div class="fx-card" style="margin-bottom:0">
+          <div class="fx-card" id="al-prof-card" style="margin-bottom:0">
             <div class="fx-card-h">What a profile looks like
-              <span class="alp-badge">Example</span>
+              <span class="alp-badge" id="al-prof-badge">loading</span>
             </div>
-            <div class="fx-card-sub" style="margin-bottom:14px">One living card per fan — rebuilt as he shares more.</div>
-
-            <div class="alp-head">
-              <div class="alp-ava">MR</div>
-              <div>
-                <div class="alp-name">Mike R.</div>
-                <div class="alp-meta">42 · Edmonton · $184 lifetime · profiled 2 h ago</div>
-              </div>
+            <div class="fx-card-sub" style="margin-bottom:12px">One living card per fan — rebuilt as he shares more. This is a real profile from this creator's roster.</div>
+            <select class="fx-select" id="al-fan-pick" style="margin-bottom:14px"><option>Loading profiled fans…</option></select>
+            <div id="al-prof-body">
+              <div style="font-size:13px;color:var(--muted);padding:10px 0">Loading the first profiled fan…</div>
             </div>
-
-            <div class="alp-row"><span class="alp-lbl">Nickname → OF</span><b>hockey guy Mike</b></div>
-
-            <div class="alp-tags">
-              <span class="alp-tag">Bus driver</span>
-              <span class="alp-tag">Hockey</span>
-              <span class="alp-tag">Camping</span>
-              <span class="alp-tag">Night shifts</span>
-            </div>
-
-            <div class="alp-sec">Note pushed to OnlyFans</div>
-            <div class="alp-note">42 · Edmonton · bus driver (nights) · hockey — Oilers fan · camping in Jasper · payday the 15th</div>
-
-            <div class="alp-sec">Questions it will ask</div>
-            <div class="alp-q"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg>How'd the Oilers do Saturday — did you catch the game after your shift?</div>
-            <div class="alp-q"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg>Are the night shifts still wearing you out, or are you back on mornings?</div>
-            <div class="alp-q"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg>Did you ever book that Jasper camping trip you keep talking about?</div>
-
-            <div class="alp-sec">Tease lines</div>
-            <div class="alp-q pink"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20s-7-4.5-7-9.5A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7 2.5C19 15.5 12 20 12 20z" stroke-linejoin="round"/></svg>bet you're everyone's favourite driver on that route</div>
-            <div class="alp-q pink"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20s-7-4.5-7-9.5A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7 2.5C19 15.5 12 20 12 20z" stroke-linejoin="round"/></svg>keeping you company on that late shift tonight…</div>
-            <div class="alp-q pink"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20s-7-4.5-7-9.5A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7 2.5C19 15.5 12 20 12 20z" stroke-linejoin="round"/></svg>you've earned something nice after a double shift</div>
-
-            <div class="alp-foot">Rebuilt automatically when Mike shares something new.</div>
           </div>
         </div>
       </div>
@@ -768,5 +795,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="fans-auto-learn.js"></script>
 </body>
 </html>

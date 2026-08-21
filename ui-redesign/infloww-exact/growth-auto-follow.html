@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Auto-follow</title>
+<!-- the relay serves no /favicon.ico, so Chrome's implicit request 404s and
+     lands in the console as an error on every page. Blank data-URI icon = no request. -->
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,7 +32,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +47,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +89,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -345,6 +346,82 @@
   .nav-item.active{background:#1c1c1c;border:1px solid #2b2b2b;color:#fff;box-shadow:0 1px 0 rgba(255,255,255,.04), 0 2px 8px rgba(0,0,0,.4)}
   .nav-item.active .ico{color:#fff}
   .spacer{flex:1}
+
+  /* ==== additive: real auto-follow config surface (Infloww palette only) ==== */
+  .af-sel,.af-num{height:44px;padding:0 12px;background:#141414;border:1px solid #2b2b2b;border-radius:9px;
+    color:#eee;font-family:inherit;font-size:14.5px;outline:0;width:100%}
+  .af-sel{appearance:none;-webkit-appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2'><path d='M6 9l6 6 6-6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 10px center;padding-right:32px}
+  .af-sel:focus,.af-num:focus{border-color:#4166f6}
+  .af-card{background:#141414;border:1px solid #262626;border-radius:12px;padding:20px 22px;margin-top:22px}
+  .af-card h3{font-size:16px;font-weight:600;color:#fff;margin:0;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .af-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 18px;margin-top:18px}
+  .af-f{display:flex;flex-direction:column;gap:7px;min-width:0}
+  .af-f>span{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#8a8a8a}
+  .af-hint{font-size:12.5px;color:#8a8a8a;line-height:1.5}
+  .af-chks{display:flex;flex-wrap:wrap;gap:22px;margin-top:18px}
+  .af-chk{display:flex;align-items:center;gap:9px;font-size:14.5px;color:#e6e6e6;cursor:pointer}
+  .af-chk input{width:17px;height:17px;accent-color:#4166f6;cursor:pointer}
+  .af-acts{display:flex;align-items:center;gap:12px;margin-top:20px;flex-wrap:wrap}
+  .af-run{border-top:1px solid #222;margin-top:18px;padding-top:16px;font-size:13.5px;color:#9a9a9a;line-height:1.7}
+  .af-run b{color:#e8e8e8;font-weight:600}
+  .af-tag{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:7px;font-size:12px;font-weight:600}
+  .af-tag.ok{background:rgba(103,209,174,.12);color:#67d1ae}
+  .af-tag.err{background:rgba(224,91,91,.12);color:#e05b5b}
+  .af-tag.plan{background:rgba(232,170,70,.10);color:#e2a94e;border:1px solid rgba(232,170,70,.28)}
+  .af-tag.mut{background:#1f1f1f;color:#8a8a8a}
+  .af-tag.blue{background:rgba(65,102,246,.14);color:#8fa6ff}
+  .af-ids{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#8fa6ff;word-break:break-all}
+  /* live summary strip — leads the screen with an at-a-glance roster headline */
+  .af-summary{display:flex;gap:14px;margin-bottom:22px;flex-wrap:wrap}
+  .af-stat{flex:1;min-width:158px;background:#141414;border:1px solid #262626;border-radius:12px;padding:15px 18px}
+  .af-stat .k{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#8a8a8a;display:flex;align-items:center;gap:7px}
+  .af-stat .k .d{width:7px;height:7px;border-radius:50%;background:#3a3a3a;flex:0 0 auto}
+  .af-stat.live .k .d{background:#67d1ae;box-shadow:0 0 6px rgba(103,209,174,.7)}
+  .af-stat .v{font-size:27px;font-weight:700;color:#fff;margin-top:9px;line-height:1.05;letter-spacing:-.5px}
+  .af-stat.live .v{color:#67d1ae}
+  .af-stat .s{font-size:12.5px;color:#8a8a8a;margin-top:5px}
+  /* .gbody is a flex column: with 15 rows the content overflows and the default
+     flex-shrink collapsed the 58px header to 0. Pin every direct child. */
+  .gbody > *{flex:0 0 auto}
+  .trow.af-on{background:#131722}
+  .trow[data-acct]{cursor:pointer}
+  .trow[data-acct]:hover{background:#151515}
+
+  /* ==== additive: friendly lead master-card (one toggle + preset + Save) ==== */
+  .af-master{background:linear-gradient(180deg,#171b28,#141414);border:1px solid #2a3350;
+    border-radius:14px;padding:20px 22px;margin-bottom:18px}
+  .af-m-head{display:flex;align-items:center;gap:14px}
+  .af-m-title{font-size:18px;font-weight:600;color:#fff}
+  .af-m-tgl-wrap{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .af-m-state{font-size:13px;font-weight:600;color:#8a8a8a}
+  .af-m-state.on{color:#67d1ae}
+  .af-presets{display:flex;gap:14px;margin:16px 0 4px;flex-wrap:wrap}
+  .af-preset{flex:1;min-width:150px;background:#1c1c1c;border:1px solid var(--border);border-radius:12px;
+    padding:14px 16px;cursor:pointer;position:relative;transition:border-color .12s,background .12s}
+  .af-preset:hover{border-color:#4a4a4a}
+  .af-preset.sel{border-color:var(--accent);background:rgba(65,102,246,.07)}
+  .af-preset.sel::after{content:"✓";position:absolute;top:11px;right:13px;width:20px;height:20px;border-radius:50%;
+    background:var(--accent);color:#fff;font-size:12px;display:flex;align-items:center;justify-content:center}
+  .af-preset .pn{font-size:14.5px;font-weight:600;color:#fff}
+  .af-preset .pt{font-size:12.5px;color:var(--muted);margin:3px 0 9px}
+  .af-preset ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+  .af-preset li{font-size:12px;color:#b9b9b9;display:flex;gap:6px;align-items:baseline}
+  .af-preset li::before{content:"·";color:var(--accent);font-weight:700}
+  .af-m-acts{display:flex;align-items:center;gap:14px;margin-top:16px;flex-wrap:wrap}
+  .af-adv-link{color:#5b8cff;cursor:pointer;text-decoration:none;font-weight:500}
+  .af-adv-link:hover{text-decoration:underline}
+  /* Advanced: the raw per-creator grid, tucked under a collapsible header */
+  .af-adv{border:1px solid #262626;border-radius:12px;overflow:hidden}
+  .af-adv-head{display:flex;align-items:center;gap:11px;padding:15px 18px;cursor:pointer;
+    font-size:15px;font-weight:600;color:#e6e6e6;background:#141414}
+  .af-adv-head:hover{background:#171717}
+  .af-adv-head .chev{margin-left:auto;transition:transform .15s;display:flex;color:#8a8a8a}
+  .af-adv.open .af-adv-head .chev{transform:rotate(180deg)}
+  .af-adv-body{display:none;padding:18px 18px 4px}
+  .af-adv.open .af-adv-body{display:block}
+  .af-adv-body .fbar{margin-bottom:20px}
 </style>
 <style id="canon-sb2">
   /* canonical sidebar: nav scrolls, footer pinned */
@@ -380,7 +457,6 @@
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
     <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
     <div class="modelswap" id="modelswap">
@@ -432,7 +508,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -455,18 +531,33 @@
     </aside>
 
     <main class="main">
-      <div class="ghead" style="padding-bottom:0"><div class="gtitle">Auto-follow</div></div>
+      <div class="ghead" style="padding-bottom:0"><div class="gtitle" id="af-title">Auto-follow</div></div>
       <div class="gbody">
-        <div style="color:#9a9a9a;font-size:15px;margin:2px 0 20px">Automatically follow fans whose subscriptions have expired</div>
+        <div style="color:#9a9a9a;font-size:15px;margin:2px 0 20px">Re-engage fans with a notification-only nudge — like their latest message, follow expired fans back, or re-follow ping a fan who went quiet. Never a DM.</div>
         <div class="wbanner"><span class="wi"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span><div>If "auto follow back my fans" is enabled in OnlyFans, the number of follow displayed will include fans who have active subscriptions that have been followed. <a>Learn more about settings</a></div></div>
-        <div class="fbar" style="margin-bottom:24px">
-          <div class="fld"><label>Creator:</label><div class="inp sel" style="width:250px"><span class="mut">Search Creator name</span><span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
-          <div class="fld"><label>Auto-follow:</label><div class="inp sel" style="width:230px">All<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
-          <button class="btn-out" style="margin-left:auto;border-color:#3a54c0;color:#5b8cff">Reset</button>
+        <div class="af-master" id="af-master"><div class="af-hint">Loading…</div></div>
+        <div class="af-summary" id="af-summary"><div class="af-stat"><div class="k"><span class="d"></span>Loading…</div><div class="v">—</div></div></div>
+        <div class="af-adv" id="af-adv">
+          <div class="af-adv-head" id="af-adv-toggle">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h10" stroke-linecap="round"/></svg>
+            Advanced — every creator &amp; full controls
+            <span class="chev"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+          <div class="af-adv-body" id="af-adv-body">
+            <div class="fbar" id="af-filters">
+              <div class="fld"><label>Creator:</label><select class="af-sel" id="af-fcreator" style="width:250px"><option value="">All creators</option></select></div>
+              <div class="fld"><label>Auto-follow:</label><select class="af-sel" id="af-fstate" style="width:230px">
+                <option value="">All</option><option value="on">Enabled</option><option value="off">Configured, off</option><option value="none">Not set up</option>
+              </select></div>
+              <button class="btn-out" id="af-reset" style="margin-left:auto;border-color:#3a54c0;color:#5b8cff">Reset</button>
+            </div>
+            <div class="thead" id="af-thead" style="background:#141414"><div class="th" style="width:230px">Creator name</div><div class="th" style="width:120px">Total</div><div class="th" style="width:90px">Today</div><div class="th" style="width:105px">Yesterday</div><div class="th" style="width:90px">7 days</div><div class="th" style="width:90px">30 days</div><div class="th" style="flex:1;min-width:0">Last run</div><div class="th" style="width:110px;justify-content:flex-end">Action</div></div>
+            <div id="af-rows">
+            <div class="trow"><div class="td" style="flex:1;color:#9a9a9a">Loading…</div></div>
+            </div>
+            <div class="af-card" id="af-editor" style="display:none"></div>
+          </div>
         </div>
-        <div class="thead" style="background:#141414"><div class="th" style="width:240px">Creator name</div><div class="th" style="width:150px">Total follows</div><div class="th" style="width:120px">Today</div><div class="th" style="width:140px">Yesterday</div><div class="th" style="width:110px">7 days</div><div class="th" style="width:110px">30 days</div><div class="th" style="flex:1">Last followed</div><div class="th" style="width:110px;justify-content:flex-end">Action</div></div>
-        <div class="trow"><div class="td" style="width:240px;display:flex;align-items:center;gap:12px"><span class="avsm "><span class="odot"></span></span>Aria</div><div class="td" style="width:150px">568</div><div class="td" style="width:120px">0</div><div class="td" style="width:140px">0</div><div class="td" style="width:110px">0</div><div class="td" style="width:110px">0</div><div class="td" style="flex:1">November 28, 2025<br><span style='color:#9a9a9a'>06:32 AM</span></div><div class="td" style="width:110px;display:flex;justify-content:flex-end"><span class="tgl" onclick="tgl(this)"></span></div></div>
-        <div class="trow"><div class="td" style="width:240px;display:flex;align-items:center;gap:12px"><span class="avsm j"><span class="odot"></span></span>Mia</div><div class="td" style="width:150px">0</div><div class="td" style="width:120px">0</div><div class="td" style="width:140px">0</div><div class="td" style="width:110px">0</div><div class="td" style="width:110px">0</div><div class="td" style="flex:1">-</div><div class="td" style="width:110px;display:flex;justify-content:flex-end"><span class="tgl" onclick="tgl(this)"></span></div></div>
       </div>
     </main>
   </div>
@@ -530,5 +621,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="growth-auto-follow.js"></script>
 </body>
 </html>

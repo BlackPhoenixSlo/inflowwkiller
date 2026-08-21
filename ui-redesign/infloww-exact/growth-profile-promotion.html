@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="data:,">
 <meta name="viewport" content="width=1440, initial-scale=1">
 <title>Infloww — Profile promotion</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -29,7 +30,8 @@
 
   .app{
     position:relative;
-    width:1440px;height:900px;overflow:hidden;
+    /* viewport height, not the 900px mock frame -- a window shorter than 900px scrolled the whole shell, nav and topbar with it. */
+    width:1440px;height:100vh;overflow:hidden;
     background:var(--canvas);
     color:var(--text);
     display:flex;flex-direction:column;
@@ -43,11 +45,6 @@
     padding:0 18px 0 20px;
     gap:14px;
   }
-  .traffic{display:flex;gap:8px;align-items:center}
-  .traffic i{width:12px;height:12px;border-radius:50%;display:block}
-  .traffic .r{background:#ff5f57}
-  .traffic .y{background:#febc2e}
-  .traffic .g{background:#28c840}
   .panel-btn{margin-left:8px;display:flex;align-items:center;justify-content:center;color:#e9e9e9}
   .trial{display:flex;flex-direction:column;line-height:1.15;margin-left:2px}
   .trial b{font-size:13px;font-weight:600;color:#fff}
@@ -90,6 +87,8 @@
   .creator .cv{color:var(--muted);display:flex}
 
   .nav{display:flex;flex-direction:column;gap:2px}
+  .nav-sec{margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px}
   .nav-item{
     display:flex;align-items:center;gap:11px;height:44px;padding:0 11px;border-radius:10px;
     color:var(--nav);font-size:15px;font-weight:500;cursor:pointer;position:relative;
@@ -375,12 +374,57 @@
   .ms-on{width:8px;height:8px;border-radius:50%;background:#3ec46a;flex:0 0 auto}
   .ms-item:not(.active) .ms-on{visibility:hidden}
 </style>
+<style id="gap-css">
+  /* additive only — same palette, same font, no layout rewrite */
+  .secbar{display:flex;align-items:center;gap:12px;margin:24px 0 12px;flex-wrap:wrap}
+  .secbar .sectitle{font-size:17px;font-weight:600;color:#fff;display:flex;align-items:center;gap:9px;cursor:default}
+  .secbar .secsub{font-size:13px;color:#8a8a8a}
+  .ofchip{font:600 10px Inter,sans-serif;letter-spacing:.04em;color:#67d1ae;
+    background:rgba(103,209,174,.12);border:1px solid rgba(103,209,174,.35);border-radius:99px;padding:2px 8px}
+  .chevbtn{width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+    color:#9a9a9a;cursor:pointer}
+  .chevbtn:hover{background:#1c1c1c}
+  .chevbtn.closed svg{transform:rotate(-90deg)}
+  .nodata{color:#5a5a5a;font-size:13px}
+  .dateinp{background:transparent;border:0;outline:0;color:#cfcfcf;font-family:inherit;font-size:14px;
+    width:120px;color-scheme:dark}
+  .btn-sm{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 13px;border:1px solid #333;
+    border-radius:8px;background:transparent;color:#e6e6e6;font-size:13.5px;font-weight:500;font-family:inherit;cursor:pointer}
+  .btn-sm:hover{background:#1c1c1c}
+  .totstrip{display:flex;flex-wrap:wrap;gap:22px 26px;background:#141414;border:1px solid #232323;border-radius:10px;
+    padding:14px 20px;margin:14px 0 4px}
+  /* Keep the last stat card clear of the fixed chat FAB in the shell's
+     bottom-right corner: reserve right-edge room so cards reflow instead of
+     tucking under the widget. */
+  .totstrip .t{flex:0 1 auto;min-width:0}
+  @media (max-width:1560px){.totstrip{padding-right:96px}}
+  .totstrip .t{display:flex;flex-direction:column;gap:5px}
+  .totstrip .tl{font-size:12px;color:#8a8a8a}
+  .totstrip .tv{font-size:19px;font-weight:700;color:#fff;letter-spacing:-.3px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .stat{background:#232323;border:1px solid #333;border-radius:12px;padding:16px 18px}
+  .stat .sl{font-size:13px;color:#8a8a8a}
+  .stat .sv{font-size:28px;font-weight:700;color:#fff;margin-top:8px;letter-spacing:-.5px}
+  .stat .sd{font-size:12.5px;margin-top:6px;color:#8a8a8a}
+  .stat .sd.up{color:#67d1ae}
+  .stat .sd.dn{color:#f0715f}
+  .cbox{background:#232323;border:1px solid #333;border-radius:12px;padding:18px 20px 14px;margin-bottom:18px}
+  .cbox .ch{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:#fff;margin-bottom:4px}
+  .cbox .cs{font-size:13px;color:#8a8a8a;margin-bottom:16px}
+  .barsrow{display:flex;align-items:flex-end;gap:4px;height:180px}
+  .barcol{flex:1 1 0;min-width:0;max-width:56px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%}
+  .barfill{width:100%;background:#4166f6;border-radius:3px 3px 0 0;min-height:3px}
+  .barfill.dim{background:#2f3a63}
+  .barlab{font-size:8.5px;color:#6a6a6a;margin-top:6px;white-space:nowrap;overflow:hidden;max-width:100%}
+  .noplot{height:120px;display:flex;align-items:center;justify-content:center;color:#8a8a8a;font-size:14px}
+  .minirow{display:flex;align-items:flex-end;gap:2px;height:46px;margin-top:8px}
+  .minirow .barfill{background:#4166f6;opacity:.75;border-radius:2px 2px 0 0}
+</style>
 </head>
 <body>
 <div class="app">
 
   <div class="topbar">
-    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="panel-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><line x1="9" y1="4" x2="9" y2="20"/></svg></div>
     <div class="trial"><b>You're on a free trial</b><span>7 days left</span></div>
     <div class="modelswap" id="modelswap">
@@ -432,7 +476,7 @@
         <a class="nav-item" href="messages.html"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 0 1-11.3 7.3L4 20l.7-4.7A8 8 0 1 1 20 12z"/></svg></span><span class="lbl">Messages Pro</span><span class="badge">36</span><span class="popout"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6h9v9M18 6l-11 11" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
         <div class="nav-item has-sub" data-sub="gro"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l5-5 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Growth</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-gro"><a class="sub-item" href="growth-smart-messages.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart Messages</span></a><a class="sub-item" href="growth-smart-lists.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Smart lists</span></a><a class="sub-item" href="growth-auto-follow.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto-follow</span></a><a class="sub-item" href="growth-vault-pro.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Vault Pro</span></a><a class="sub-item" href="growth-scripts.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts</span></a><a class="sub-item" href="growth-profile-promotion.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Profile promotion</span></a><a class="sub-item" href="growth-free-trial-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Free trial links</span></a><a class="sub-item" href="growth-tracking-links.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Tracking links</span></a></div>
 
-        <div style="margin:14px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#6a6a6a;display:flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
+        <div class="nav-sec"><span style="width:5px;height:5px;border-radius:50%;background:#4166f6;box-shadow:0 0 6px #4166f6"></span>AI &amp; Automation</div>
         <div class="nav-item has-sub" data-sub="ais"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M8 13h.01M16 13h.01" stroke-linecap="round"/><path d="M9 16.4s1 1 3 1 3-1 3-1" stroke-linecap="round"/></svg></span><span class="lbl">AI Selling</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-ais"><a class="sub-item" href="automations.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Overview</span></a><a class="sub-item" href="ai-chatter.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">AI Chatter</span><span style="margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.03em;background:#4166f6;color:#fff;padding:2px 6px;border-radius:5px">NEW</span></a><a class="sub-item" href="ai-auto-convo.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Auto Convo</span></a><a class="sub-item" href="ai-reengage.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Re-engage Buyers</span></a><a class="sub-item" href="ai-brain.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Brain &amp; Persona</span></a><a class="sub-item" href="ai-scripts-pricing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scripts &amp; Pricing</span></a><a class="sub-item" href="ai-reply-timing.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Reply Timing</span></a></div>
         <div class="nav-item has-sub" data-sub="out"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l16-6-5 16-3-6.5L3 11z" stroke-linejoin="round"/></svg></span><span class="lbl">Outreach &amp; Blasts</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-out"><a class="sub-item" href="outreach-mass-message.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Mass Message</span></a><a class="sub-item" href="outreach-broadcast.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Broadcast</span></a><a class="sub-item" href="funnels.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Funnels</span></a><a class="sub-item" href="outreach-followups.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-ups</span></a><a class="sub-item" href="outreach-scheduled.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Scheduled Sends</span></a></div>
         <div class="nav-item has-sub" data-sub="onb"><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="8" r="3.2"/><path d="M4.5 19c.6-3 2.7-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke-linecap="round"/><path d="M17.5 7.5v5M15 10h5" stroke-linecap="round"/></svg></span><span class="lbl">Onboarding</span><span class="cv chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="subnav" id="sub-onb"><a class="sub-item" href="onboarding-welcome.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Welcome</span></a><a class="sub-item" href="onboarding-sequence.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Follow-up Sequence</span></a><a class="sub-item" href="onboarding-templates.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Templates</span></a><a class="sub-item" href="onboarding-import.html"><span class="ico"><svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg></span><span class="lbl">Import Old Fans</span></a></div>
@@ -458,21 +502,22 @@
       <div class="ghead" style="padding-bottom:8px"><div class="gtitle">Profile promotion</div></div>
       <div class="gcols">
         <aside class="cpanel">
-          <div class="cp-top"><div class="cp-search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg><input placeholder="Search"></div><div class="cp-refresh"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 0 0-14-4M4 5v3h3M4 13a8 8 0 0 0 14 4M20 19v-3h-3" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
-          <div class="allcreators">All creators <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <div class="ccard sel"><div class="cav"><span class="odot"></span></div><div class="cinfo"><div class="cname">Aria</div><span class="cbadge amber"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2a5 5 0 0 0-5 5c0 4-1.6 5-1.6 5h13.2S17 11 17 7a5 5 0 0 0-5-5zM10.2 18.5a2 2 0 0 0 3.6 0z"/></svg>4</span></div><div class="cbadges-tr"><span class="cbadge red"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1z"/></svg>2</span></div></div>
-          <div class="ccard"><div class="cav j"><span class="odot"></span></div><div class="cinfo"><div class="cname">Mia</div><span class="cbadge amber"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2a5 5 0 0 0-5 5c0 4-1.6 5-1.6 5h13.2S17 11 17 7a5 5 0 0 0-5-5zM10.2 18.5a2 2 0 0 0 3.6 0z"/></svg>99+</span></div><div class="cbadges-tr"><span class="cbadge red"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1z"/></svg>35</span></div></div>
+          <div class="cp-top"><div class="cp-search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2" stroke-linecap="round"/></svg><input placeholder="Search creators" id="pm-csearch"></div><div class="cp-refresh" id="pm-crefresh" title="Reload campaigns for the selected creator"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 0 0-14-4M4 5v3h3M4 13a8 8 0 0 0 14 4M20 19v-3h-3" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+          <div class="allcreators" id="pm-callcount">Creators</div>
+          <div id="pm-creators"></div>
         </aside>
         <section class="rpanel" style="padding:20px 28px">
-          <div style="display:flex;align-items:center;margin-bottom:20px"><div style="font-size:18px;font-weight:600;color:#fff">Promotion campaigns</div><button class="btn-blue" style="margin-left:auto">Create promotion</button></div>
+          <div style="display:flex;align-items:center;margin-bottom:20px" id="pm-head"><div style="font-size:18px;font-weight:600;color:#fff">Promotion campaigns</div><button class="btn-blue" style="margin-left:auto" id="pm-create">Create promotion</button></div>
           <div class="ibanner"><span class="ii"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5" stroke-linecap="round"/><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none"/></svg></span><ul><li>Campaign insights are available for up to 10,000 of the most recent promotion campaigns created within the past 365 days</li><li>Each fan's spending is always attributed to the last free trial link, tracking link or promotion campaign that has been clicked by the fan. <a>Learn more</a></li></ul></div>
-          <div class="setrow"><div><div class="lbl2">Auto-activate campaign</div><div class="sub2">Enable to automatically reactivate your promotions when they expire</div></div><span class="tgl" style="margin-left:auto" onclick="tgl(this)"></span></div>
+          <div class="setrow" id="pm-autoact"><div style="flex:1;min-width:0;padding-right:40px"><div class="lbl2">Auto-activate campaign <span id="pm-autoact-state"></span></div><div class="sub2" id="pm-autoact-sub">Reads the <code>promo_reactivate</code> automation…</div></div><span class="tgl blue" id="pm-autoact-tgl" style="margin-left:auto"></span></div>
           <div class="hdivider"></div>
-          <div class="setrow"><div class="lbl2">Offer expiration</div><div class="inp sel" style="width:230px;margin-left:60px">7 days<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div></div>
+          <div class="setrow" id="pm-expiry"><div style="flex:1;min-width:0;padding-right:40px"><div class="lbl2">Default offer duration <span id="pm-expiry-badge"></span></div><div class="sub2">Pre-fills “Duration days” in Create promotion. Duration is a PER-CAMPAIGN field (<code>subscribe_days</code>) and OnlyFans only honours it at 100% off — there is no account-level expiry setting to save.</div></div><div class="inp sel" style="flex:0 0 230px;padding:0"><select id="pm-expiry-days" style="width:100%;height:100%;background:transparent;border:0;outline:0;color:#eee;font-family:inherit;font-size:14.5px;padding:0 14px;cursor:pointer"><option value="0">No duration (until cap fills)</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">365 days</option></select></div></div>
           <div class="hdivider"></div>
-          <div class="setrow"><div class="lbl2">Add fans to list</div><div class="inp sel" style="width:250px;margin-left:60px">IFA Profile Promotion<span class="cv"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><span class="tgl" style="margin-left:auto" onclick="tgl(this)"></span></div>
-          <div style="display:flex;align-items:center;margin:18px 0 14px"><div style="font-size:18px;font-weight:600;color:#fff">Campaign insights</div><div style="margin-left:auto;display:flex;align-items:center;gap:12px;color:#cfcfcf;font-size:15px">Show expired <span class="tgl" onclick="tgl(this)"></span></div></div>
+          <div class="setrow" id="pm-addlist"><div style="flex:1;min-width:0;padding-right:40px"><div class="lbl2">Add fans to list</div><div class="sub2" id="pm-addlist-sub">Loading this account's lists…</div></div><div class="inp sel" style="flex:0 0 340px;padding:0"><select id="pm-list-sel" disabled style="width:100%;height:100%;background:transparent;border:0;outline:0;color:#8a8a8a;font-family:inherit;font-size:14.5px;padding:0 14px"><option>Loading…</option></select></div><span class="tgl" id="pm-addlist-tgl" style="margin-left:22px;pointer-events:none;opacity:.4"></span></div>
+          <div style="display:flex;align-items:center;margin:18px 0 14px" id="pm-insights-head"><div style="font-size:18px;font-weight:600;color:#fff">Campaign insights</div><div style="margin-left:auto;display:flex;align-items:center;gap:12px;color:#cfcfcf;font-size:15px">Show expired <span class="tgl" id="pm-showexp"></span></div></div>
+          <div class="totstrip" id="pm-totals" style="margin:0 0 14px"></div>
           <div class="thead"><div class="th" style="flex:1">Promo</div><div class="th" style="width:160px">Claims</div><div class="th" style="width:230px">Revenue</div><div class="actcol" style="width:200px">Actions</div></div>
+          <div id="pm-rows">
           <div class="empty" style="flex:none;padding:70px 0"><svg width="92" height="96" viewBox="0 0 92 96" fill="none">
   <g stroke="#3a3a3a" stroke-width="2" stroke-linecap="round"><path d="M22 12l-3-6M33 8l-1-5M11 22l-6-2"/><path d="M70 12l3-6M59 8l1-5M81 22l6-2"/></g>
   <path d="M28 22h26l12 12v34a4 4 0 0 1-4 4H28a4 4 0 0 1-4-4V26a4 4 0 0 1 4-4z" fill="#5a5a5a"/>
@@ -480,6 +525,23 @@
   <rect x="34" y="37" width="9" height="4.5" rx="2.25" fill="#4166f6"/>
   <rect x="34" y="46" width="22" height="4.5" rx="2.25" fill="#4166f6"/>
   <rect x="34" y="55" width="14" height="4.5" rx="2.25" fill="#4166f6"/></svg><div>No data</div></div>
+          </div>
+          <div id="pm-rev-note" style="color:#8a8a8a;font-size:13px;margin:14px 0 4px;line-height:1.7;max-width:900px">Nothing joins a promotion to money: transactions carry no campaign id, and <code>/admin/stats/revenue</code> returns day/kind/total only. Claims are OnlyFans' own counter and are real; <b style="color:#b5b5b5;font-weight:600">Revenue</b> is blank on every campaign because there is no attribution to show.</div>
+
+          <!-- ── the engine behind “Keep running” ── -->
+          <div class="cbox" id="pm-react" style="margin-top:22px">
+            <div class="ch">♻️ Keep promos running <span id="pm-react-state"></span></div>
+            <div class="cs" id="pm-react-blurb">OnlyFans ends a promo when its clock runs out or the claim cap fills. This automation re-creates any campaign you ticked <b style="color:#b5b5b5">Keep running</b> above — same discount, same cap — so the offer never silently lapses.</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:22px">
+              <label style="display:flex;align-items:center;gap:10px;color:#cfcfcf;font-size:14.5px;cursor:pointer">Enabled <span class="tgl blue" id="pm-react-en"></span></label>
+              <label style="display:flex;align-items:center;gap:10px;color:#cfcfcf;font-size:14.5px;cursor:pointer" title="Report only — hits no OnlyFans endpoint and creates nothing">Dry run <span class="tgl blue on" id="pm-react-dry"></span></label>
+              <div style="display:flex;flex-direction:column;gap:7px"><span style="font-size:12.5px;color:#8a8a8a">Check every (minutes)</span><div class="inp" style="width:150px;height:42px"><input type="number" id="pm-react-mins" min="1" value="60"></div></div>
+              <div style="display:flex;flex-direction:column;gap:7px"><span style="font-size:12.5px;color:#8a8a8a">Max re-arms each (0 = no limit)</span><div class="inp" style="width:190px;height:42px"><input type="number" id="pm-react-max" min="0" value="0"></div></div>
+              <button class="btn-blue" id="pm-react-save" style="height:42px">Create automation</button>
+              <button class="btn-out" id="pm-react-run" style="height:42px;display:none">Check now</button>
+            </div>
+            <div id="pm-react-last" style="color:#8a8a8a;font-size:13px;margin-top:16px;border-top:1px solid #333;padding-top:14px"></div>
+          </div>
         </section>
       </div>
     </main>
@@ -544,5 +606,7 @@
     sw.classList.remove('open');
   });
 })();</script>
+<script src="_shared/fastt.js"></script>
+<script src="growth-profile-promotion.js"></script>
 </body>
 </html>

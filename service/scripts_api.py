@@ -170,6 +170,9 @@ _SLEEP_SOURCES = ("default", "derived")
 # _load_config's shallow merge can never drop a tier. 0 = unlimited (see _cadence_gate).
 _MSG_LIMIT_DEFAULTS: dict = dict(_AI_CHATTER_DEFAULTS["msg_limits_by_signal"])
 _MSG_LIMIT_MAX = 500
+# Each DISTINCT spend-rule window costs _spend_caps two grouped queries per sweep
+# AND per fan-status poll (a 15s hot path) — bound the list, not just its fields.
+_MAX_SPEND_RULES = 12
 _MAX_ITEMS = 60
 _TXT = 2000
 
@@ -563,6 +566,9 @@ def _validate_cfg(cfg: dict) -> dict:
     if msp is not None:
         if not isinstance(msp, (list, tuple)):
             raise HTTPException(422, "msg_limits_by_spend must be a list")
+        if len(msp) > _MAX_SPEND_RULES:
+            raise HTTPException(
+                422, f"msg_limits_by_spend: at most {_MAX_SPEND_RULES} rules")
         rules: list[dict] = []
         for i, r in enumerate(msp):
             if not isinstance(r, dict):
@@ -1264,7 +1270,7 @@ async def simulate(body: _SimulateBody = Body(...)) -> dict[str, Any]:
     content_ask = bool(sell.close) and bool(_CONTENT_ASK_RE.search(c.last_body))
     # Same source the live turn reads, so the preview cannot drift from it.
     from automations._common import detect_pic_offer  # local: avoid cycles
-    from automations.tip_reward import image_describe_flags
+    from automations.tip_reward_config import image_describe_flags
     describe_on, _seed, _scope = await image_describe_flags(body.account_id)
     msgs, _presented = _build_messages(
         persona, Fan(account_id=body.account_id, fan_id=0), c, set(), 20,
