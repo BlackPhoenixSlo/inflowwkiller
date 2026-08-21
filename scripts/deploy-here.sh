@@ -11,7 +11,11 @@
 #   • no proxy is required for one account (it uses this server's own IP —
 #     proxies only matter once you host MULTIPLE OF accounts here),
 #   • the DeepSeek API key is OPTIONAL — the dashboard boots and works without
-#     it; you only need it later to switch on AI auto-messaging (add it to .env).
+#     it. Mind WHERE it goes, though: the moment you sign in and capture an OF
+#     account, that account is OWNED by your login, and llm_client bills an
+#     owned account to the key its owner pasted at Setup → Your AI keys. The
+#     .env key below is the HOUSE key and is spent only on accounts nobody
+#     owns — so .env alone does NOT switch AI auto-messaging on.
 #
 # One-liner (paste into the Hostinger / VPS terminal — runs start to finish, no
 # questions asked):
@@ -25,7 +29,8 @@
 #   DOMAIN=you.duckdns.org ...     → real https via Traefik (free DuckDNS subdomain)
 #   DOMAIN=app.yourdomain.com ...  → real https via Traefik (your own domain)
 #   TUNNEL=1  ...                  → throwaway https url, no DNS (random, changes on restart)
-#   DEEPSEEK_API_KEY=sk-... ...    → bake in an AI key (optional; dashboard works without)
+#   DEEPSEEK_API_KEY=sk-... ...    → bake in the HOUSE AI key (optional; owned accounts
+#                                    read Setup → Your AI keys instead — see above)
 #
 # A DOMAIN needs Traefik already on the box — every Hostinger *n8n* template
 # ships it. Deploy your own fork by setting REPO_URL=.
@@ -77,11 +82,12 @@ grep -q '^SESSION_SECRET=.\+'         .env || upsert SESSION_SECRET "$(gen_secre
 grep -q '^CHATTER_SESSION_SECRET=.\+' .env || upsert CHATTER_SESSION_SECRET "$(gen_secret)"
 grep -q '^SHARE_TOKEN='               .env || echo 'SHARE_TOKEN=' >> .env   # empty = friend-auth only
 # DeepSeek key is optional — only bake it in if you passed one inline. Otherwise
-# leave a blank placeholder; add it later in .env when you want AI auto-messaging.
+# leave a blank placeholder. It is the HOUSE key (ownerless accounts only); the
+# account you capture is owned by your login and reads Setup → Your AI keys.
 [ -n "${DEEPSEEK_API_KEY:-}" ] && upsert DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
 grep -q '^DEEPSEEK_API_KEY=' .env || echo 'DEEPSEEK_API_KEY=' >> .env
 echo "  .env keys: $(grep -oE '^[A-Z_]+' .env | tr '\n' ' ')"
-grep -q '^DEEPSEEK_API_KEY=.\+' .env || echo "  note: no DeepSeek key yet — dashboard works; AI auto-messaging stays off until you add DEEPSEEK_API_KEY to $DIR/.env"
+grep -q '^DEEPSEEK_API_KEY=.\+' .env || echo "  note: no DeepSeek key yet — the dashboard works without one. Switch AI on at Setup → Your AI keys once your account is captured (this .env key covers only accounts with no owner)."
 
 # ---------- 5. choose exposure: stable Traefik route (preferred) or quick tunnel ----------
 DOMAIN="${DOMAIN:-}"
