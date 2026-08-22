@@ -36,21 +36,52 @@ async def last_funnel_out_at(account_id: str, fan_id: int, mass_run_id: int) -> 
     return ts
 
 
-async def has_fan_replied(account_id: str, fan_id: int, since: datetime | None) -> bool:
-    """True iff the fan sent an inbound message strictly AFTER `since` (our last
-    funnel message). `since` None → any inbound at all counts. Used at DISCOVERY,
-    where the reply's text isn't needed; the process loop uses `latest_reply`."""
+async def replied_recipient_fans(account_id: str, mass_run_id: int) -> set[int]:
+    """Every recipient of THIS run who has replied since our last funnel-out to
+    them — the whole discovery question, in ONE query.
+
+    This is the set-based twin of calling `last_funnel_out_at` + `has_fan_replied`
+    once per recipient, and it exists because that pair was the walker's single
+    most expensive line. Discovery re-asks it for EVERY recipient on EVERY tick:
+    at ~1,600 recipients per broadcast, two awaited round-trips each, and a run
+    list that was never bounded, one tick issued ~19,000 sequential aiosqlite
+    queries and took 553 s (measured on prod 2026-08-22) to discover nobody. The
+    loop is unchanged in meaning — a recipient always has an outbound row tagged
+    with this run (that is what makes them a recipient), so `last_funnel_out_at`
+    is never None for them and the `since is None ⇒ any inbound counts` fallback
+    is unreachable here. `last_funnel_out_at` stays for the per-fan caller in the
+    due-state walk, where the row count is small and the question is asked about
+    one fan at a time.
+    """
     async with get_session() as s:
-        q = select(Message.message_id).where(
-            Message.account_id == str(account_id),
-            Message.fan_id == int(fan_id),
-            Message.direction == "in",
-            Message.is_unsent.is_(False),
+        last_out = (
+            select(
+                Message.fan_id.label("fan_id"),
+                func.max(Message.created_at).label("out_at"),
+            )
+            .where(
+                Message.account_id == str(account_id),
+                Message.mass_run_id == int(mass_run_id),
+                Message.direction == "out",
+            )
+            .group_by(Message.fan_id)
+            .subquery()
         )
-        if since is not None:
-            q = q.where(Message.created_at > since)
-        hit = (await s.execute(q.limit(1))).first()
-    return hit is not None
+        inbound_after = (
+            select(Message.message_id)
+            .where(
+                Message.account_id == str(account_id),
+                Message.fan_id == last_out.c.fan_id,
+                Message.direction == "in",
+                Message.is_unsent.is_(False),
+                Message.created_at > last_out.c.out_at,
+            )
+            .exists()
+        )
+        rows = (await s.execute(
+            select(last_out.c.fan_id).where(inbound_after)
+        )).all()
+    return {int(r[0]) for r in rows}
 
 
 async def latest_reply(
