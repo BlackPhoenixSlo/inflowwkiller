@@ -1689,7 +1689,13 @@ _DESCRIBABLE_KINDS = ("photo", "video")
 
 async def _flags_todo(account_id: str, *, force: bool = False,
                       only: set[int] | None = None, limit: int = 0) -> list[int]:
-    """Which items still need flags, oldest first."""
+    """Which items still need flags, NEWEST first — `created_at` is OF's own
+    `createdAt`, so this is upload order, not mirror order.
+
+    Matches `describe_media._describe_candidates`. Flags are what the gated
+    lanes actually read, so a describe that ran newest-first and a flags pass
+    that ran oldest-first would leave the freshly-described items describable
+    but still unusable — the two have to walk the vault the same way."""
     async with get_session() as s:
         q = (select(VaultItem.media_id, VaultItem.ai_fields_json)
              .where(VaultItem.account_id == account_id,
@@ -1697,7 +1703,9 @@ async def _flags_todo(account_id: str, *, force: bool = False,
                     VaultItem.kind.in_(_DESCRIBABLE_KINDS)))
         if only:
             q = q.where(VaultItem.media_id.in_(only))
-        rows = (await s.execute(q.order_by(VaultItem.created_at.asc()))).all()
+        rows = (await s.execute(
+            q.order_by(VaultItem.created_at.desc(), VaultItem.media_id.desc())
+        )).all()
 
     todo = []
     for mid, fj in rows:
@@ -2912,6 +2920,16 @@ async def _run_describe_all(account_id: str, force: bool,
                 # clicks, watches nothing happen, and has no way to find out why.
                 # A wasted fetch is cheaper than a control nobody can trust.
                 stmt = stmt.where(VaultItem.describe_status.isnot("described"))
+            # NEWEST first, on OF's own `createdAt`. This sweep has no limit, so
+            # in principle order only decides what finishes early — except it
+            # can end early for two reasons that make it decide what happens at
+            # all: the account's cap trips (`capped` breaks the chunk loop) or
+            # the relay restarts mid-sweep. Both truncate the tail, and the tail
+            # should be the 2018 uploads, not this week's shoot. Same order as
+            # the 6h drip and `_flags_todo` so a vault is covered the same way
+            # whichever one gets to it.
+            stmt = stmt.order_by(VaultItem.created_at.desc(),
+                                 VaultItem.media_id.desc())
             ids = [r[0] for r in (await s.execute(stmt)).all()]
 
         async def _describe_and_flag(mid: int) -> dict[str, Any]:

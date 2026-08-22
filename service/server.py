@@ -39,6 +39,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import accounts as account_registry  # noqa: E402
+import admission  # noqa: E402  # bounded-concurrency lanes (see service/admission.py)
 import account_health  # noqa: E402  # dead-session pause (see service/account_health.py)
 import account_page  # noqa: E402  # free-vs-paid page (see service/account_page.py)
 import ownership  # noqa: E402  # owned-media semantics (see service/ownership.py)
@@ -1458,19 +1459,13 @@ _img_high_water: int = 0
 _img_total_started: int = 0
 _img_total_aborted: int = 0
 
-# Video-stream concurrency cap. /img Range requests (= browser video
-# streaming) get a dedicated semaphore so a user hovering through
-# many video tiles can't drain uvicorn's threadpool and lock up the
-# whole relay. Sized for "watching 1 vid + 1 preload sibling + a
-# little headroom for the brief overlap when switching tiles". JPEG
-# thumbnail loads bypass this cap entirely (no Range header).
-# Past the cap, late arrivals wait up to _VIDEO_STREAM_WAIT_S for a
-# slot, then 503 — the browser <video> element retries Range requests
-# naturally so a transient 503 just costs a few hundred ms.
-_VIDEO_STREAM_CAP = 6
-_VIDEO_STREAM_WAIT_S = 2.0
-_video_stream_sem = threading.BoundedSemaphore(_VIDEO_STREAM_CAP)
-_video_stream_503s: int = 0
+# The sync-side admission lanes this module drives live in `admission` —
+# instances included — because they bound resources of the PROCESS and
+# `vault_frames` takes the build lane too. Referenced through the module rather
+# than aliased here: an alias is indirection that buys nothing, and reading
+# `admission.IMG_FETCH` at the call site says where the ceiling is defined.
+# Each carries its own sizing rationale there; the ⚠️ on IMG_FETCH is worth
+# reading before retuning any of them.
 
 # Stable handle for /img assets. OF CDN URLs include a signed Policy +
 # Signature + Key-Pair-Id that rotate per upstream fetch — the SAME
@@ -1545,6 +1540,12 @@ _IMG_CACHE_TTL_S = int(os.environ.get("IMG_CACHE_TTL_S", str(7 * 24 * 60 * 60)))
 _IMG_CACHE_EVICT_INTERVAL_S = 30 * 60
 _img_cache_hits: int = 0
 _img_cache_misses: int = 0
+# Requests that missed on the first look, queued for a fetch slot, and found
+# the bytes already on disk when their turn came — i.e. a herd that collapsed
+# instead of each member paying its own OF round-trip. Counted apart from
+# `hits` on purpose: a rising number here is the cold-pane storm being absorbed,
+# which is a different thing to report than a warm cache.
+_img_cache_collapsed: int = 0
 _img_cache_writes: int = 0
 _img_cache_skipped_partial: int = 0
 _img_cache_skipped_too_big: int = 0
@@ -1894,8 +1895,13 @@ def admin_streams() -> dict:
         "high_water": _img_high_water,
         "total_started": _img_total_started,
         "total_aborted": _img_total_aborted,
-        "video_stream_cap": _VIDEO_STREAM_CAP,
-        "video_stream_503s": _video_stream_503s,
+        # `collapsed` is the one to watch on a cold pane: it counts the storms
+        # the fetch lane absorbed rather than passed on to OF.
+        "img_cache_collapsed": _img_cache_collapsed,
+        # Every lane reports itself — derived, not restated, so a lane added
+        # later cannot be forgotten in the diagnostics that would show it
+        # saturating. See service/admission.py.
+        **admission.all_stats(),
     }
 
 
@@ -2677,16 +2683,7 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
         hit = _img_cache_lookup(u)
         if hit is not None:
             _img_cache_hits += 1
-            bin_p, ct_cached = hit
-            # Keep popular entries warm: age by last-access, not last-write,
-            # so a hot vault preview isn't evicted out from under live use.
-            _img_cache_touch(*_img_cache_paths(_img_cache_key(u)))
-            cache_control = "public, max-age=604800, stale-while-revalidate=86400, immutable"
-            return FileResponse(
-                str(bin_p),
-                media_type=ct_cached,
-                headers={"Cache-Control": cache_control, "X-Img-Cache": "HIT"},
-            )
+            return _serve_cached(hit, u, label="HIT")
         _img_cache_misses += 1
 
     client = _get_client(request)
@@ -2696,37 +2693,112 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
     # the browser can't jump past whatever's buffered — long videos can't
     # be scrubbed, and `currentTime` writes stall.
     upstream_headers: dict[str, str] = {}
-    sem_held = False
     if range_hdr:
         upstream_headers["Range"] = range_hdr
-        # Video streaming lane — bounded by _VIDEO_STREAM_CAP. JPEG
-        # thumbnails (no Range header) bypass entirely so the grid stays
-        # snappy even when the cap is saturated.
-        if not _video_stream_sem.acquire(timeout=_VIDEO_STREAM_WAIT_S):
-            global _video_stream_503s
-            _video_stream_503s += 1
-            raise HTTPException(
-                status_code=503,
-                detail="too many video streams in flight; retry shortly",
-            )
-        sem_held = True
 
-    try:
-        r = client.http.get(
-            u, timeout=client.timeout_s, stream=True, headers=upstream_headers or None,
+    # A Range request is a browser <video> seeking and has its own ceiling;
+    # everything reaching here without one is a cache miss on its way to OF.
+    # Picking the lane rather than branching on it keeps ONE admission site —
+    # the rejection reads the same for both because the lane names itself.
+    held = admission.VIDEO_STREAM if range_hdr else admission.IMG_FETCH
+    if not held.enter(u[:80]):
+        raise HTTPException(
+            status_code=503,
+            detail=f"too many {held.name} requests in flight; retry shortly",
         )
-    except Exception as e:
-        if sem_held:
-            try: _video_stream_sem.release()
-            except ValueError: pass
-        raise HTTPException(status_code=502, detail=f"upstream fetch failed: {e}")
-    # 206 (Partial Content) is the normal Range response — treat it as ok.
-    if r.status_code not in (200, 206):
-        if sem_held:
-            try: _video_stream_sem.release()
-            except ValueError: pass
-        raise HTTPException(status_code=r.status_code, detail="upstream non-2xx")
 
+    if not range_hdr:
+        # Re-read the store INSIDE the slot, the same way vault_stills does.
+        # Forty tiles opening on one media all miss together, all queue here,
+        # and without this re-read each would then pay its own OF round-trip
+        # for bytes the first waiter has already written. The cap bounds how
+        # many run at once; this is what stops them being redundant.
+        hit = _img_cache_lookup(u)
+        if hit is not None:
+            held.exit()
+            global _img_cache_collapsed
+            # Not also counted as a hit: this request DID miss, and was already
+            # tallied as one above. `collapsed` is the separate story of how
+            # many of those misses the lane absorbed instead of forwarding.
+            _img_cache_collapsed += 1
+            return _serve_cached(hit, u, label="COLLAPSED")
+
+    # From here to the `return StreamingResponse` the slot is held by THIS
+    # frame; past it, `_safe_iter`'s finally owns the release. Everything
+    # between is wrapped because a lane that leaks a slot never gets it back —
+    # it drains to zero and then rejects every request forever. Three
+    # hand-placed release sites used to cover only the two failures anyone had
+    # thought of, leaving the header-building below unguarded.
+    #
+    # The unwind closes the upstream response too. That is not hypothetical
+    # tidiness: OF answers 403 on an expired signature, which is the single most
+    # common failure this proxy sees, and an unclosed streamed response holds its
+    # socket. Leaking a descriptor per expired thumbnail, inside the very
+    # function whose descriptor use took the process down, is the bug this whole
+    # change exists to prevent.
+    r = None
+    try:
+        try:
+            r = client.http.get(
+                u, timeout=client.timeout_s, stream=True,
+                headers=upstream_headers or None,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"upstream fetch failed: {e}")
+        # 206 (Partial Content) is the normal Range response — treat it as ok.
+        if r.status_code not in (200, 206):
+            raise HTTPException(status_code=r.status_code, detail="upstream non-2xx")
+        return _stream_upstream(
+            r, u, held, range_hdr,
+            account_id_hdr=request.headers.get("x-account-id") or "")
+    except BaseException:
+        if r is not None:
+            try: r.close()
+            except Exception: pass
+        held.exit()
+        raise
+
+
+def _serve_cached(hit: tuple[Path, str], u: str, *, label: str) -> FileResponse:
+    """Serve bytes we already have on disk.
+
+    `label` rides out as `X-Img-Cache` and is the only thing that differs
+    between the two ways we get here — a first-look hit, and a waiter that
+    found the bytes written while it queued for a fetch slot. They were two
+    copies of this block; the header value is not a reason to have two.
+    """
+    bin_p, ct_cached = hit
+    # Keep popular entries warm: age by last-access, not last-write, so a hot
+    # vault preview isn't evicted out from under live use.
+    _img_cache_touch(*_img_cache_paths(_img_cache_key(u)))
+    return FileResponse(
+        str(bin_p),
+        media_type=ct_cached,
+        headers={
+            "Cache-Control":
+                "public, max-age=604800, stale-while-revalidate=86400, immutable",
+            "X-Img-Cache": label,
+        },
+    )
+
+
+def _stream_upstream(r: Any, u: str, held: admission.Lane,
+                     range_hdr: str | None, *,
+                     account_id_hdr: str) -> StreamingResponse:
+    """Wrap a live upstream response as the streamed reply, handing `held` to
+    the generator — which is what releases it, whether the stream ends, the
+    client vanishes, or the max-age timer fires.
+
+    Takes the account id rather than the `Request` it came from: this streams
+    bytes and needs exactly one header off the caller, and a helper holding a
+    whole request object invites the next person to reach for more of it.
+
+    ⚠️ The release lives in the generator's `finally`, so it depends on
+    something iterating the generator. Starlette always does — including closing
+    it on client disconnect, which arrives as GeneratorExit and is caught — but
+    that is the one assumption keeping this lane from leaking, and it is why the
+    caller unwinds by hand for every path that returns BEFORE this point.
+    """
     ct = r.headers.get("Content-Type", "application/octet-stream")
     # OF's CDN sends short Cache-Control because the signed Policy expires,
     # but the IMAGE BYTES themselves don't expire. We override upstream's
@@ -2741,7 +2813,6 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
     # Stable hash exposed back to the browser so the frontend can pivot
     # to /img/by-hash/<h> on subsequent renders — same image, same key,
     # even after OF rotates the upstream signature.
-    account_id_hdr = request.headers.get("x-account-id") or ""
     if account_id_hdr:
         try:
             h_stable = _img_hash_remember(account_id_hdr, u)
@@ -2838,9 +2909,6 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
             if aborted:
                 _img_total_aborted += 1
             _img_active = max(0, _img_active - 1)
-            if sem_held:
-                try: _video_stream_sem.release()
-                except ValueError: pass
             try:
                 r.close()
             except Exception:
@@ -2852,6 +2920,12 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
                     _img_cache_write(u, ct, bytes(local_buf))
                 except Exception:
                     log.warning("img cache write failed (u=%s)", u[:120], exc_info=True)
+            # Released LAST, after the bytes are on disk. The waiter this hands
+            # the slot to re-reads the store as its first act, so releasing
+            # before the write is a race that costs exactly what the re-read
+            # exists to save: it wakes, finds nothing, and pays its own
+            # round-trip for bytes that were milliseconds away.
+            held.exit()
 
     return StreamingResponse(
         _safe_iter(),
@@ -3343,11 +3417,22 @@ def _ensure_storyboard_frame(
     lock = _storyboard_lock_for(h)
     if not lock.acquire(timeout=_STORYBOARD_BUILD_TIMEOUT_S):
         return False
+    build_slot = False
     try:
         # Another concurrent caller may have produced our frame while we
         # waited on the lock.
         if frame_path.is_file():
             return True
+
+        # Global build slot. Taken INSIDE the per-video lock deliberately:
+        # everyone queued on that lock is waiting on a build of the SAME video
+        # already under way, and a waiter holding a build slot would be
+        # reserving a core it will never use. The lock stops duplicate work;
+        # the lane stops N DISTINCT videos putting N ffmpeg processes on a
+        # 2-core box.
+        if not admission.STORYBOARD_BUILD.enter(f"scrub h={h}"):
+            return False
+        build_slot = True
 
         dest.mkdir(parents=True, exist_ok=True)
         src_path = dest / "source.tmp"
@@ -3390,6 +3475,8 @@ def _ensure_storyboard_frame(
         _storyboard_total_built += 1
         return frame_path.is_file()
     finally:
+        if build_slot:
+            admission.STORYBOARD_BUILD.exit()
         lock.release()
 
 

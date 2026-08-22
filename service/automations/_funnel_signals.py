@@ -40,18 +40,19 @@ async def replied_recipient_fans(account_id: str, mass_run_id: int) -> set[int]:
     """Every recipient of THIS run who has replied since our last funnel-out to
     them — the whole discovery question, in ONE query.
 
-    This is the set-based twin of calling `last_funnel_out_at` + `has_fan_replied`
-    once per recipient, and it exists because that pair was the walker's single
-    most expensive line. Discovery re-asks it for EVERY recipient on EVERY tick:
-    at ~1,600 recipients per broadcast, two awaited round-trips each, and a run
-    list that was never bounded, one tick issued ~19,000 sequential aiosqlite
-    queries and took 553 s (measured on prod 2026-08-22) to discover nobody. The
-    loop is unchanged in meaning — a recipient always has an outbound row tagged
-    with this run (that is what makes them a recipient), so `last_funnel_out_at`
-    is never None for them and the `since is None ⇒ any inbound counts` fallback
-    is unreachable here. `last_funnel_out_at` stays for the per-fan caller in the
-    due-state walk, where the row count is small and the question is asked about
-    one fan at a time.
+    Discovery used to ask this one fan at a time — `last_funnel_out_at` followed
+    by a has-replied-since probe, two awaited round-trips per recipient, each in
+    its own session. That pair was the walker's single most expensive line: at
+    ~1,600 recipients per broadcast and an anchor list that was never bounded,
+    one tick issued ~19,000 sequential aiosqlite queries and took 553 s (measured
+    on prod 2026-08-22) to discover nobody.
+
+    Same answer, one round trip. The meaning is unchanged because a recipient
+    ALWAYS has an outbound row tagged with this run — that is what makes them a
+    recipient — so their "last funnel-out" is never null and the old per-fan
+    probe's `no prior send ⇒ any inbound counts` fallback was unreachable from
+    here anyway. `last_funnel_out_at` stays: the due-state walk still asks it
+    about one fan at a time, where the row count is small.
     """
     async with get_session() as s:
         last_out = (

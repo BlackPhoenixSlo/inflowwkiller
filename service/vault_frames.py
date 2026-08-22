@@ -33,6 +33,7 @@ import asyncio
 import logging
 from typing import Any, NamedTuple
 
+import admission  # bounded-concurrency lanes — a LEAF, so no lazy server import
 import automation_executor as ax  # _make_client seam (same one automations use)
 import vault_mirror  # the OF-media → mirror-row mapping (thumb_of)
 import vault_stills
@@ -127,6 +128,16 @@ def warm_one_sync(client: Any, url: str, dur: float) -> str:
     h = srv._video_path_hash(url)
     if srv._storyboard_all_frames_present(h):
         return "cached"
+
+    # The ffmpeg lane — the SAME lane `/img/scrub` takes, and taken here for a
+    # bigger reason. This function is what a describe calls when it meets a clip
+    # nobody warmed, and a describe sweep runs `_VISION_GLOBAL_CONCURRENCY`
+    # items concurrently: without this, eight cold clips meant eight mp4
+    # downloads and eight ffmpeg processes on a two-core box, each holding a
+    # vision slot while it ran. Taken AFTER the cached check, so a warm vault
+    # never queues at all.
+    if not admission.STORYBOARD_BUILD.enter(f"warm h={h}"):
+        return "busy"
     dest = srv._STORYBOARD_DIR / h
     src_path = dest / "source.tmp"
     try:
@@ -154,6 +165,7 @@ def warm_one_sync(client: Any, url: str, dur: float) -> str:
             src_path.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             pass
+        admission.STORYBOARD_BUILD.exit()
 
 
 def spread(n_have: int, want: int) -> list[int]:
@@ -224,7 +236,15 @@ class Collected(NamedTuple):
 
 # `warm_one_sync`'s outcome in the vocabulary above. Anything not listed either
 # produced frames or means "OF has nothing sliceable", which is `no_variant`.
-_WARM_REASON = {"dl_fail": "fetch_failed", "error": "fetch_failed"}
+# Warm outcome → this module's reason vocabulary. Anything NOT named here falls
+# to `no_variant`, which is the COOL-OFF side — so a value that means "try again
+# shortly" must be listed, or the item inherits the 7-day DRM cooldown meant for
+# clips OF genuinely cannot render. That mistake is on record: it froze 1,777
+# items whose signatures had merely expired.
+#   busy — the ffmpeg lane was full. We learned nothing about this clip at all,
+#          so it is the most retryable outcome there is.
+_WARM_REASON = {"dl_fail": "fetch_failed", "error": "fetch_failed",
+                "busy": "fetch_failed"}
 
 
 async def _poster_stills(account_id: str, media_id: int, media: dict,
