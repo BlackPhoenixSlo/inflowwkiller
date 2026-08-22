@@ -11,7 +11,8 @@ flow as a P4 automation — NO DOM. Per the mapping table at the bottom of spec 
 
     sidebar discovery        → DB scan of `messages` (the broadcast's recipients,
                                written by A10 send_mass_message with mass_run_id)
-    has_fan_replied()        → DB: an inbound message AFTER our last funnel-out
+    replied_recipient_fans() → DB: the run's recipients who have replied since
+                               our last funnel-out to them (one set query)
     send next step           → of_client.send_message → write_outbound_attribution
     PPV (vault + price)       → of_client.send_message(price=, media_files=)
 
@@ -102,7 +103,7 @@ import random
 import re
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / _to_cents / lease seams
@@ -121,8 +122,8 @@ from ._wordfilter import (  # compliance word filter
 )
 from ._funnel_routing import route, step_number_index, strip_html, resolve_next
 from ._funnel_signals import (
-    has_fan_paid_ppv, has_fan_replied, last_funnel_out_at, last_inbound_at,
-    latest_reply,
+    has_fan_paid_ppv, last_funnel_out_at, last_inbound_at, latest_reply,
+    replied_recipient_fans,
 )
 from db.engine import get_session
 from db.models import (
@@ -153,6 +154,20 @@ _DEFAULT_PPV_PRICE = 24          # spec default for a paid_ppv step with no pric
 # Tests set _STEP_GAP_S = 0 to skip the sleep.
 _STEP_GAP_S = 4.0
 _STEP_GAP_JITTER = 0.5           # ±50% → ~2-6s actual
+# How long after a broadcast we keep LOOKING for new repliers to enrol. Walking
+# an already-enrolled fan is NOT bounded by this — see `_active_mass_runs`.
+#
+# ⚠️ This is the anchor-set bound, and it is load-bearing. `_active_mass_runs`
+# had no time bound at all: every funnel broadcast an account had ever sent
+# stayed an anchor forever, and discovery re-walked all ~1,600 of its recipients
+# every 120 s, for good. Measured on prod 2026-08-22: one account still
+# re-scanning six broadcasts from seven weeks earlier, 2,188 runs burning 76,724
+# seconds in 24 h — 53% of all automation time on the box — to discover exactly
+# zero fans, with the work set growing by another ~1,600 recipients per blast
+# sent. A fan who has not answered a broadcast within this window is not going
+# to; if they ever do write, they arrive as ordinary inbound and ai_chatter
+# answers them, so nothing is dropped by letting discovery close.
+_DISCOVERY_WINDOW_DAYS = 14
 
 
 def _jittered_gap() -> float:
@@ -199,13 +214,26 @@ async def _load_persona(account_id: str) -> str:
 # ── Funnel + broadcast lookup (own session each) ─────────────────────
 
 async def _active_mass_runs(
-    account_id: str, only_id: int | None,
+    account_id: str, only_id: int | None, now: datetime,
 ) -> list[tuple[int, int, int | None, datetime | None, datetime | None, dict]]:
     """The account's completed funnel broadcasts →
     [(mass_run_id, funnel_id, queue_id, started_at, discovery_closed_at,
       audience_filter)]. A run is a funnel anchor when status='ok' and funnel_id
     is set. `discovery_closed_at` (set when the first mass was unsent) gates NEW
-    enrollment only — see the discovery loop."""
+    enrollment only — see the discovery loop.
+
+    A run stays an anchor while it can still do either half of the walker's job:
+    DISCOVER new repliers (inside `_DISCOVERY_WINDOW_DAYS` of the broadcast) or
+    WALK someone already enrolled (a `pending` funnel_state row). A run that can
+    do neither is finished, and re-listing it forever is what made this the most
+    expensive automation on the box — see `_DISCOVERY_WINDOW_DAYS`. The two arms
+    are OR'd deliberately: an old run holding a mid-funnel fan keeps walking them
+    for as long as they are pending, so the bound can never strand a live fan.
+
+    `only_id` (operator-explicit targeting, `payload.mass_run_id`) BYPASSES the
+    bound — asking for one run by id means you want that run looked at, even if
+    it has aged out.
+    """
     async with get_session() as s:
         q = select(
             MassRun.id, MassRun.funnel_id, MassRun.queue_id,
@@ -217,6 +245,19 @@ async def _active_mass_runs(
         )
         if only_id is not None:
             q = q.where(MassRun.id == only_id)
+        else:
+            still_walking = (
+                select(FunnelState.fan_id)
+                .where(
+                    FunnelState.mass_run_id == MassRun.id,
+                    FunnelState.status == "pending",
+                )
+                .exists()
+            )
+            q = q.where(or_(
+                MassRun.started_at >= now - timedelta(days=_DISCOVERY_WINDOW_DAYS),
+                still_walking,
+            ))
         rows = (await s.execute(q.order_by(MassRun.id))).all()
     out: list[tuple[int, int, int | None, datetime | None, datetime | None, dict]] = []
     for r in rows:
@@ -338,20 +379,6 @@ async def _record_responder(
             .on_conflict_do_nothing(
                 index_elements=["account_id", "funnel_id", "fan_id"])
         )
-
-
-async def _recipient_fans(account_id: str, mass_run_id: int) -> list[int]:
-    """The broadcast's recipients = fans with an outbound row tagged this run
-    (A10 wrote one per recipient — real echo or optimistic placeholder)."""
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(Message.fan_id).where(
-                Message.account_id == str(account_id),
-                Message.mass_run_id == int(mass_run_id),
-                Message.direction == "out",
-            ).distinct()
-        )).all()
-    return [int(r[0]) for r in rows]
 
 
 def _norm_body(s: str | None) -> str:
@@ -697,15 +724,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     banned_words, banned_mode = await load_banned_words(account_id)  # compliance word filter
     persona = await _load_persona(account_id)
 
-    runs = await _active_mass_runs(account_id, only_run)
+    now = datetime.utcnow()
+    runs = await _active_mass_runs(account_id, only_run, now)
     if not runs:
         return {"status": "skipped", "reason": "no_active_funnel_runs",
                 "runs": 0, "discovered": 0, "advanced": 0}
 
     client = await asyncio.to_thread(ax._make_client, account_id)
-    now = datetime.utcnow()
+
+    # Broadcasts older than this stop LOOKING for new repliers (they may still
+    # walk fans already enrolled) — see `_DISCOVERY_WINDOW_DAYS`.
+    discovery_cutoff = now - timedelta(days=_DISCOVERY_WINDOW_DAYS)
 
     discovered = 0
+    discovery_skipped = 0  # anchors past the window — walking only, not scanning
     advanced = 0          # states that sent a step this tick
     waiting = 0           # due but fan hasn't replied yet → rescheduled
     completed = 0         # states marked done this tick
@@ -766,13 +798,25 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             exc_info=True)
 
         # ── 1) Discovery: new repliers → ledger + fresh step-0 state ──
-        tracked = await _tracked_fans(mass_run_id)
-        for fan_id in await _recipient_fans(account_id, mass_run_id):
-            if fan_id in tracked or (only_fan is not None and fan_id != only_fan):
-                continue
-            # Replied since the broadcast (our only funnel-out so far)?
-            broadcast_at = await last_funnel_out_at(account_id, fan_id, mass_run_id)
-            if await has_fan_replied(account_id, fan_id, broadcast_at):
+        # Only inside the discovery window (or when an operator named this run
+        # explicitly). Past it the run is here solely to walk fans who are
+        # already enrolled, and asking ~1,600 recipients "did you reply yet?"
+        # forever is precisely the leak `_DISCOVERY_WINDOW_DAYS` closes.
+        discovery_open = (
+            only_run is not None
+            or started_at is None
+            or started_at >= discovery_cutoff
+        )
+        if not discovery_open:
+            discovery_skipped += 1
+        else:
+            # ONE query for the whole question, not two per recipient.
+            tracked = await _tracked_fans(mass_run_id)
+            for fan_id in sorted(
+                await replied_recipient_fans(account_id, mass_run_id) - tracked
+            ):
+                if only_fan is not None and fan_id != only_fan:
+                    continue
                 # They ANSWERED this funnel's opener → durable dedup ledger
                 # (R1/R2), regardless of the discovery cutoff below.
                 await _record_responder(account_id, funnel_id, fan_id, mass_run_id, now)
@@ -782,7 +826,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # walked. Pre-cutoff replies (adopted late) still enroll.
                 if discovery_closed_at is not None:
                     last_in = await last_inbound_at(
-                        account_id, fan_id, since=broadcast_at)
+                        account_id, fan_id,
+                        since=await last_funnel_out_at(
+                            account_id, fan_id, mass_run_id))
                     if last_in is None or last_in > discovery_closed_at:
                         continue
                 # Audience fence: the responder-dedup row above is ALWAYS
@@ -1005,6 +1051,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     return {
         "runs": len(runs),
         "discovered": discovered,
+        "discovery_skipped": discovery_skipped,
         "advanced": advanced,
         "waiting": waiting,
         "completed": completed,
