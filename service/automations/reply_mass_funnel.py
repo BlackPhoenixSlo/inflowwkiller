@@ -102,6 +102,7 @@ import logging
 import random
 import re
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -213,9 +214,28 @@ async def _load_persona(account_id: str) -> str:
 
 # ── Funnel + broadcast lookup (own session each) ─────────────────────
 
+class _Anchor(NamedTuple):
+    """One funnel broadcast the walker still has work for.
+
+    `discovery_open` is the whole point of naming this: the age bound is decided
+    ONCE, in `_active_mass_runs`, beside the SQL that applies it. It used to be
+    re-derived in the walker from `started_at`, which meant the same predicate
+    lived in two languages and had to be kept in agreement by hand — and the
+    reader had to notice that the Python copy was the first arm of the SQL `OR`
+    to understand either. Now the query answers it and the walker just reads it.
+    """
+    mass_run_id: int
+    funnel_id: int
+    queue_id: int | None
+    started_at: datetime | None
+    discovery_closed_at: datetime | None
+    audience: dict
+    discovery_open: bool
+
+
 async def _active_mass_runs(
     account_id: str, only_id: int | None, now: datetime,
-) -> list[tuple[int, int, int | None, datetime | None, datetime | None, dict]]:
+) -> list[_Anchor]:
     """The account's completed funnel broadcasts →
     [(mass_run_id, funnel_id, queue_id, started_at, discovery_closed_at,
       audience_filter)]. A run is a funnel anchor when status='ok' and funnel_id
@@ -234,6 +254,7 @@ async def _active_mass_runs(
     bound — asking for one run by id means you want that run looked at, even if
     it has aged out.
     """
+    cutoff = now - timedelta(days=_DISCOVERY_WINDOW_DAYS)
     async with get_session() as s:
         q = select(
             MassRun.id, MassRun.funnel_id, MassRun.queue_id,
@@ -254,21 +275,24 @@ async def _active_mass_runs(
                 )
                 .exists()
             )
-            q = q.where(or_(
-                MassRun.started_at >= now - timedelta(days=_DISCOVERY_WINDOW_DAYS),
-                still_walking,
-            ))
+            q = q.where(or_(MassRun.started_at >= cutoff, still_walking))
         rows = (await s.execute(q.order_by(MassRun.id))).all()
-    out: list[tuple[int, int, int | None, datetime | None, datetime | None, dict]] = []
+    out: list[_Anchor] = []
     for r in rows:
         try:
             audience = json.loads(r[5]) if r[5] else {}
         except Exception:
             audience = {}
-        out.append((
-            int(r[0]), int(r[1]),
-            int(r[2]) if r[2] is not None else None,
-            r[3], r[4], audience if isinstance(audience, dict) else {},
+        out.append(_Anchor(
+            mass_run_id=int(r[0]),
+            funnel_id=int(r[1]),
+            queue_id=int(r[2]) if r[2] is not None else None,
+            started_at=r[3],
+            discovery_closed_at=r[4],
+            audience=audience if isinstance(audience, dict) else {},
+            # Same two facts the WHERE above is built from, so the walker can
+            # never disagree with the anchor set it was handed.
+            discovery_open=(only_id is not None or r[3] is None or r[3] >= cutoff),
         ))
     return out
 
@@ -429,9 +453,10 @@ async def _adopt_list_recipients(
     opener only lands in each fan's chat when scrape_history backfills it,
     UNTAGGED. Adopt those rows: any untagged outbound near started_at whose
     normalized body equals the opener gets mass_run_id stamped, which makes
-    the fan visible to _recipient_fans and scopes last_funnel_out_at to the
-    run. Idempotent — tagged rows leave the candidate set. Returns rows
-    adopted (eventual-consistent: fans appear as scrape catches up)."""
+    the fan a recipient as far as `replied_recipient_fans` is concerned, and
+    scopes last_funnel_out_at to the run. Idempotent — tagged rows leave the
+    candidate set. Returns rows adopted (eventual-consistent: fans appear as
+    scrape catches up)."""
     if not openers or started_at is None:
         return 0
     lo = started_at - timedelta(minutes=_ADOPT_SLACK_MIN)
@@ -732,10 +757,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     client = await asyncio.to_thread(ax._make_client, account_id)
 
-    # Broadcasts older than this stop LOOKING for new repliers (they may still
-    # walk fans already enrolled) — see `_DISCOVERY_WINDOW_DAYS`.
-    discovery_cutoff = now - timedelta(days=_DISCOVERY_WINDOW_DAYS)
-
     discovered = 0
     discovery_skipped = 0  # anchors past the window — walking only, not scanning
     advanced = 0          # states that sent a step this tick
@@ -772,7 +793,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             audience_skipped += 1
         return ok
 
-    for mass_run_id, funnel_id, queue_id, started_at, discovery_closed_at, audience in runs:
+    for (mass_run_id, funnel_id, queue_id, started_at,
+         discovery_closed_at, audience, discovery_open) in runs:
         steps = await _load_funnel_steps(funnel_id)
         if not steps:
             log.info("reply_mass_funnel run=%s funnel=%s has no steps — skipping",
@@ -798,18 +820,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             exc_info=True)
 
         # ── 1) Discovery: new repliers → ledger + fresh step-0 state ──
-        # Only inside the discovery window (or when an operator named this run
-        # explicitly). Past it the run is here solely to walk fans who are
-        # already enrolled, and asking ~1,600 recipients "did you reply yet?"
+        # Past the discovery window this run is here solely to walk fans who are
+        # already enrolled — asking ~1,600 recipients "did you reply yet?"
         # forever is precisely the leak `_DISCOVERY_WINDOW_DAYS` closes.
-        discovery_open = (
-            only_run is not None
-            or started_at is None
-            or started_at >= discovery_cutoff
-        )
-        if not discovery_open:
-            discovery_skipped += 1
-        else:
+        # `discovery_open` is decided in `_active_mass_runs`; see `_Anchor`.
+        if discovery_open:
             # ONE query for the whole question, not two per recipient.
             tracked = await _tracked_fans(mass_run_id)
             for fan_id in sorted(
@@ -825,10 +840,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # a fan who replies after the mass is gone is deduped but not
                 # walked. Pre-cutoff replies (adopted late) still enroll.
                 if discovery_closed_at is not None:
+                    broadcast_at = await last_funnel_out_at(
+                        account_id, fan_id, mass_run_id)
                     last_in = await last_inbound_at(
-                        account_id, fan_id,
-                        since=await last_funnel_out_at(
-                            account_id, fan_id, mass_run_id))
+                        account_id, fan_id, since=broadcast_at)
                     if last_in is None or last_in > discovery_closed_at:
                         continue
                 # Audience fence: the responder-dedup row above is ALWAYS
@@ -838,6 +853,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     continue
                 if await _ensure_state(mass_run_id, fan_id, now):
                     discovered += 1
+        else:
+            discovery_skipped += 1
 
         # ── 2) Process due states ────────────────────────────────────
         for cs in await _due_states(mass_run_id, now, only_fan):

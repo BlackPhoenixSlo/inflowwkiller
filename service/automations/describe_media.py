@@ -158,10 +158,24 @@ def _enabled_kinds(images: bool, videos: bool) -> list[str]:
 
 
 async def _describe_candidates(account_id: str, kinds: list[str], limit: int) -> list[int]:
-    """media_ids that haven't yet been successfully described. Oldest-first so
-    a steady drip covers the vault deterministically. `blocked_drm` is NOT
-    terminal (poster-frame fallback describes it) so anything != "described"
-    is a retry candidate — matches the on-demand `Describe all` behaviour."""
+    """media_ids that haven't yet been successfully described. NEWEST-first —
+    `created_at` is OF's own `createdAt`, i.e. when the media was actually shot
+    and uploaded, not when we mirrored it.
+
+    This is the drip that matters most, because it is the one with a `limit`:
+    on a vault whose backlog is larger than a cadence can clear, whatever sorts
+    first is what ever gets described at all. Oldest-first spent that budget on
+    2018 uploads while the shoot from this week — the media a chatter is
+    actually being asked for — sat undescribed and therefore invisible to every
+    gated lane. Recency is the best available proxy for what will sell next.
+
+    `media_id` breaks ties: OF hands whole uploads the same `createdAt`, and
+    without a tiebreak the order inside a batch is SQLite's to choose, which
+    makes a resumed drip non-deterministic about what it already covered.
+
+    `blocked_drm` is NOT terminal (poster-frame fallback describes it) so
+    anything != "described" is a retry candidate — matches the on-demand
+    `Describe all` behaviour."""
     if not kinds or limit <= 0:
         return []
     async with get_session() as s:
@@ -188,7 +202,7 @@ async def _describe_candidates(account_id: str, kinds: list[str], limit: int) ->
                     < datetime.utcnow() - _DRM_RETRY_AFTER,
                 )
             )
-            .order_by(VaultItem.created_at.asc())
+            .order_by(VaultItem.created_at.desc(), VaultItem.media_id.desc())
             .limit(limit)
         )
         rows = (await s.execute(stmt)).all()
@@ -197,7 +211,11 @@ async def _describe_candidates(account_id: str, kinds: list[str], limit: int) ->
 
 async def _copy_candidates(account_id: str, kinds: list[str], limit: int) -> list[int]:
     """Already-described items whose caption OR script is still empty AND not
-    locked — the feat-8 fill-in-what-the-substrate-never-wrote pass."""
+    locked — the feat-8 fill-in-what-the-substrate-never-wrote pass.
+
+    Newest-first for the same reason as `_describe_candidates`: this pass runs
+    on the same cadence and would otherwise write copy for the oldest media in
+    the vault while the item just described sits captionless."""
     if not kinds or limit <= 0:
         return []
     async with get_session() as s:
@@ -207,7 +225,7 @@ async def _copy_candidates(account_id: str, kinds: list[str], limit: int) -> lis
             .where(VaultItem.removed_at.is_(None))
             .where(VaultItem.kind.in_(kinds))
             .where(VaultItem.describe_status == "described")
-            .order_by(VaultItem.created_at.asc())
+            .order_by(VaultItem.created_at.desc(), VaultItem.media_id.desc())
         )).scalars().all()
     out: list[int] = []
     for it in rows:
