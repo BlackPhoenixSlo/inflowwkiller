@@ -28,7 +28,7 @@
  */
 
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 
 import { MASS_PLACEHOLDER_END, MASS_PLACEHOLDER_MIN, orderThread } from "@/hooks/useChatMessages";
 import { toUtcIso } from "@/hooks/useInboxRealtime";
@@ -64,6 +64,32 @@ interface LocalMessagesResp {
   next_before_id: number | null;
 }
 
+/** Cache key for one chat's seed, minus the page size — pass it to a
+ *  partial-match filter, or spread it and append `limit` for the query
+ *  itself. Nobody outside this module should spell the prefix out. */
+export const seedKey = (accountId: string | null, fanId: number | null) =>
+  ["messages-local-seed", accountId, fanId] as const;
+
+/** Drop one message from this chat's seed, every page size at once.
+ *  An unsend has to reach in here: the seed is re-hydrated into the thread
+ *  on every mount (ChatSurface), so a row left standing repaints the bubble
+ *  the operator just deleted — as an empty shell, since seed rows carry no
+ *  media. The relay flips `messages.is_unsent` on the same call, which fixes
+ *  the next cold fetch; this keeps the CURRENT session honest regardless. */
+export function dropSeedMessage(
+  qc: QueryClient,
+  accountId: string | null,
+  fanId: number | null,
+  messageId: number,
+): void {
+  qc.setQueriesData<LocalMessagesResp>(
+    { queryKey: seedKey(accountId, fanId) },
+    (curr) => (curr
+      ? { ...curr, messages: curr.messages.filter((r) => Number(r.message_id) !== messageId) }
+      : curr),
+  );
+}
+
 export function useChatMessagesLocal(opts: {
   enabled?: boolean;
   accountId: string | null;
@@ -72,7 +98,7 @@ export function useChatMessagesLocal(opts: {
 }): { rows: OFMessage[]; isLoading: boolean } {
   const { enabled = true, accountId, fanId, limit = 30 } = opts;
   const q = useQuery<LocalMessagesResp>({
-    queryKey: ["messages-local-seed", accountId, fanId, limit],
+    queryKey: [...seedKey(accountId, fanId), limit],
     enabled: enabled && !!accountId && fanId != null,
     queryFn: () => {
       const qs = new URLSearchParams({ limit: String(limit) });

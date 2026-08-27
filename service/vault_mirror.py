@@ -33,9 +33,33 @@ def parse_iso(v: Any) -> datetime | None:
         return None
 
 
+def has_still(kind: str | None) -> bool:
+    """Can a media of this kind ever yield a picture?
+
+    Audio is the one that cannot, and it is not a near miss: OF ships a voice
+    note with a SINGLE variant, `files.full`, and that file IS the audio.
+    Measured over a 6,388-item mirror, audio is also the only kind that arrives
+    that way — every photo, video and gif carries a real picture variant. So
+    `thumb_of` below, which falls through to `full`, hands back an MP3 for audio
+    and only for audio.
+
+    Everything downstream of that is expensive: `vault_stills.bytes_for`
+    downloads the MP3, fails its image magic, re-signs the media with OF,
+    downloads it AGAIN and 404s — two OF calls and one of six in-flight slots,
+    per tile, per paint, never cached because nothing is written. Audio is 17.6%
+    of one account's 2,527 items. So this is asked BEFORE the ladder starts, and
+    `_overlay` asks it before stamping a `_thumb` url the browser would then
+    request. `vault_ai_api._DESCRIBABLE_KINDS` is the same knowledge for the
+    describe sweep, which cannot show a vision model a sound either."""
+    return (kind or "") != "audio"
+
+
 def thumb_of(files: dict | None) -> str | None:
     """The url for the UI tile. Ordered widest-availability first — OF omits
-    variants per media, so the fallback chain is load-bearing, not defensive."""
+    variants per media, so the fallback chain is load-bearing, not defensive.
+
+    Callers must gate on `has_still` first: the `full` step resolves to the audio
+    file on a voice note, which is the one thing this url must never be."""
     if not isinstance(files, dict):
         return None
     for k in ("thumb", "squarePreview", "preview", "full"):

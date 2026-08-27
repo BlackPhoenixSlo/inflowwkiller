@@ -121,7 +121,7 @@ describe("useChatMessages merge-on-poll", () => {
   });
 
   it("gap-heal: load-older cursors from the FETCHED pages, not a persisted old block", async () => {
-    // The Asian-yakuza shape (fan 550702326): a persisted localStorage cache
+    // The long-thread shape (fan FAN_ID): a persisted localStorage cache
     // restores welcome-era rows (ids 1,2), then the head fetch lands [100,101]
     // — leaving an unfetched gap 3..99. Pre-fix loadOlder cursored off the
     // cache MINIMUM (1): OF answered "nothing older than the first message",

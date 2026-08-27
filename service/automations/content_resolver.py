@@ -69,7 +69,7 @@ from db.engine import get_session
 from db.models import Fan, VaultFolder, VaultFolderItem, VaultItem
 from jsonsafe import load_json
 
-from ._common import resolve_model
+from ._common import load_voice_blocks, resolve_model
 # Re-exported, not merely used: `content_resolver.Contract` and
 # `content_resolver.NO_MATCH` are what ~80 call sites across pack_sender,
 # make_right, tip_reward and the suites already say. The split is an internal
@@ -81,7 +81,7 @@ from .content_contract import (  # noqa: F401
     _empty, _STOPWORDS,
 )
 from .content_prompts import (  # noqa: F401
-    _action_phrase, _match, _nearest, _verify, read_contract,
+    _action_phrase, _answer_line, _match, _nearest, _verify, read_contract,
 )
 
 log = logging.getLogger("of-relay.automation.content_resolver")
@@ -404,6 +404,44 @@ async def _descriptions(account_id: str, media_ids: list[int]) -> list[tuple[int
         if blob:
             by_id[int(mid)] = blob
     return [(int(m), by_id[int(m)]) for m in media_ids if int(m) in by_id]
+
+
+async def answer_line(account_id: str, fan_id: int, his_words: str,
+                      f: Fan | None = None) -> str:
+    """One short line answering HIS last message, for the voice half of a
+    caption. "" when there is nothing usable to say.
+
+    The rule for what this reads versus what it is handed is the KEY, not the
+    convenience. The model and the texting block are ACCOUNT-keyed, so they are
+    resolved here (same shape as `action_phrase` below) — one cached lookup per
+    account beats a parameter every caller must remember to fill, and a lane
+    that renders no voice block at all is how an account ends up sounding female
+    on a male creator. `f` is FAN-keyed and every caller demonstrably holds it
+    already (`send_gather_close` takes it and hands it to
+    `due_for_gather_close`), so re-reading it by key would be a second read of a
+    row in the caller's hand.
+
+    `f` is what lets the line know WHO it is answering — see
+    `content_prompts._him_block` for the two-month window on that. Omit it and
+    the call is the plain one.
+
+    NEVER RAISES, for the same reason `action_phrase` doesn't: the caller falls
+    back to its own authored line, and a send that goes out with the old wording
+    is still a send.
+    """
+    words = " ".join(str(his_words or "").split())[:400]
+    if not words:
+        return ""
+    try:
+        model = await resolve_model(str(account_id), "content_resolver")
+        voice = await load_voice_blocks(str(account_id))
+        return await _answer_line(str(account_id), int(fan_id), words,
+                                  voice.painful_texting, model,
+                                  f=f, speaker=voice.voice)
+    except Exception:  # noqa: BLE001
+        log.warning("answer_line failed account=%s fan=%s", account_id, fan_id,
+                    exc_info=True)
+        return ""
 
 
 async def action_phrase(account_id: str, fan_id: int,

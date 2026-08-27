@@ -880,7 +880,7 @@ def detect_bot_accusation(text: str | None) -> bool:
 # silence — it was worse. `CONTENT_ASK_RE` matches the bare substring "wanna see", with
 # no reading of WHO offers WHAT, so "You wanna see my cock?" scored as a BUYING signal
 # and the engine answered a man reaching for his phone with a sales pitch. Receipt,
-# Dana fan 326419277 on 2026-08-08 01:45:50:
+# Dana fan FAN_ID on 2026-08-08 01:45:50:
 #     him  "You wanna see my cock?"
 #     her  "u keep askn" / "dont u" / "tell me more about that highway life first"  + $8 PPV
 # She thinks HE is the one asking. He offered three times over three days and was
@@ -933,7 +933,7 @@ _PIC_OFFER_NOT_HIS_RE = re.compile(
 # A PROMO always has a call to BUY, and a blast addresses a crowd rather than him —
 # that, not anatomy, is what separates a peer creator pitching her page from a fan
 # reaching for his phone. Anatomy cannot do this job: the male-creator accounts
-# (Lucas1/Lucas2/buznizjohn) have female fans whose offers of themselves are just as
+# (blake/blake/buznizjohn) have female fans whose offers of themselves are just as
 # real, so a female-anatomy blocklist would silence exactly the fans it should serve.
 # `load_promo_spam_ids` is the durable guard and it runs first, but it is deliberately
 # conservative — "a chatty creator-bot that types plain text is not caught" — so this

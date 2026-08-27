@@ -19,8 +19,8 @@ import logging
 import os
 import sys
 import threading
-import weakref
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import json
@@ -40,6 +40,7 @@ sys.path.insert(0, str(HERE))
 
 import accounts as account_registry  # noqa: E402
 import admission  # noqa: E402  # bounded-concurrency lanes (see service/admission.py)
+import lane_config  # noqa: E402  # durable store behind the Concurrency panel
 import account_health  # noqa: E402  # dead-session pause (see service/account_health.py)
 import account_page  # noqa: E402  # free-vs-paid page (see service/account_page.py)
 import ownership  # noqa: E402  # owned-media semantics (see service/ownership.py)
@@ -53,7 +54,7 @@ from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network e
 # Phase A — SQL persistence + SSE broadcaster. Both are additive: the
 # legacy WS subscribers in `_event_subscribers` keep working alongside.
 from db import init_db as db_init  # noqa: E402
-from db.repo import sync_from_disk as _sync_db_from_disk  # noqa: E402
+from db.repo import ensure_user_account_link, sync_from_disk as _sync_db_from_disk  # noqa: E402
 from events import (  # noqa: E402
     handle_event as _sse_handle_event,
     sse_stream,
@@ -61,8 +62,13 @@ from events import (  # noqa: E402
     stop_persist_worker as _stop_persist_worker,
 )
 from employees import router as _employees_router, audit_middleware as _audit_middleware  # noqa: E402
+from static_paths import exempt_static  # noqa: E402
 from fans import router as _fans_router  # noqa: E402
-from messages import router as _messages_router, sync_rest_media_dims  # noqa: E402
+from messages import (  # noqa: E402
+    router as _messages_router,
+    persist_rest_media_dims,
+    stamp_rest_media_dims,
+)
 from stats import router as _stats_router  # noqa: E402
 from transactions import router as _transactions_router  # noqa: E402
 from vault import router as _vault_router  # noqa: E402
@@ -77,6 +83,7 @@ from translate_api import router as _translate_router  # noqa: E402
 from funnels_api import router as _funnels_router  # noqa: E402
 from funnel_stats_api import router as _funnel_stats_router  # noqa: E402
 from nudge_config_api import router as _nudge_config_router  # noqa: E402
+import lane_config_api  # noqa: E402  # Concurrency panel — UNAUTHENTICATED, see below
 from webhook_config_api import router as _webhook_config_router  # noqa: E402
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
 from tip_reward_config_api import router as _tip_reward_config_router  # noqa: E402
@@ -198,6 +205,7 @@ app.include_router(_translate_router)
 app.include_router(_funnels_router)
 app.include_router(_funnel_stats_router)
 app.include_router(_nudge_config_router)
+app.include_router(lane_config_api.router)
 app.include_router(_webhook_config_router)
 app.include_router(_autoreply_config_router)
 app.include_router(_tip_reward_config_router)
@@ -232,6 +240,45 @@ app.include_router(_tracking_links_router)
 app.include_router(_of_tracking_router)
 app.include_router(_promotions_router)
 
+# ── The one no-auth allowlist ───────────────────────────────────────
+#
+# Exact paths — never prefixes — that answer with NO share token and NO session.
+# BOTH gates below consult this single set: `_share_token_gate` (the outer
+# perimeter) and `_account_isolation_middleware` (the tenant gate). One decision
+# stated once, because two copies is one place to forget when the decision
+# changes.
+#
+# 🚨 `/lanes-panel/config` is an unauthenticated READ **and WRITE** of the
+# process-wide concurrency ceilings. That is a deliberate operator choice for a
+# friends-only deployment, not an oversight — `lane_config_api`'s module
+# docstring carries the full reasoning and the blast radius being accepted.
+#
+# Built from the router's own constant rather than repeating the string, so a
+# route rename cannot leave a stale hole in the gates. Exact match on purpose:
+# a prefix would open every future route sharing the stem, which is how an
+# allowlist stops being one.
+#
+# 🚨 `RESTART_PATH` is the destructive one: it ends this process so docker
+# restarts it, which drops in-flight sends and the OF websocket pumps. It is
+# open for the same reason as the other two — the panel must work without a
+# login — and it is bounded where the others are not: two per hour, counted in
+# a file that outlives the restart, refused unless this process is pid 1, and
+# refused without a JSON body so a cross-origin page cannot fire it
+# preflight-free. See `lane_config_api.restart_relay`.
+#
+# ⚠️ ALL THREE NOW LIVE UNDER `/lanes-panel`, WHICH IS PART OF THE GUARD, NOT
+# COSMETIC. `app/next.config.ts` rewrites `/admin/:path*` to this relay
+# wholesale and traefik puts that app on the public host, so an `/admin/` path
+# on this list is reachable from the open internet with no cookie. `/lanes-panel`
+# is in no rewrite. Moving these back under `/admin/` would re-publish a kill
+# switch — see the block comment in `lane_config_api`.
+_UNAUTHENTICATED_PATHS = frozenset({
+    lane_config_api.PATH,
+    lane_config_api.PAGE_PATH,
+    lane_config_api.RESTART_PATH,
+})
+
+
 # Tenant isolation. Every per-account request passes here: no principal at all is
 # 401, and a principal naming an account it doesn't own is 403.
 #
@@ -253,6 +300,28 @@ async def _account_isolation_middleware(request: Request, call_next):
     # reference per-account data. /auth/*, /events, /img, /ws/* never do.
     path = request.url.path
     if not (path.startswith("/admin/") or path.startswith("/api/of/")):
+        return await call_next(request)
+
+    # The Concurrency panel, deliberately open. None of these routes carry an
+    # account_id — not in the path, not in the query, not in the response — so
+    # exempting them takes nothing away from the tenant isolation this
+    # middleware exists for. That holds for the restart route too: it names no
+    # account, though it does stop every account's work at once, which is why
+    # its own bounds live on the handler rather than here.
+    #
+    # ⚠️ Since they moved under `/lanes-panel`, the pre-filter above already
+    # returns before this line is reached. The check is kept because it costs a
+    # set lookup and it is what makes the exemption survive a future change to
+    # either the prefix or the pre-filter.
+    #
+    # Two neighbours are deliberately NOT on this list. `/admin/lanes` stays
+    # gated because its payload is keyed BY account id, and opening it would
+    # publish the account roster to anyone who asked. `/admin/lane-config` —
+    # the gated twin serving the in-app settings card — stays gated because it
+    # IS reachable from the public host through Next's `/admin/:path*` rewrite;
+    # the ungated door for that same resource is `/lanes-panel/config`, which no
+    # rewrite covers.
+    if path in _UNAUTHENTICATED_PATHS:
         return await call_next(request)
 
     # Pick the active principal's account_ids set. User wins precedence;
@@ -315,13 +384,22 @@ app.middleware("http")(_account_isolation_middleware)
 # lets the chatter middleware's admin-gate read `get_request_user()` and
 # only fire when no User cookie is present, while still landing both
 # contextvars before the audit middleware's post-block resolves them.
-app.middleware("http")(_chatter_session_middleware)
+app.middleware("http")(exempt_static(_chatter_session_middleware))
 
 # Friend-auth session middleware. Same ordering trick: registered here so
 # it runs *inside* the share-token gate (gate fires first, rejects unauthed
 # requests; only then does this middleware read the session cookie and
 # populate _request_user for _resolve_account_id).
-app.middleware("http")(_auth_session_middleware)
+#
+# Both session middlewares are wrapped in `exempt_static`: each opens a SQLite
+# session on every request that carries a cookie, and the /ui and /infloww
+# mounts (declared at the bottom of this file, both `no-store`, so nothing is
+# ever reused across navigations) cannot use the result. The wrap is HERE and
+# not inside auth.py / chatters.py so neither has to know the frontend's URL
+# layout, and so the exemption lives beside the mounts it names. It does not
+# affect registration order. See static_paths for the reasoning and the
+# verification that nothing but those mounts answers under either prefix.
+app.middleware("http")(exempt_static(_auth_session_middleware))
 
 
 # ── Share-link gate ────────────────────────────────────────────
@@ -387,6 +465,8 @@ async def _share_token_gate(request: Request, call_next):
     if request.url.path == "/health" or request.url.path == "/livez":
         return await call_next(request)
     if request.url.path.startswith(_PUBLIC_PREFIXES):
+        return await call_next(request)
+    if request.url.path in _UNAUTHENTICATED_PATHS:
         return await call_next(request)
     if request.cookies.get(_SHARE_COOKIE) == share_token:
         return await call_next(request)
@@ -700,6 +780,65 @@ _chat_links_seeded: bool = False
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 
+# ── The one periodic-task loop ────────────────────────────────────────
+#
+# Six background sweepers (img cache, storyboard locks, perflog, raw_json,
+# audit retention, payload size cap) were six hand-copied transcriptions of the
+# same eight lines: loop, sleep, work, swallow-and-log, return on cancel. Copies
+# do not stay identical, and the way this one drifted was expensive.
+#
+# Every copy slept BEFORE its first pass. For the hourly sweepers that is
+# invisible. For the two DAILY ones it meant the sweep only ever ran on a
+# process that stayed up longer than a day — and this relay is redeployed,
+# autohealed and restarted far more often than that. So the result was not a
+# late prune, it was NO prune, ever, silently, on precisely the tables whose
+# only job is to stay bounded. Measured on the live DB 2026-08-25, every window
+# long blown:
+#
+#     scheduled_jobs     retain  7d  → rows back to 45d  (263,790)
+#     automation_runs    retain 14d  → rows back to 20d  (409,479)
+#     messages.raw_json  retain 60d  → 3,668 rows still holding payloads
+#
+# That unbounded job table is what turned an unindexed lookup into the
+# 6.7s-per-supervisor-tick scan the indexes in db/models.py now fix; this loop
+# is what stops it growing back.
+#
+# Hence one implementation, with `first_after_s` as a NAMED ARGUMENT rather than
+# a mutable each caller re-derives. The point is not that eight lines are saved
+# six times over — it is that "when does the first pass happen" is now a
+# decision each sweeper states out loud at its call site, instead of an
+# emergent property of a loop nobody re-reads.
+async def _periodic(
+    label: str,
+    interval_s: float,
+    work: Callable[[], Awaitable[None]],
+    *,
+    first_after_s: float | None = None,
+) -> None:
+    """Run `work()` every `interval_s` seconds, forever.
+
+    The first pass happens `first_after_s` from now — defaulting to a full
+    interval, which is what every caller used to hardcode. Sweepers whose
+    interval outruns the process's own uptime pass a short boot grace instead,
+    so they run soon after startup and then settle onto their cadence.
+
+    `work` owns its own logging of what it did; this owns only the failure path.
+    A raised exception is logged and the cadence continues — one bad cycle must
+    never take a sweeper down for the life of the process. Cancellation returns
+    cleanly so `_stop_event_pumps` can tear these down at shutdown.
+    """
+    delay = interval_s if first_after_s is None else first_after_s
+    while True:
+        try:
+            await asyncio.sleep(delay)
+            delay = interval_s
+            await work()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.warning("%s cycle failed", label, exc_info=True)
+
+
 async def _ws_pump_for_account(account_id: str) -> None:
     """Run the OF WS pump for one account until cancelled. OFWebSocket has
     its own reconnect-with-backoff loop, so this task is only torn down when
@@ -821,6 +960,16 @@ async def _pump_supervisor() -> None:
         await asyncio.sleep(15)
 
 
+# The asyncio default executor's size. Every `asyncio.to_thread` in this
+# codebase shares this one pool — all `_proxy` OF calls, the automation
+# executor's roundtrips, media pulls — so it is the budget the per-account
+# lane spends from: `accounts x _ACCOUNT_LANE_TOTAL <= this, minus headroom`.
+# Settable from the Concurrency panel because it was the one ceiling that
+# bounded every other ceiling and could only be changed by editing source.
+# A `ThreadPoolExecutor` cannot be resized, so this is read once, here.
+_EXECUTOR_THREADS = lane_config.resolve("RELAY_EXECUTOR_THREADS", 64)
+
+
 @app.on_event("startup")
 async def _start_event_pumps() -> None:
     global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
@@ -853,7 +1002,8 @@ async def _start_event_pumps() -> None:
     try:
         from concurrent.futures import ThreadPoolExecutor
         _main_loop.set_default_executor(
-            ThreadPoolExecutor(max_workers=64, thread_name_prefix="to-thread")
+            ThreadPoolExecutor(max_workers=_EXECUTOR_THREADS,
+                               thread_name_prefix="to-thread")
         )
         log.info("asyncio default executor bumped to 64 threads")
     except Exception:
@@ -1007,6 +1157,9 @@ async def _seed_chat_links_once() -> None:
 
 @app.on_event("shutdown")
 async def _stop_event_pumps() -> None:
+    # Save the lane counters before anything else can raise — a clean stop is
+    # the one restart where we can avoid losing the last flush interval.
+    _lane_stats_flush(force=True)
     # CancelledError is not an "Exception" in 3.8+ (it's BaseException) so we
     # have to suppress it explicitly — otherwise FastAPI logs a noisy traceback
     # at every clean shutdown.
@@ -1160,49 +1313,44 @@ def _kick_clear_session_dead(account_id: str) -> None:
     loop.create_task(_clear(), name=f"session-recover-{account_id}")
 
 
-def _link_account_to_request_user(account_id: str) -> None:
-    """If a signed-in friend just captured an OF session, INSERT a
-    user_accounts row linking the two so it shows up in their
-    ScopeSwitcher + passes the ownership gate. No-op if the request is
-    unauthed (founder pre-auth curl, internal cron). Idempotent —
-    duplicate inserts silently rolled back."""
-    user = _get_request_user()
-    if user is None:
-        return
+def _sync_and_link_after_bootstrap(account_id: str) -> None:
+    """Mirror the new on-disk account into SQL, then give it its owner.
 
-    async def _link() -> None:
-        from db.engine import get_session
-        from db.models import UserAccount
-        from sqlalchemy.exc import IntegrityError
-        try:
-            async with get_session() as s:
-                s.add(UserAccount(user_id=user.id, account_id=account_id))
-                try:
-                    await s.flush()
-                except IntegrityError:
-                    await s.rollback()
-        except Exception:
-            log.exception("failed to link account %s to user %s", account_id, user.id)
+    These two used to be separate fire-and-forget tasks, and the link lost
+    the race often enough that every recently captured account was owned by
+    nobody. They are ordered inside ONE coroutine now, so the `accounts`
+    parent is always committed before the link is attempted — the FK can no
+    longer fire, and the `except IntegrityError` that hid it is gone.
+
+    The link half is skipped for an unauthed request (founder pre-auth curl,
+    internal cron); the sync half always runs. Failures are logged, never
+    swallowed.
+    """
+    user = _get_request_user()
+
+    async def _run() -> None:
+        await _sync_db_from_disk()
+        if user is None:
+            return
+        await ensure_user_account_link(user.id, account_id)
         # Refresh the in-process snapshot so the SAME request (sync handler
         # called us, then returns to the user) sees the new account_id in
         # its set on any follow-up _resolve_account_id call.
-        try:
-            user.account_ids = frozenset(user.account_ids | {account_id})  # type: ignore[misc]
-        except Exception:
-            pass
+        user.account_ids = frozenset(user.account_ids | {account_id})  # type: ignore[misc]
 
-    # The bootstrap handler is sync; bounce into the event loop.
+    loop = _main_loop
+    if loop is None:
+        return
+    import asyncio as _asyncio
+    fut = _asyncio.run_coroutine_threadsafe(_run(), loop)
     try:
-        loop = _main_loop
-        if loop is None:
-            return
-        import asyncio as _asyncio
-        fut = _asyncio.run_coroutine_threadsafe(_link(), loop)
-        # Wait briefly so the row is visible by the time we return; capped
-        # so a stuck DB can't hang the bootstrap response.
-        fut.result(timeout=5)
+        # Wait so the row is visible by the time we answer, capped so a slow
+        # import can't hang the response. On timeout the coroutine keeps
+        # running and still lands the link — ordering, not this wait, is what
+        # makes it correct.
+        fut.result(timeout=10)
     except Exception:
-        log.exception("link account → user dispatch failed")
+        log.exception("bootstrap sync+link failed for account %s", account_id)
 
 
 # ── Per-account OF call priority lanes ────────────────────────────────
@@ -1225,12 +1373,289 @@ def _link_account_to_request_user(account_id: str) -> None:
 #
 # Priority is signalled by the `X-Priority: background` request header.
 # Anything else (including missing) is treated as user.
-_ACCOUNT_LANE_TOTAL = 5
-_ACCOUNT_LANE_BACKGROUND = 2
+# Tunable, like every admission lane — this was the one concurrency ceiling in
+# the process that could only be changed by editing source, which is why it had
+# never been retuned.
+#
+# WHAT ACTUALLY BOUNDS THIS, measured 2026-08-26. The comment below says the cap
+# exists because OF and the proxy cap connections per source IP. That is not
+# what the numbers show: 100 concurrent `users/me` from ONE egress IP returned
+# 100x 200 with p50 flat at 0.55s, no 429 and no rate limiting — no knee at all
+# up to 100. Five accounts sharing one IP ran 25 concurrent with zero queuing
+# (p50 0.88s, against 0.61s for three accounts at 15).
+#
+# The real ceiling is THREADS. Every OF call is sync and runs via
+# `asyncio.to_thread`, so the fleet shares the 64-thread executor set at startup
+# — with `/img`, vault stills and storyboard builds. The budget is therefore:
+#
+#     accounts x _ACCOUNT_LANE_TOTAL  <=  ~64, minus headroom for everything else
+#
+# At 7 accounts the default 5 spends 35 of 64 (55%), which leaves room. Raising
+# it to 8 would spend 56 of 64 and leave eight threads for the entire rest of
+# the process — that is the fd/thread starvation class of failure, not an OF
+# one. Raise this only alongside the executor, and only with `/admin/lanes`
+# open: `blocked_rate` there is the evidence that the cap is costing anything at
+# all. It has been 0.0% across every measurement so far.
+_ACCOUNT_LANE_TOTAL = lane_config.resolve("ACCOUNT_LANE_TOTAL", 5)
+# Still clamped below total: the sub-cap exists to RESERVE slots for user
+# work, so a saved value of background >= total would silently delete the
+# reservation and turn the two semaphores into one.
+_ACCOUNT_LANE_BACKGROUND = max(1, min(
+    _ACCOUNT_LANE_TOTAL - 1 if _ACCOUNT_LANE_TOTAL > 1 else 1,
+    lane_config.resolve("ACCOUNT_LANE_BACKGROUND", 2),
+))
+# The clamp above means the number ENFORCED can differ from the number resolved,
+# and this is the only knob where that is true. Told to the store explicitly, or
+# the panel would report a pending change that no restart will ever deliver.
+lane_config.record_live("ACCOUNT_LANE_BACKGROUND", _ACCOUNT_LANE_BACKGROUND)
 _account_lanes_lock = threading.Lock()
 _account_lanes: dict[str, tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]] = {}
-_priority_total_waits: int = 0
-_priority_background_waits: int = 0
+#
+# ── Lane accounting ────────────────────────────────────────────────────
+# The previous two counters (`_priority_total_waits`,
+# `_priority_background_waits`) incremented before EVERY acquire, not only
+# blocked ones, and nothing ever read them — so they could not answer the
+# only question that matters here: is this lane actually a queue, and for
+# how long? These replace them with per-account + fleet-wide accounting of
+# *blocked* acquires and the time spent blocked, exposed at
+# /admin/priority-lanes/stats. Observation only: no acquire is bounded and
+# nothing is rejected.
+_lane_stats_lock = threading.Lock()
+_lane_stats_since = _time_mod.monotonic()
+
+
+def _new_lane_stat() -> dict:
+    return {
+        "calls": 0,                 # lane entries
+        "calls_user": 0,
+        "calls_background": 0,
+        "blocked_total": 0,         # entries that waited for a `total` slot
+        "blocked_background": 0,    # background entries that waited on the sub-cap
+        "wait_s_total": 0.0,        # cumulative seconds blocked on `total`
+        "wait_s_background": 0.0,   # cumulative seconds blocked on `background`
+        "wait_s_max": 0.0,          # worst single entry's total wait
+        "in_flight": 0,
+        "in_flight_peak": 0,
+        "bg_in_flight": 0,
+        "bg_in_flight_peak": 0,
+    }
+
+
+_lane_stats_all: dict = _new_lane_stat()
+_lane_stats: dict[str, dict] = {}
+
+# ── Persistence ────────────────────────────────────────────────────────
+# The counters above answer "is this lane actually a queue?", and that is a
+# question answered over DAYS, not over one process lifetime. Held only in
+# memory they reset on every relay restart — so an observation window that
+# spanned a container recreate would silently start from zero and read as
+# "no queueing", which is the one wrong answer that looks like a result.
+#
+# So the CUMULATIVE fields persist to a small JSON file and fold back in on
+# boot. Live gauges (`in_flight`, `bg_in_flight`) deliberately do NOT
+# restore: nothing is in flight in a process that just started, and a
+# restored gauge would be wrong forever. Peaks and `wait_s_max` merge by max.
+#
+# The default path is the directory the SQLite DB lives in — in this
+# deployment that is the one path that is a real volume and therefore
+# survives `docker rm`. `PRIORITY_LANE_STATS_PATH=/some/file.json` moves it;
+# `PRIORITY_LANE_STATS_PATH=` (empty) turns persistence off entirely.
+_LANE_STATS_SCHEMA = 1
+_LANE_STATS_FLUSH_S = 30.0
+_LANE_CUMULATIVE = ("calls", "calls_user", "calls_background",
+                    "blocked_total", "blocked_background",
+                    "wait_s_total", "wait_s_background")
+_LANE_MAXED = ("wait_s_max", "in_flight_peak", "bg_in_flight_peak")
+
+
+def _lane_stats_file() -> Path | None:
+    """Where the cumulative counters live between restarts, or None to keep
+    them in memory only."""
+    raw = os.environ.get("PRIORITY_LANE_STATS_PATH")
+    if raw is not None:
+        raw = raw.strip()
+        return Path(raw) if raw else None
+    url = os.environ.get("DATABASE_URL", "")
+    if url.startswith("sqlite") and ":///" in url:
+        db = url.split(":///", 1)[1].split("?", 1)[0]
+        if db:
+            parent = Path(db).parent
+            if parent.is_dir():
+                return parent / "priority_lane_stats.json"
+    return None
+
+
+_LANE_STATS_PATH: Path | None = _lane_stats_file()
+_lane_stats_base: dict = _new_lane_stat()               # fleet-wide, from disk
+_lane_stats_base_by_account: dict[str, dict] = {}
+_lane_stats_started_at: float = _time_mod.time()        # wall clock, window start
+_lane_stats_boots: int = 1                              # restarts this window spans
+_lane_stats_last_flush: float = 0.0                     # monotonic
+_lane_stats_load_error: str | None = None
+_lane_stats_write_error: str | None = None
+
+
+def _merge_lane_row(dst: dict, src: dict) -> None:
+    """Fold a persisted row into `dst`: cumulative fields add, peaks take the
+    max, live gauges are ignored on purpose."""
+    for k in _LANE_CUMULATIVE:
+        v = src.get(k)
+        if isinstance(v, (int, float)) and v >= 0:
+            dst[k] += v
+    for k in _LANE_MAXED:
+        v = src.get(k)
+        if isinstance(v, (int, float)) and v > dst[k]:
+            dst[k] = v
+
+
+def _lane_row_combined(base: dict, live: dict) -> dict:
+    """One row as a reader should see it: what survived restarts plus what
+    this process has seen. Gauges come from the live row only."""
+    out = _new_lane_stat()
+    for k in _LANE_CUMULATIVE:
+        out[k] = base[k] + live[k]
+    for k in _LANE_MAXED:
+        out[k] = max(base[k], live[k])
+    out["in_flight"] = live["in_flight"]
+    out["bg_in_flight"] = live["bg_in_flight"]
+    return out
+
+
+def _lane_stats_load() -> None:
+    """Best-effort restore at import. A missing, unreadable or older-schema
+    file is not an error worth failing a boot over — it just means this
+    window starts now, and the endpoint says so."""
+    global _lane_stats_started_at, _lane_stats_boots, _lane_stats_load_error
+    p = _LANE_STATS_PATH
+    if p is None:
+        return
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        _lane_stats_load_error = f"{type(exc).__name__}: {exc}"[:200]
+        return
+    if not isinstance(raw, dict) or raw.get("v") != _LANE_STATS_SCHEMA:
+        _lane_stats_load_error = "schema mismatch — starting a fresh window"
+        return
+    try:
+        started = float(raw.get("started_at") or 0.0)
+        if started > 0:
+            _lane_stats_started_at = started
+        _lane_stats_boots = int(raw.get("boots") or 0) + 1
+        _merge_lane_row(_lane_stats_base, raw.get("overall") or {})
+        for aid, row in (raw.get("accounts") or {}).items():
+            if isinstance(aid, str) and isinstance(row, dict):
+                _merge_lane_row(
+                    _lane_stats_base_by_account.setdefault(aid, _new_lane_stat()), row)
+    except Exception as exc:
+        _lane_stats_load_error = f"{type(exc).__name__}: {exc}"[:200]
+
+
+def _lane_stats_snapshot() -> dict:
+    """Everything a reader (or the file) needs, base folded into live."""
+    with _lane_stats_lock:
+        overall = _lane_row_combined(_lane_stats_base, _lane_stats_all)
+        accounts = {}
+        for aid in set(_lane_stats) | set(_lane_stats_base_by_account):
+            accounts[aid] = _lane_row_combined(
+                _lane_stats_base_by_account.get(aid) or _new_lane_stat(),
+                _lane_stats.get(aid) or _new_lane_stat())
+    return {
+        "v": _LANE_STATS_SCHEMA,
+        "started_at": _lane_stats_started_at,
+        "boots": _lane_stats_boots,
+        "overall": overall,
+        "accounts": accounts,
+    }
+
+
+def _lane_stats_flush(force: bool = False) -> None:
+    """Persist the cumulative counters. Throttled, because this is called from
+    every lane exit and must never become a write per OF call. Never raises —
+    a lane that cannot save its stats still has to serve traffic."""
+    global _lane_stats_last_flush, _lane_stats_write_error
+    p = _LANE_STATS_PATH
+    if p is None:
+        return
+    now = _time_mod.monotonic()
+    if not force and (now - _lane_stats_last_flush) < _LANE_STATS_FLUSH_S:
+        return
+    _lane_stats_last_flush = now
+    try:
+        payload = json.dumps(_lane_stats_snapshot())
+        tmp = p.parent / (p.name + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, p)
+        _lane_stats_write_error = None
+    except Exception as exc:
+        _lane_stats_write_error = f"{type(exc).__name__}: {exc}"[:200]
+
+
+_lane_stats_load()
+# Persist immediately rather than waiting for the first lane exit. Two reasons:
+# the bumped `boots` should be durable even on a relay that then serves no OF
+# traffic at all, and a path we cannot write to should surface as
+# `persist_error` at boot rather than silently at the end of the first window.
+_lane_stats_flush(force=True)
+
+
+def _lane_stat_rows(account_id: str) -> tuple[dict, dict]:
+    """Fleet-wide + per-account stat dicts. Caller holds `_lane_stats_lock`."""
+    st = _lane_stats.get(account_id)
+    if st is None:
+        st = _new_lane_stat()
+        _lane_stats[account_id] = st
+    return _lane_stats_all, st
+
+
+def _lane_acquire(sem: threading.BoundedSemaphore, account_id: str, which: str) -> float:
+    """Acquire `sem`, recording whether we had to wait and for how long.
+
+    Behaviourally identical to a bare `sem.acquire()` — the non-blocking
+    probe exists ONLY so "took a free slot" can be told apart from "queued
+    behind someone". Still unbounded: this never gives up, never rejects.
+    Returns the seconds spent blocked (0.0 when a slot was free)."""
+    if sem.acquire(blocking=False):
+        return 0.0
+    t0 = _time_mod.monotonic()
+    sem.acquire()
+    waited = _time_mod.monotonic() - t0
+    ckey = "blocked_background" if which == "background" else "blocked_total"
+    wkey = "wait_s_background" if which == "background" else "wait_s_total"
+    with _lane_stats_lock:
+        for st in _lane_stat_rows(account_id):
+            st[ckey] += 1
+            st[wkey] += waited
+    return waited
+
+
+def _lane_entered(account_id: str, priority: str, waited: float, bg_held: bool) -> None:
+    with _lane_stats_lock:
+        for st in _lane_stat_rows(account_id):
+            st["calls"] += 1
+            st["calls_background" if priority == "background" else "calls_user"] += 1
+            st["in_flight"] += 1
+            if st["in_flight"] > st["in_flight_peak"]:
+                st["in_flight_peak"] = st["in_flight"]
+            if bg_held:
+                st["bg_in_flight"] += 1
+                if st["bg_in_flight"] > st["bg_in_flight_peak"]:
+                    st["bg_in_flight_peak"] = st["bg_in_flight"]
+            if waited > st["wait_s_max"]:
+                st["wait_s_max"] = waited
+
+
+def _lane_exited(account_id: str, bg_held: bool) -> None:
+    with _lane_stats_lock:
+        for st in _lane_stat_rows(account_id):
+            st["in_flight"] -= 1
+            if bg_held:
+                st["bg_in_flight"] -= 1
+    # Outside the lock on purpose — the flush serialises its own snapshot and
+    # must not hold every other lane user behind a disk write.
+    _lane_stats_flush()
 
 
 def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]:
@@ -1259,26 +1684,41 @@ def _current_priority() -> str:
 
 
 @contextlib.contextmanager
-def _priority_lane(account_id: str | None):
+def _priority_lane(account_id: str | None, priority: str | None = None):
     """Acquire the right semaphore(s) for the current request's priority.
     Background callers also hold the background sub-semaphore, so user
-    callers always have at least (total - background) reserved slots."""
-    global _priority_total_waits, _priority_background_waits
+    callers always have at least (total - background) reserved slots.
+
+    `priority` overrides the X-Priority header — used by server-side
+    callers that have no request context (see `_priority_lane_background`).
+
+    Neither acquire is bounded. If the second acquire raises, the first is
+    released before the exception propagates: without that, a background
+    caller interrupted between the two acquires would permanently shrink
+    the background cap (2 → 1 → 0) for that account."""
     if not account_id:
         yield
         return
     total, background = _lanes_for(account_id)
-    priority = _current_priority()
+    if priority is None:
+        priority = _current_priority()
     bg_held = False
+    waited = 0.0
     if priority == "background":
-        _priority_background_waits += 1
-        background.acquire()
+        waited += _lane_acquire(background, account_id, "background")
         bg_held = True
-    _priority_total_waits += 1
-    total.acquire()
+    try:
+        waited += _lane_acquire(total, account_id, "total")
+    except BaseException:
+        if bg_held:
+            try: background.release()
+            except ValueError: pass
+        raise
+    _lane_entered(account_id, priority, waited, bg_held)
     try:
         yield
     finally:
+        _lane_exited(account_id, bg_held)
         try: total.release()
         except ValueError: pass
         if bg_held:
@@ -1353,48 +1793,113 @@ def livez():
     return {"ok": True}
 
 
-@app.get("/health")
-def health(request: Request, all_accounts: bool = Query(False, description="Probe every account, not just the requested one")):
-    """Never raises 500. Always returns a JSON body the frontend can act on.
+# ── /health?all_accounts=1 — one live OF probe per account ──────────────
+#
+# The loop that makes them used to be serial: 7 accounts measured 4.11s then
+# 3.06s against 0.60s for a single account. Concurrency is the fix, and the
+# ceiling that keeps it from being a downgrade is `admission.HEALTH_PROBE` —
+# see that lane for why an unbounded fan-out here is a process-wide problem.
+#
+# What is local to this handler is the BUDGET, and the budget is not a cancel.
+# `c.me()` blocks in a worker thread and outlives any cancellation of the task
+# awaiting it, so `asyncio.wait(timeout=)` stops WAITING and nothing more: each
+# probe still runs to completion and still releases its own slot when it
+# actually finishes. Releasing on timeout instead would let the next probe start
+# while the abandoned OF call was still in flight — a ceiling reported but not
+# held. Timed-out probes are parked in `_health_probes_running` so the loop
+# cannot collect a live task, and their row says `timeout`, which is an honest
+# "still running" rather than a verdict on the session.
+#
+# 20s, and deliberately nowhere near the 0.60s a healthy probe takes: that is
+# what healthy looks like, not a safe deadline. `OFClient.timeout_s` is 30s and
+# `_proxy_retry` can spend several attempts inside it, so a budget sized off the
+# observed number would fail slow-but-fine accounts and flag their sessions in
+# the switcher — manufacturing the exact fault this route exists to report.
+_HEALTH_PROBE_BUDGET_S = max(1.0, float(os.environ.get("HEALTH_ALL_BUDGET_S", "20")))
 
-    By default reports the health of the account resolved from
-    `X-Account-Id` / `?account_id=` / active. Pass `?all_accounts=1` to get
-    the full per-account snapshot, which the UI uses to flag any expired
-    sessions in the switcher dropdown."""
-    if all_accounts:
-        rows: list[dict[str, Any]] = []
-        for meta in account_registry.list_accounts():
-            aid = meta["id"]
-            row: dict[str, Any] = {
-                "account_id": aid, "nickname": meta.get("nickname"),
-                "color": meta.get("color"),
-                "has_session": meta.get("has_session", False),
-            }
-            if not meta.get("has_session"):
-                row["ok"] = False
-                row["error"] = "no_session"
-                rows.append(row)
-                continue
+# Strong references to probes still running past the budget. Their only other
+# reference is a local in a frame we are about to return from, and the loop is
+# free to collect a task nobody holds — mid-OF-call.
+_health_probes_running: set[asyncio.Task] = set()
+
+
+def _probe_account_blocking(aid: str) -> dict[str, Any]:
+    """One account's live probe. NEVER raises — returns that row's fields.
+
+    Every branch of the old serial loop's try/except lives here unchanged. The
+    endpoint's "never raises 500" contract is what makes that mandatory: once
+    this runs in a worker thread, an escaping exception is no longer inside the
+    loop that used to wrap it."""
+    try:
+        c = _load_client(aid)
+        me = c.me()
+        return {"ok": True, "user_id": me.get("id"), "name": me.get("name"),
+                "proxy": {"label": c.proxy_label, "url": c.proxy_url}}
+    except OFAPIError as e:
+        r = e.response
+        return {"ok": False, "error": "upstream",
+                "upstream_status": r.status_code if r else None,
+                "upstream_body": (r.text[:300] if r else str(e))}
+    except HTTPException as e:
+        return {"ok": False,
+                "error": (e.detail.get("error") if isinstance(e.detail, dict) else "error"),
+                "detail": e.detail}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+async def _probe_account(aid: str) -> dict[str, Any]:
+    """Hold a slot for the WHOLE life of the blocking call, then release it."""
+    async with admission.HEALTH_PROBE:
+        return await asyncio.to_thread(_probe_account_blocking, aid)
+
+
+async def _health_all_accounts() -> dict[str, Any]:
+    """The `?all_accounts=1` snapshot: one bounded, budgeted probe per account."""
+    rows: list[dict[str, Any]] = []
+    # Task → the row it answers, so association is by identity and no ordering
+    # or id-uniqueness assumption stands between a probe and its account.
+    probes: dict[asyncio.Task, dict[str, Any]] = {}
+    for meta in account_registry.list_accounts():
+        aid = meta["id"]
+        row: dict[str, Any] = {
+            "account_id": aid, "nickname": meta.get("nickname"),
+            "color": meta.get("color"),
+            "has_session": meta.get("has_session", False),
+        }
+        rows.append(row)
+        if not meta.get("has_session"):
+            # No session means no client to load: answered off the registry
+            # alone, without spending a slot or an OF call to say so.
+            row.update({"ok": False, "error": "no_session"})
+            continue
+        probes[asyncio.create_task(_probe_account(aid))] = row
+
+    if probes:
+        done, pending = await asyncio.wait(set(probes), timeout=_HEALTH_PROBE_BUDGET_S)
+        for t in done:
             try:
-                c = _load_client(aid)
-                me = c.me()
-                row.update({"ok": True, "user_id": me.get("id"), "name": me.get("name"),
-                            "proxy": {"label": c.proxy_label, "url": c.proxy_url}})
-            except OFAPIError as e:
-                r = e.response
-                row.update({"ok": False, "error": "upstream",
-                            "upstream_status": r.status_code if r else None,
-                            "upstream_body": (r.text[:300] if r else str(e))})
-            except HTTPException as e:
-                row.update({"ok": False,
-                            "error": (e.detail.get("error") if isinstance(e.detail, dict) else "error"),
-                            "detail": e.detail})
-            except Exception as e:
-                row.update({"ok": False, "error": f"{type(e).__name__}: {e}"})
-            rows.append(row)
-        return {"ok": all(r.get("ok") for r in rows) if rows else False,
-                "accounts": rows}
+                probes[t].update(t.result())
+            except Exception as e:  # noqa: BLE001 — never raises 500
+                # `_probe_account_blocking` swallows everything, so reaching
+                # here means the dispatch itself failed (executor shut down).
+                probes[t].update({"ok": False, "error": f"{type(e).__name__}: {e}"})
+        for t in pending:
+            _health_probes_running.add(t)          # deliberately NOT cancelled
+            t.add_done_callback(_health_probes_running.discard)
+            probes[t].update({
+                "ok": False, "error": "timeout", "timed_out": True,
+                "message": f"no answer within {_HEALTH_PROBE_BUDGET_S:g}s; the probe is still running",
+            })
 
+    return {"ok": all(r.get("ok") for r in rows) if rows else False,
+            "accounts": rows}
+
+
+def _health_one(request: Request):
+    """The single-account branch, unchanged — and still blocking (`me()` and
+    `egress_ip()` are both OF round-trips), which is why the handler hands it
+    to a thread rather than running it on the loop."""
     try:
         client = _get_client(request)
     except HTTPException as e:
@@ -1421,6 +1926,25 @@ def health(request: Request, all_accounts: bool = Query(False, description="Prob
             "egress_ip": client.egress_ip(),
         },
     }
+
+
+@app.get("/health")
+async def health(request: Request, all_accounts: bool = Query(False, description="Probe every account, not just the requested one")):
+    """Never raises 500. Always returns a JSON body the frontend can act on.
+
+    By default reports the health of the account resolved from
+    `X-Account-Id` / `?account_id=` / active. Pass `?all_accounts=1` to get
+    the full per-account snapshot, which the UI uses to flag any expired
+    sessions in the switcher dropdown."""
+    if all_accounts:
+        # AccountsTable's query inherits `retry: 1` (app/components/providers.tsx),
+        # so a slow answer can launch a SECOND fan-out on top of the first.
+        # Coalescing makes the retry JOIN the in-flight probe instead of doubling
+        # it. Legal per relay_coalesce's own rules — a GET, no `X-Employee-Id`,
+        # no attribution — and the key carries no account because the body covers
+        # every account and is identical for every caller.
+        return await relay_coalesce.coalesce(("health_all",), _health_all_accounts)
+    return await asyncio.to_thread(_health_one, request)
 
 
 @app.get("/api/of/v2/users/me")
@@ -1669,18 +2193,15 @@ def _img_cache_evict_once() -> int:
     return removed
 
 
+async def _img_cache_sweep() -> None:
+    removed = await asyncio.to_thread(_img_cache_evict_once)
+    if removed:
+        log.info("img cache evicted: %d entries (TTL=%ds)", removed, _IMG_CACHE_TTL_S)
+
+
 async def _img_cache_evictor_loop() -> None:
     """Periodic TTL sweep. Same shape as _storyboard_evictor_loop."""
-    while True:
-        try:
-            await asyncio.sleep(_IMG_CACHE_EVICT_INTERVAL_S)
-            removed = await asyncio.to_thread(_img_cache_evict_once)
-            if removed:
-                log.info("img cache evicted: %d entries (TTL=%ds)", removed, _IMG_CACHE_TTL_S)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            log.warning("img cache evictor cycle failed", exc_info=True)
+    await _periodic("img cache evictor", _IMG_CACHE_EVICT_INTERVAL_S, _img_cache_sweep)
 
 
 # ── Pinned outbound media (Wave 2.1) ──────────────────────────────────
@@ -1768,19 +2289,13 @@ def _media_urls_from_result(result: Any) -> list[tuple[str, list[str]]]:
 @contextlib.contextmanager
 def _priority_lane_background(account_id: str):
     """Acquire the per-account total + background semaphores (background
-    priority) for a server-side fetch with no request context. Mirrors
-    `_priority_lane`'s background branch so a pin fetch can never starve a
-    user-initiated OF call."""
-    total, background = _lanes_for(account_id)
-    background.acquire()
-    total.acquire()
-    try:
+    priority) for a server-side fetch with no request context.
+
+    Delegates to `_priority_lane` with the priority forced, so this path
+    gets the same accounting and the same enter/exit pairing rather than a
+    second copy of the branch that drifts from it."""
+    with _priority_lane(account_id, priority="background"):
         yield
-    finally:
-        try: total.release()
-        except ValueError: pass
-        try: background.release()
-        except ValueError: pass
 
 
 def _pin_one_media_blocking(account_id: str, media_id: str, urls: list[str]) -> None:
@@ -2165,54 +2680,61 @@ async def admin_perflog_recent(
 _RAW_JSON_RETAIN_S = int(os.environ.get("RAW_JSON_RETAIN_S", str(60 * 24 * 60 * 60)))
 _RAW_JSON_EVICT_INTERVAL_S = int(os.environ.get("RAW_JSON_EVICT_INTERVAL_S", str(24 * 60 * 60)))
 
+# How long after startup a DAILY sweeper takes its first pass (see `_periodic`
+# for why the daily ones need one at all). Long enough to stay out of startup's
+# way — index creation, the pumps connecting, the first ingest walk — and short
+# enough that a relay restarted twice a day still prunes twice a day. A restart
+# loop therefore re-sweeps, which is harmless: after the first pass these
+# deletes match nothing and cost only their scan.
+_EVICT_BOOT_GRACE_S = int(os.environ.get("EVICT_BOOT_GRACE_S", str(5 * 60)))
+
+
+async def _raw_json_sweep() -> None:
+    from db.engine import get_session
+    from db.models import Message
+    from sqlalchemy import update as sa_update
+    cutoff = datetime.utcnow() - timedelta(seconds=_RAW_JSON_RETAIN_S)
+    async with get_session() as s:
+        res = await s.execute(
+            sa_update(Message)
+            .where(Message.created_at < cutoff, Message.raw_json.isnot(None))
+            .values(raw_json=None)
+        )
+        await s.commit()
+        if (res.rowcount or 0) > 0:
+            log.info("raw_json evictor cleared %d rows (retain=%ds)", res.rowcount, _RAW_JSON_RETAIN_S)
+
 
 async def _raw_json_evictor_loop() -> None:
     """Periodic NULL-out of messages.raw_json older than _RAW_JSON_RETAIN_S.
     Caps DB growth (the payloads are a write-only migration buffer). Runs
     daily by default; tune via RAW_JSON_RETAIN_S / RAW_JSON_EVICT_INTERVAL_S."""
+    await _periodic(
+        "raw_json evictor", _RAW_JSON_EVICT_INTERVAL_S, _raw_json_sweep,
+        # Daily interval, sub-daily uptime — see _periodic. 3,668 rows were
+        # still holding payloads past a 60-day window when this was measured.
+        first_after_s=_EVICT_BOOT_GRACE_S,
+    )
+
+
+async def _perflog_sweep() -> None:
     from db.engine import get_session
-    from db.models import Message
-    from sqlalchemy import update as sa_update
-    while True:
-        try:
-            await asyncio.sleep(_RAW_JSON_EVICT_INTERVAL_S)
-            cutoff = datetime.utcnow() - timedelta(seconds=_RAW_JSON_RETAIN_S)
-            async with get_session() as s:
-                res = await s.execute(
-                    sa_update(Message)
-                    .where(Message.created_at < cutoff, Message.raw_json.isnot(None))
-                    .values(raw_json=None)
-                )
-                await s.commit()
-                if (res.rowcount or 0) > 0:
-                    log.info("raw_json evictor cleared %d rows (retain=%ds)", res.rowcount, _RAW_JSON_RETAIN_S)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            log.warning("raw_json evictor cycle failed", exc_info=True)
+    from db.models import PerfEventRow
+    from sqlalchemy import delete as sa_delete
+    cutoff = datetime.utcnow() - timedelta(seconds=_PERFLOG_RETAIN_S)
+    async with get_session() as s:
+        res = await s.execute(
+            sa_delete(PerfEventRow).where(PerfEventRow.received_at < cutoff)
+        )
+        await s.commit()
+        if (res.rowcount or 0) > 0:
+            log.info("perflog evictor pruned %d rows (retain=%ds)", res.rowcount, _PERFLOG_RETAIN_S)
 
 
 async def _perflog_evictor_loop() -> None:
     """Periodic prune of perf_events older than _PERFLOG_RETAIN_S. Cheap —
     indexed on received_at. Runs hourly by default; tune via env."""
-    from db.engine import get_session
-    from db.models import PerfEventRow
-    from sqlalchemy import delete as sa_delete
-    while True:
-        try:
-            await asyncio.sleep(_PERFLOG_EVICT_INTERVAL_S)
-            cutoff = datetime.utcnow() - timedelta(seconds=_PERFLOG_RETAIN_S)
-            async with get_session() as s:
-                res = await s.execute(
-                    sa_delete(PerfEventRow).where(PerfEventRow.received_at < cutoff)
-                )
-                await s.commit()
-                if (res.rowcount or 0) > 0:
-                    log.info("perflog evictor pruned %d rows (retain=%ds)", res.rowcount, _PERFLOG_RETAIN_S)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            log.warning("perflog evictor cycle failed", exc_info=True)
+    await _periodic("perflog evictor", _PERFLOG_EVICT_INTERVAL_S, _perflog_sweep)
 
 
 # ── audit / log table retention ──────────────────────────────────────
@@ -2277,21 +2799,28 @@ async def evict_audit_logs_once() -> dict[str, int]:
     return out
 
 
+async def _audit_retention_sweep() -> None:
+    pruned = {k: v for k, v in (await evict_audit_logs_once()).items() if v}
+    if pruned:
+        log.info("audit-retention evictor pruned %s", pruned)
+
+
 async def _audit_retention_evictor_loop() -> None:
     """Daily retention sweep of the unbounded audit/log tables. Tune each window
     via AUTOMATION_RUNS_RETAIN_S / GROK_CALLS_RETAIN_S / SCHEDULED_JOBS_RETAIN_S
-    / ACTIONS_RETAIN_S (0 disables a table). See evict_audit_logs_once."""
-    while True:
-        try:
-            await asyncio.sleep(_AUDIT_EVICT_INTERVAL_S)
-            res = await evict_audit_logs_once()
-            pruned = {k: v for k, v in res.items() if v}
-            if pruned:
-                log.info("audit-retention evictor pruned %s", pruned)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            log.warning("audit-retention evictor cycle failed", exc_info=True)
+    / ACTIONS_RETAIN_S (0 disables a table). See evict_audit_logs_once.
+
+    Sweeps after a boot grace rather than after a full day — this loop's own
+    interval used to exceed the process's typical uptime, so it had never run.
+    See _periodic for the measurements. The delete is one statement per table on
+    purpose: measured on a snapshot of the live DB, the two big ones clear 137k
+    and 133k rows in 798ms and 931ms, so the write lock is held for about a
+    second, once a day. Batching that would be machinery bought against a cost
+    nobody is paying."""
+    await _periodic(
+        "audit-retention evictor", _AUDIT_EVICT_INTERVAL_S, _audit_retention_sweep,
+        first_after_s=_EVICT_BOOT_GRACE_S,
+    )
 
 
 # ── raw-OF-payload SIZE cap (event_inbox + messages.raw_json) ─────────
@@ -2574,6 +3103,26 @@ async def _reclaim_freelist() -> None:
             log.warning("payload-cap: incremental_vacuum failed", exc_info=True)
 
 
+async def _payload_size_cap_sweep() -> None:
+    pruned = await prune_event_inbox_once()
+    if pruned.get("deleted_events"):
+        log.info("event-inbox prune: deleted %d rows older than %ds",
+                 pruned["deleted_events"], _EVENT_INBOX_MAX_AGE_S)
+    summary = await evict_payloads_once()
+    if summary.get("freed_bytes"):
+        log.info(
+            "payload-cap: %d→%d MB (budget %d MB) — deleted %d events, "
+            "nulled %d raw_json%s",
+            summary["before_bytes"] // 1_000_000,
+            summary["after_bytes"] // 1_000_000,
+            summary["budget_bytes"] // 1_000_000,
+            summary["deleted_events"],
+            summary["nulled_messages"],
+            " (floor-bound)" if summary.get("floor_bound") else "",
+        )
+    await _reclaim_freelist()
+
+
 async def _payload_size_cap_loop() -> None:
     """Periodic size cap on the raw OF payload columns. Each tick:
       1. prune event_inbox to a hard ~2-day age window (unconditional — this is
@@ -2581,32 +3130,12 @@ async def _payload_size_cap_loop() -> None:
          the byte budget sits idle);
       2. evict raw payloads down to PAYLOAD_BUDGET_BYTES (honoring the floor);
       3. return freed pages to the OS (once auto_vacuum=INCREMENTAL).
-    Hourly by default; tune via EVENT_INBOX_MAX_AGE_S / PAYLOAD_* env vars."""
+    Hourly by default; tune via EVENT_INBOX_MAX_AGE_S / PAYLOAD_* env vars.
+
+    The autovacuum conversion runs ONCE, before the cadence starts — it is a
+    one-time migration of the DB's page layout, not part of the sweep."""
     await _maybe_convert_to_incremental_autovacuum()
-    while True:
-        try:
-            await asyncio.sleep(_PAYLOAD_CAP_INTERVAL_S)
-            pruned = await prune_event_inbox_once()
-            if pruned.get("deleted_events"):
-                log.info("event-inbox prune: deleted %d rows older than %ds",
-                         pruned["deleted_events"], _EVENT_INBOX_MAX_AGE_S)
-            summary = await evict_payloads_once()
-            if summary.get("freed_bytes"):
-                log.info(
-                    "payload-cap: %d→%d MB (budget %d MB) — deleted %d events, "
-                    "nulled %d raw_json%s",
-                    summary["before_bytes"] // 1_000_000,
-                    summary["after_bytes"] // 1_000_000,
-                    summary["budget_bytes"] // 1_000_000,
-                    summary["deleted_events"],
-                    summary["nulled_messages"],
-                    " (floor-bound)" if summary.get("floor_bound") else "",
-                )
-            await _reclaim_freelist()
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            log.warning("payload-cap cycle failed", exc_info=True)
+    await _periodic("payload-cap", _PAYLOAD_CAP_INTERVAL_S, _payload_size_cap_sweep)
 
 
 # ── /admin/chats/recent — instant-load seed for the inbox ──────────
@@ -2966,6 +3495,103 @@ def proxy_image_by_hash(request: Request, h: str):
     return proxy_image(request, u=u)
 
 
+@app.get("/admin/lanes")
+def admin_lanes() -> dict[str, Any]:
+    """Every concurrency ceiling in the process, in one read, for the Lanes tab.
+
+    Two families, and the tab has to keep them apart because they answer
+    different questions:
+
+      • `lanes` — the PROCESS-WIDE admission lanes (`service/admission.py`).
+        One ceiling each, shared by every account. A thread lane rejects when
+        full (`rejected` climbing = callers got a retryable 503); a loop lane
+        only queues, so `peak` is the only evidence it was ever reached.
+      • `account_lanes` — the PER-ACCOUNT OF lane, one 5-slot ceiling per
+        account, reported by `/admin/priority-lanes/stats`. Seven accounts
+        means seven of these, so fleet-wide concurrency is 7x the per-account
+        cap, not the cap.
+
+    READ-ONLY on purpose. These ceilings are what keeps the 2026-08-08
+    descriptor exhaustion from recurring; `env_var` on each row names where a
+    value is actually changed, which is at boot, where a bad number costs a
+    restart instead of an outage.
+    """
+    return {
+        "lanes": admission.describe(),
+        "account_lanes": admin_priority_lane_stats(),
+        # The per-account cap is not an admission lane and has no row above;
+        # state it so the tab can explain what it is showing.
+        "account_cap_total": _ACCOUNT_LANE_TOTAL,
+        "account_cap_background": _ACCOUNT_LANE_BACKGROUND,
+        "accounts_live": len(_account_lanes),
+    }
+
+
+@app.get("/admin/priority-lanes/stats")
+def admin_priority_lane_stats() -> dict:
+    """Is the per-account OF lane actually a queue?
+
+    Read this BEFORE deciding whether the acquire needs a timeout. The
+    numbers that matter: `blocked_total` vs `calls` (what fraction of
+    requests queued at all) and `wait_s_max` / `wait_s_avg_blocked` (how
+    long the ones that queued actually waited). They count blocked acquires
+    ONLY — an entry that took a free slot adds to `calls` and nothing else.
+
+    The window is `window_s`, NOT `uptime_s`: cumulative counters survive
+    restarts on disk, so the numbers can span several relay lifetimes and
+    `boots` says how many. `uptime_s` is only this process — when it is far
+    smaller than `window_s`, the live gauges are young but the totals are not.
+
+    Nothing here rejects or bounds anything; `rejections` is 0 by
+    construction and is listed so the shape stays stable if a bound is
+    ever added."""
+    def _view(st: dict) -> dict:
+        blocked = st["blocked_total"] + st["blocked_background"]
+        wait_s = st["wait_s_total"] + st["wait_s_background"]
+        return {
+            "calls": st["calls"],
+            "calls_user": st["calls_user"],
+            "calls_background": st["calls_background"],
+            "blocked": blocked,
+            "blocked_total": st["blocked_total"],
+            "blocked_background": st["blocked_background"],
+            "blocked_rate": round(blocked / st["calls"], 4) if st["calls"] else 0.0,
+            "wait_s_total": round(st["wait_s_total"], 3),
+            "wait_s_background": round(st["wait_s_background"], 3),
+            "wait_s_avg_blocked": round(wait_s / blocked, 3) if blocked else 0.0,
+            "wait_s_max": round(st["wait_s_max"], 3),
+            "in_flight": st["in_flight"],
+            "in_flight_peak": st["in_flight_peak"],
+            "bg_in_flight": st["bg_in_flight"],
+            "bg_in_flight_peak": st["bg_in_flight_peak"],
+            "saturated": st["in_flight"] >= _ACCOUNT_LANE_TOTAL,
+        }
+
+    snap = _lane_stats_snapshot()
+    overall = _view(snap["overall"])
+    rows = {aid: _view(st) for aid, st in snap["accounts"].items()}
+    # The fleet-wide row's `saturated`/peaks are sums across accounts, not a
+    # cap breach — the cap is per account, so drop the flag there.
+    overall.pop("saturated", None)
+    return {
+        "cap_total": _ACCOUNT_LANE_TOTAL,
+        "cap_background": _ACCOUNT_LANE_BACKGROUND,
+        "window_s": max(0, int(_time_mod.time() - snap["started_at"])),
+        "uptime_s": int(_time_mod.monotonic() - _lane_stats_since),
+        "boots": snap["boots"],
+        "persisted_to": str(_LANE_STATS_PATH) if _LANE_STATS_PATH else None,
+        "persist_error": _lane_stats_load_error or _lane_stats_write_error,
+        "lanes": len(_account_lanes),
+        "rejections": 0,
+        "overall": overall,
+        "accounts": dict(sorted(
+            rows.items(),
+            key=lambda kv: (kv[1]["blocked"], kv[1]["wait_s_total"]),
+            reverse=True,
+        )),
+    }
+
+
 @app.get("/admin/img-cache/disk")
 def admin_img_cache_disk() -> dict:
     """Disk cache stats. `hit_rate` is the headline number — if it stays
@@ -3187,20 +3813,17 @@ def _storyboard_evict_locks_once() -> int:
     return evicted
 
 
+async def _storyboard_lock_sweep() -> None:
+    evicted = await asyncio.to_thread(_storyboard_evict_locks_once)
+    if evicted:
+        log.info("storyboard locks evicted: %d", evicted)
+
+
 async def _storyboard_evictor_loop() -> None:
     """Background task spawned at startup. Runs the lock evictor every
     30 minutes — matches the cadence of the prune-storyboards cron so
     the in-memory dict catches up shortly after the disk cleanup."""
-    while True:
-        try:
-            await asyncio.sleep(30 * 60)
-            evicted = await asyncio.to_thread(_storyboard_evict_locks_once)
-            if evicted:
-                log.info("storyboard locks evicted: %d", evicted)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            log.warning("storyboard evictor cycle failed", exc_info=True)
+    await _periodic("storyboard evictor", 30 * 60, _storyboard_lock_sweep)
 
 
 def _video_path_hash(u: str) -> str:
@@ -3766,14 +4389,56 @@ async def _annotate_of_restricted(aid: str, resp: dict[str, Any]) -> dict[str, A
     return {**resp, rows_key: out_rows}
 
 
+# Short on purpose. Folder edits are rare but they are OPERATOR edits — a
+# rename or a pin that stays invisible for minutes reads as a failed write. 60s
+# is long enough to collapse the inbox-open burst (chip strip + picker + the
+# automation audience selector all mount together) and short enough that a
+# missed invalidation self-heals before anyone reaches for the mouse again.
+_CHAT_FOLDERS_TTL = 60.0
+
+
 @app.get("/api/of/v2/chats/folders")
-def chat_folders(
+async def chat_folders(
     limit: int = Query(10, ge=1, le=50),
     offset: int = Query(0, ge=0),
+    refresh: bool = Query(False, alias="refresh"),
 ) -> dict[str, Any]:
     """Fan-lists the user has pinned (or can pin) to the chat sidebar.
-    Mirrors OF's `/lists?filter=can_pin_chat&isChat=true&format=infinite`."""
-    return _proxy(lambda: _get_client().chat_folders(limit=limit, offset=offset))
+    Mirrors OF's `/lists?filter=can_pin_chat&isChat=true&format=infinite`.
+
+    BC8: 60s TTL relay_cache + coalesce — this was the last inbox-family
+    endpoint with neither, so every inbox open spent a live OF round-trip on a
+    list that changes maybe once a week. Invalidated by every list write below
+    (`_invalidate_chat_folders`); `?refresh=1` bypasses.
+
+    Now `async def`: the cache and the coalescer are both awaitables, so the
+    blocking OF read moves into `asyncio.to_thread` exactly as `list_chats`
+    does. `to_thread` copies the context, so `_get_client()` still resolves the
+    same account inside the worker."""
+    aid = _resolve_account_id(_request_ctx.get())
+    coalesce_key = ("chat_folders", aid, limit, offset)
+
+    async def _fetch():
+        return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
+            _proxy, lambda: _get_client().chat_folders(limit=limit, offset=offset),
+        ))
+
+    return await relay_cache.get_or_fetch(
+        "chat_folders", aid, (limit, offset),
+        ttl_seconds=_CHAT_FOLDERS_TTL, fetcher=_fetch, bypass=refresh,
+    )
+
+
+def _invalidate_chat_folders() -> None:
+    """Drop this account's cached folder list after a write that changed it.
+
+    Sync (relay_cache.invalidate does no I/O) so the sync list-write routes can
+    call it inline. Never raises: an invalidation miss costs one stale minute,
+    but a raise here would fail a write that already succeeded upstream."""
+    try:
+        relay_cache.invalidate("chat_folders", _resolve_account_id(_request_ctx.get()))
+    except Exception:  # noqa: BLE001
+        log.debug("chat_folders invalidation skipped", exc_info=True)
 
 
 class _PinChatBody(BaseModel):
@@ -3784,7 +4449,11 @@ class _PinChatBody(BaseModel):
 def pin_list_to_chat(list_id: int, body: _PinChatBody = Body(...)) -> dict[str, Any]:
     """Pin or unpin a fan list as a chat-sidebar folder.
     Maps to PATCH /lists/{id} with `{"isPinnedToChat": <bool>}`."""
-    return _proxy(lambda: _get_client().set_list_pinned_to_chat(list_id, body.pinned))
+    out = _proxy(lambda: _get_client().set_list_pinned_to_chat(list_id, body.pinned))
+    # `isPinnedToChat` IS the field the chip strip filters on — without this the
+    # pin the operator just clicked would not appear for up to a full TTL.
+    _invalidate_chat_folders()
+    return out
 
 
 @app.get("/api/of/v2/chats/{chat_id}/messages")
@@ -3820,17 +4489,35 @@ async def get_messages(
             "get_messages_tail", aid, (chat_id, before_id, limit),
             ttl_seconds=300.0, fetcher=_fetch, bypass=refresh,
         )
-    # Media render-stability (18_chat_render_stability §1.1): persist any OF
-    # files/info width+height into message_media (the primary dims source)
-    # and surface width/height at each media item's top level so the client
-    # sizes the skeleton without parsing OF's nested files. Best-effort —
-    # a media hiccup must never break loading the chat. Idempotent, so a
-    # cache hit re-running it is harmless.
+    # Media render-stability (18_chat_render_stability §1.1): surface
+    # width/height at each media item's top level so the client sizes the
+    # skeleton without parsing OF's nested files, and persist those dims into
+    # message_media (the primary dims source). Best-effort — a media hiccup
+    # must never break loading the chat. Idempotent, so a cache hit re-running
+    # it is harmless.
+    #
+    # The two halves are deliberately split. Stamping is what the RESPONSE
+    # needs, so it stays awaited. Persisting is a write transaction on the one
+    # shared SQLite writer, and nothing in this response reads it back — it
+    # only feeds a LATER request — so it rides a fire-and-forget task, the same
+    # shape `reconcile_chats_from_of` uses in `list_chats` above. Paying for it
+    # inline meant every chat open and every 30s/2min poll queued behind the
+    # writer. Both halves are handed the SAME list object: stamp mutates it,
+    # persist reads it.
     if isinstance(payload, dict) and aid:
+        of_rows = payload.get("list") or []
         try:
-            await sync_rest_media_dims(str(aid), int(chat_id), payload.get("list") or [])
+            await stamp_rest_media_dims(str(aid), int(chat_id), of_rows)
         except Exception:  # noqa: BLE001
-            log.debug("sync_rest_media_dims failed for chat %s", chat_id, exc_info=True)
+            log.debug("stamp_rest_media_dims failed for chat %s", chat_id, exc_info=True)
+        if of_rows:
+            # `persist_rest_media_dims` swallows its own exceptions — in a bare
+            # create_task an escaping error would only ever surface as an
+            # unretrieved-task warning.
+            asyncio.create_task(
+                persist_rest_media_dims(str(aid), int(chat_id), of_rows),
+                name=f"media-dims-{aid}-{chat_id}",
+            )
     return payload
 
 
@@ -4299,18 +4986,24 @@ async def of_send_mass(
         included_users=body.included_users,
         excluded_users=body.excluded_users,
     )
-    result = await asyncio.to_thread(
-        _proxy,
-        lambda: _get_client().send_mass_message(
-            text=body.text,
-            user_lists=body.user_lists,
-            included_users=body.included_users,
-            excluded_users=body.excluded_users,
-            price=body.price,
-            locked_text=body.locked_text,
-            media_files=body.media_files,
-            previews=body.previews,
-            scheduled_date=body.scheduled_date,
+    # Same OF rate-limit retry as `of_send_or_schedule_mass` — the rationale
+    # lives there, on the path the Next composer actually hits. This handler is
+    # the legacy `web/app.js` immediate-send route (app.js:2170 sends scheduled
+    # blasts to /messages/queue instead), so it needs the same protection.
+    from automation_executor import of_write_with_retry
+    result = await of_write_with_retry(
+        lambda: _proxy(
+            lambda: _get_client().send_mass_message(
+                text=body.text,
+                user_lists=body.user_lists,
+                included_users=body.included_users,
+                excluded_users=body.excluded_users,
+                price=body.price,
+                locked_text=body.locked_text,
+                media_files=body.media_files,
+                previews=body.previews,
+                scheduled_date=body.scheduled_date,
+            ),
         ),
     )
     await _close_mass_run(
@@ -4507,13 +5200,44 @@ async def of_labels() -> dict[str, Any]:
     return await relay_coalesce.coalesce(key, _fetch)
 
 @app.get("/api/of/v2/users/notifications")
-def of_notifications(
+async def of_notifications(
     limit: int = Query(10, ge=1, le=50),
     offset: int = Query(0, ge=0),
     type: str | None = Query(None, description="'all','tips','subscribes','comments','mentions'"),
+    refresh: bool = Query(False, alias="refresh"),
 ):
-    """Notifications feed. Captured-correct path is /users/notifications (not /notifications)."""
-    return _proxy(lambda: _get_client().notifications(limit=limit, offset=offset, type=type))
+    """Notifications feed. Captured-correct path is /users/notifications (not /notifications).
+
+    BC7: 30s TTL relay_cache + coalesce — the last member of this family to
+    get either, and the most fanned-out of them: MoneyRail asks for 2 money
+    types x N accounts on every hard load and NotificationBell repeats the
+    same keys, so one page load was N x 2 live OF round-trips at ~630ms each.
+
+    A money feed is only safe to cache with the other half of the deal:
+    `relay_cache.invalidate_money_feeds` is called from every money-event path
+    and owns the list of them. The TTL is held at the browser's own 30s
+    `staleTime` regardless, so even an unmodelled money path can be at most
+    30s stale — the bound the badge next door already ships with.
+
+    Keyed on (limit, offset, type) — the two money types and the paging
+    offsets are different feeds and must not share an entry. Account-wide,
+    not per-employee (OF serves this off the session, and nothing on this
+    path reads X-Employee-Id), so it satisfies relay_coalesce's rules.
+    """
+    aid = _resolve_account_id(_request_ctx.get())
+    # `type or ""` collapses absent and empty to ONE entry, matching
+    # of_client.notifications, which forwards `type` only when truthy.
+    extras = (limit, offset, type or "")
+    coalesce_key = ("notifications", aid) + extras
+    async def _fetch():
+        return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
+            _proxy, lambda: _get_client().notifications(
+                limit=limit, offset=offset, type=type),
+        ))
+    return await relay_cache.get_or_fetch(
+        "notifications", aid, extras,
+        ttl_seconds=30.0, fetcher=_fetch, bypass=refresh,
+    )
 
 @app.get("/api/of/v2/users/notifications/count")
 async def of_notifications_count(
@@ -4852,43 +5576,6 @@ async def of_vault_media(
     return result
 
 
-# ── The by-id vault read's admission gate ─────────────────────────────
-#
-# `_proxy` already caps UPSTREAM calls at `_ACCOUNT_LANE_TOTAL` per account, so
-# OF never sees a storm. The problem is WHERE the waiting happens: that is a
-# `threading.BoundedSemaphore` acquired inside `asyncio.to_thread`, so every
-# queued call first takes one of the 64 asyncio executor threads and then
-# blocks on it. The upstream is protected; the executor is not.
-#
-# That matters because this route is the one the UI asks for a WHOLE LIBRARY at
-# a time — `useVaultMediaByIds` fans out one request per stored media id, and
-# PPVLibraryTab hands it every id in the library. 200 ids meant 200 threads
-# wanted for 5 usable slots, which starves the automation lane sharing that
-# executor (the 2026-07-04 "socket hang up" incident) and holds 200 inbound
-# sockets plus their DB connections open while they wait — and descriptors are
-# a PROCESS resource, so that shortage surfaces as "unable to open database
-# file" and an EMFILE in the isolation gate, never as a slow tile.
-#
-# So gate on the ASYNC side, before dispatching to a thread: a queued request
-# costs a parked coroutine instead of a thread. Same device and same default as
-# `vault_stills._MAX_INFLIGHT_FETCHES`, separate budget — a vault pane storm
-# must not spend the stills allowance or vice versa.
-_MAX_INFLIGHT_VAULT_READS = max(1, int(os.environ.get("VAULT_MEDIA_CONCURRENCY", "6")))
-
-# Per-loop, because the test harness runs each case in its own `asyncio.run()`
-# and a semaphore that has parked a waiter belongs to the loop it parked it on.
-_VAULT_READ_SLOTS: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
-
-
-def _vault_read_slot() -> asyncio.Semaphore:
-    """The gate every OF-bound by-id vault read passes through."""
-    loop = asyncio.get_running_loop()
-    sem = _VAULT_READ_SLOTS.get(loop)
-    if sem is None:
-        sem = _VAULT_READ_SLOTS[loop] = asyncio.Semaphore(_MAX_INFLIGHT_VAULT_READS)
-    return sem
-
-
 @app.get("/api/of/v2/vault/media/{media_id}")
 async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
     """One vault item by id — resolves a bare media id back to a media object
@@ -4913,7 +5600,7 @@ async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
         # The slot is INSIDE the coalescer on purpose (see relay_coalesce's
         # module docstring): waiters that joined an in-flight fetch hold no
         # slot, so only the one caller actually going to OF occupies one.
-        async with _vault_read_slot():
+        async with admission.VAULT_MEDIA_READ:
             fetched = await asyncio.to_thread(
                 _proxy, lambda: _get_client().vault_media_by_id(media_id),
             )
@@ -5359,7 +6046,19 @@ async def of_unsend_message(request: Request, message_id: int):
                 with_user_id = int(parsed["withUserId"])
     except Exception:
         with_user_id = None
-    return await asyncio.to_thread(_proxy, lambda: _get_client().unsend_message(message_id, with_user_id=with_user_id))
+    resp = await asyncio.to_thread(
+        _proxy, lambda: _get_client().unsend_message(message_id, with_user_id=with_user_id))
+    # OF took the bubble down — mirror that onto our `messages` row, or the
+    # chat pane's DB seed (GET /admin/messages) paints it again on the next
+    # reload as an EMPTY locked shell (the seed carries no media, and a PPV
+    # row's body is blank). Best-effort: the upstream unsend already happened,
+    # so a mirror failure must not surface as a 500.
+    try:
+        from messages import mark_unsent
+        await mark_unsent(_resolve_account_id(request), message_id, fan_id=with_user_id)
+    except Exception as e:
+        log.warning("unsend mirror flip failed message_id=%s: %s", message_id, e)
+    return resp
 
 @app.post("/api/of/v2/messages/{message_id}/like")
 def of_like_message(message_id: int):
@@ -6414,44 +7113,62 @@ async def of_send_or_schedule_mass(
         funnel_id=body.funnel_id,
     )
     client = _get_client()
+    # OF throttles consecutive broadcast POSTs with a 400 "Please allow 10
+    # seconds". Every automation absorbs that already (of_write_paced pre-spaces
+    # >=11s, of_write_with_retry re-tries once after an async pause); this
+    # handler — the one the Next composer hits, with a human watching — did not.
+    # A blast landing within ~10s of an automation's blast failed AFTER the
+    # audience resolve, the exclude sync and the mass_runs mint, and the manual
+    # resubmit re-paid all of it.
+    #
+    # Retry only, no pacing: pacing would tax the common un-throttled case and
+    # this is the interactive path. Safe to re-send because the retry fires only
+    # on OF's rate-limit 400 — a POST OF refused, so nothing was created. Every
+    # other error still surfaces unchanged. Both branches are wrapped: scheduled
+    # and immediate are the same throttled endpoint. The function-local import
+    # mirrors this module's other automation_executor uses (that module must not
+    # import server).
+    from automation_executor import of_write_with_retry
     if body.scheduled_date:
         # Scheduled sends don't produce per-fan rows now — OF fires the
         # actual messages later. The mass_run_id is stamped on `mass_runs`
         # so the WS-pump reconciler (TODO inside _close_mass_run) can match
         # the eventual arrivals.
-        result = await asyncio.to_thread(
-            _proxy,
-            lambda: client.schedule_mass_message(
-                text=body.text, scheduled_date=body.scheduled_date,
-                user_ids=body.user_ids, user_lists=body.user_lists,
-                excluded_users=body.excluded_users,
-                excluded_user_lists=body.excluded_user_lists,
-                price=body.price,
-                locked_text=body.locked_text, media_files=body.media_files,
-                previews=body.previews,
-                tagged_users=body.tagged_users,
-                giphy_id=body.giphy_id,
-                filters=body.filters,
-                online_only=body.online_only,
+        result = await of_write_with_retry(
+            lambda: _proxy(
+                lambda: client.schedule_mass_message(
+                    text=body.text, scheduled_date=body.scheduled_date,
+                    user_ids=body.user_ids, user_lists=body.user_lists,
+                    excluded_users=body.excluded_users,
+                    excluded_user_lists=body.excluded_user_lists,
+                    price=body.price,
+                    locked_text=body.locked_text, media_files=body.media_files,
+                    previews=body.previews,
+                    tagged_users=body.tagged_users,
+                    giphy_id=body.giphy_id,
+                    filters=body.filters,
+                    online_only=body.online_only,
+                ),
             ),
         )
     else:
-        result = await asyncio.to_thread(
-            _proxy,
-            lambda: client.send_mass_message(
-                text=body.text,
-                user_lists=body.user_lists,
-                included_users=body.user_ids,
-                excluded_users=body.excluded_users,
-                excluded_user_lists=body.excluded_user_lists,
-                price=body.price,
-                locked_text=body.locked_text,
-                media_files=body.media_files,
-                previews=body.previews,
-                tagged_users=body.tagged_users,
-                giphy_id=body.giphy_id,
-                filters=body.filters,
-                online_only=body.online_only,
+        result = await of_write_with_retry(
+            lambda: _proxy(
+                lambda: client.send_mass_message(
+                    text=body.text,
+                    user_lists=body.user_lists,
+                    included_users=body.user_ids,
+                    excluded_users=body.excluded_users,
+                    excluded_user_lists=body.excluded_user_lists,
+                    price=body.price,
+                    locked_text=body.locked_text,
+                    media_files=body.media_files,
+                    previews=body.previews,
+                    tagged_users=body.tagged_users,
+                    giphy_id=body.giphy_id,
+                    filters=body.filters,
+                    online_only=body.online_only,
+                ),
             ),
         )
         await _close_mass_run(
@@ -6505,16 +7222,34 @@ async def of_cancel_scheduled(request: Request, queue_id: int):
     resp = await asyncio.to_thread(_proxy, lambda: _get_client().cancel_scheduled(queue_id))
     try:
         account_id = _resolve_account_id(request)
+    except Exception as e:  # authed route — unreachable in practice
+        log.warning("cancel bookkeeping skipped, account unresolved: %s", e)
+        return resp
+
+    # Three independent bits of local bookkeeping. OF has already canceled the
+    # queue, so none of them may 500 the caller — and none may be skipped
+    # because an earlier one failed, hence one guard each.
+    try:
         await cache.mark_canceled(account_id, queue_id)
+    except Exception as e:
+        log.warning("mass_broadcast_cache mark_canceled failed: %s", e)
+    try:
         # #R4: a manual mass unsend also closes funnel discovery for that run —
         # stop enrolling NEW repliers off the deleted mass (the walker keeps
         # advancing already-engaged fans until a purchase halts them).
         from audiences import close_funnel_discovery_for_queue
         await close_funnel_discovery_for_queue(account_id, queue_id=queue_id)
     except Exception as e:
-        # Cache update is best-effort — the upstream cancel already
-        # succeeded, the user shouldn't see a 500.
-        log.warning("mass_broadcast_cache mark_canceled failed: %s", e)
+        log.warning("close_funnel_discovery failed queue_id=%s: %s", queue_id, e)
+    try:
+        # Same mirror flip as the per-chat unsend above, one broadcast wide:
+        # every recipient's mirror row would otherwise re-seed as an empty
+        # bubble on their next chat open. Purchasers and funnel follow-ups
+        # are spared inside mark_queue_unsent — they stay live on OF.
+        from messages import mark_queue_unsent
+        await mark_queue_unsent(account_id, queue_id)
+    except Exception as e:
+        log.warning("queue unsend mirror flip failed queue_id=%s: %s", queue_id, e)
     return resp
 
 # Posts writes ------------------------------------------------------
@@ -6577,7 +7312,9 @@ def of_unpin_post(post_id: int):
 
 @app.post("/api/of/v2/lists")
 def of_create_list(body: _NameBody = Body(...)):
-    return _proxy(lambda: _get_client().create_list(body.name))
+    out = _proxy(lambda: _get_client().create_list(body.name))
+    _invalidate_chat_folders()
+    return out
 
 # list_id is typed `str` (not `int`) so built-in lists like 'fans', 'recent',
 # 'bookmarks' work alongside custom numeric ids. OF's API accepts both.
@@ -6585,19 +7322,27 @@ def of_create_list(body: _NameBody = Body(...)):
 @app.patch("/api/of/v2/lists/{list_id}")
 def of_rename_list(list_id: str, body: _NameBody = Body(...)):
     """Rename a list. OF uses PATCH (not PUT) — verified live."""
-    return _proxy(lambda: _get_client().rename_list(list_id, body.name))
+    out = _proxy(lambda: _get_client().rename_list(list_id, body.name))
+    _invalidate_chat_folders()
+    return out
 
 @app.delete("/api/of/v2/lists/{list_id}")
 def of_delete_list(list_id: str):
-    return _proxy(lambda: _get_client().delete_list(list_id))
+    out = _proxy(lambda: _get_client().delete_list(list_id))
+    _invalidate_chat_folders()
+    return out
 
 @app.post("/api/of/v2/lists/{list_id}/users/{user_id}")
 def of_add_user_to_list(list_id: str, user_id: int):
-    return _proxy(lambda: _get_client().add_user_to_list(list_id, user_id))
+    out = _proxy(lambda: _get_client().add_user_to_list(list_id, user_id))
+    _invalidate_chat_folders()  # usersCount rides in the folders payload
+    return out
 
 @app.delete("/api/of/v2/lists/{list_id}/users/{user_id}")
 def of_remove_user_from_list(list_id: str, user_id: int):
-    return _proxy(lambda: _get_client().remove_user_from_list(list_id, user_id))
+    out = _proxy(lambda: _get_client().remove_user_from_list(list_id, user_id))
+    _invalidate_chat_folders()  # usersCount rides in the folders payload
+    return out
 
 # Labels writes -----------------------------------------------------
 
@@ -6939,15 +7684,13 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
     c = _load_client(actual_aid)
     # Kick the WS pump too so the new cookies are used immediately.
     _restart_account_pump(actual_aid)
-    # Phase A: mirror the new on-disk state into SQL. Fire-and-forget so a
-    # slow DB doesn't delay the user's confirmation.
-    _kick_db_sync(f"bootstrap-{actual_aid}")
-    # Link the captured OF account to the signed-in friend, so it shows up
-    # in their ScopeSwitcher + passes the ownership gate. No-op if unauthed
-    # (founder running curl flows pre-auth) — the account remains visible
-    # in that path because _resolve_account_id skips the gate when there's
-    # no request user.
-    _link_account_to_request_user(actual_aid)
+    # Phase A: mirror the new on-disk state into SQL, then link it to the
+    # signed-in friend so it shows up in their ScopeSwitcher + passes the
+    # ownership gate. Ordered, not raced — see _sync_and_link_after_bootstrap.
+    # Unauthed callers (founder curl flows) still get the sync; the account
+    # stays visible there because _resolve_account_id skips the gate when
+    # there's no request user.
+    _sync_and_link_after_bootstrap(actual_aid)
     return {
         "ok": True,
         "session_file": path.name,

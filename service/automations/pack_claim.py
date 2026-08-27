@@ -180,7 +180,7 @@ def ask_clause(kinds: list[str], subject: str | None,
 
     No subject is a legitimate answer here ("show me" names nothing), and the
     clause used to simply drop the noun — which is how a $87 send went out
-    captioned "3 vids" and nothing else (Lucas1, 2026-08-16; he bought it
+    captioned "3 vids" and nothing else (blake, 2026-08-16; he bought it
     anyway). Operator ruling that day: when his ask named nothing, SAY WHAT IS
     IN IT, shortly. `action` is that phrase, from the vault's own describe pass
     via `content_resolver.action_phrase`, and it is used ONLY in the no-noun
@@ -283,6 +283,23 @@ def product_description(category: str, rung: str) -> str:
     phrase = RUNG_PHRASES.get((category, rung), f"{category}, {rung}")
     return (f"{phrase}. Sold as a set of photos from her {category} collection; "
             f"the number of photos depends on the price.")
+
+
+def voice_line_ok(text: str | None) -> bool:
+    """Would `compose_caption` KEEP this line, or silently drop it?
+
+    The drop is the right behaviour — a voice line carrying a digit or a media
+    word states a second claim under the contract — but it is invisible to the
+    caller, so a lane that generates its line has no way to know it shipped a
+    bare clause instead. This is that question, asked in the one place the ban
+    lives. A caller that gets False falls back to a line it authored itself.
+
+    Deliberately NOT `clean_action`: that one is bounded for the CONTRACT (48
+    chars, lowercased, repaired-or-dropped). A voice line is her reply to the
+    thread and is bounded by `compose_caption`'s own remaining budget.
+    """
+    line = " ".join(str(text or "").split())
+    return bool(line) and not _VOICE_BAN.search(line)
 
 
 def compose_caption(claim: Claim, voice_line: str | None) -> str:

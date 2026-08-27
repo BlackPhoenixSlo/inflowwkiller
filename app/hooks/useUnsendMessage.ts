@@ -16,12 +16,17 @@
  * fan] cache before the request. On failure we re-insert at the original
  * index so the bubble doesn't silently disappear.
  *
+ * On success it also calls `dropSeedMessage` — the DB seed is re-hydrated
+ * into the thread on every mount, so a row left standing there paints the
+ * unsent bubble straight back (see useChatMessagesLocal).
+ *
  * Outside OF's edit window (~24h) the upstream returns 4xx — we revert.
  */
 
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { dropSeedMessage } from "@/hooks/useChatMessagesLocal";
 import { relay, RelayError, type OFMessage } from "@/lib/relay";
 
 export interface UnsendQueueInfo {
@@ -61,6 +66,7 @@ export function useUnsendMessage(accountId: string | null, fanId: number | null)
           { accountId },
           { withUserId: fanId },
         );
+        dropSeedMessage(qc, accountId, fanId, id);
         return resp ?? null;
       } catch (err) {
         if (prev) qc.setQueryData(queryKey, prev);

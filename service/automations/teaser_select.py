@@ -677,7 +677,7 @@ async def pick_convo_teaser(client, account_id: str, fan_id: int, *, tcfg: dict,
     # The clamp used to live only at ai_chatter's send site, so the price on the wire
     # and the price written back to `_hot_teaser.last_price` / `vault_sends` were
     # different numbers — and the ladder then computed its NEXT move from the one the
-    # fan never saw. Prod on 2026-08-01: fan 487133280 was charged $3.00 twice while
+    # fan never saw. Prod on 2026-08-01: fan FAN_ID was charged $3.00 twice while
     # his state recorded 114, and vault_sends holds 114/3/2/1 for asks that all went
     # out at $3.00. Clamping downstream of the decision means the decision is made on
     # fiction; clamping here means every consumer sees the same, sendable number.

@@ -10,11 +10,13 @@
  * full run history.
  */
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 
 import { Badge, Button, Card } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { fmtAgo, fmtEvery } from "@/lib/format";
+import { AccountChips } from "@/components/AccountChips";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useAutomationKinds,
@@ -24,11 +26,32 @@ import {
   useUpdateRule,
   type AutomationRule,
 } from "@/hooks/useAutomations";
-import RuleEditor from "@/components/automations/RuleEditor";
-import ReadyMadePanel from "@/components/automations/ReadyMadePanel";
 import BrainPanel from "@/components/automations/BrainPanel";
 import AutomationRunsCard from "@/components/stats/AutomationRunsCard";
 import SettingsTransfer from "@/components/settings/SettingsTransfer";
+
+// RuleEditor and ReadyMadePanel used to be static imports, which put them —
+// and everything they pull in — into the chunk the browser must have before
+// /automations can commit at all. That made this the heaviest route in the app
+// (1.44 MB of JS against 873 KB for /stats), and until it lands the App Router
+// keeps the PREVIOUS page on screen, so the click reads as ignored. Splitting
+// these two took the route to 935 KB with the other routes byte-identical.
+//
+// Only these two, and for opposite reasons:
+//   • RuleEditor already renders behind `(adding || editing)`, so an operator
+//     who never opens the editor was paying ~1,000 lines plus its knob widgets
+//     for a form they never see. Splitting it costs nothing at all.
+//   • ReadyMadePanel is the LAST card on the page and drags FunnelEditor and
+//     FunnelMediaPane behind it (~2,500 lines together). It can arrive after
+//     first paint because you have to scroll to reach it.
+// BrainPanel is deliberately NOT split: it is the FIRST card, so deferring it
+// would trade the reported symptom for a slower time-to-the-thing-you-came-for.
+const RuleEditor = dynamic(
+  () => import("@/components/automations/RuleEditor"), { ssr: false },
+);
+const ReadyMadePanel = dynamic(
+  () => import("@/components/automations/ReadyMadePanel"), { ssr: false },
+);
 
 function StatusBadge({ status }: { status: string }) {
   const color =
@@ -140,30 +163,10 @@ export default function AutomationsPanel() {
           </div>
         </header>
 
-        {/* Account picker */}
-        {accounts.length > 1 && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[10px] uppercase tracking-wide text-fg-dim mr-1">Account</span>
-            {accounts.map((a) => {
-              const active = accountId === a.id;
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => { setAccountId(a.id); closeEditor(); }}
-                  className={cn(
-                    "px-2.5 py-1 rounded-full text-xs border transition-colors",
-                    active
-                      ? "bg-accent text-white border-accent"
-                      : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg hover:border-fg-dim",
-                  )}
-                >
-                  {a.nickname || a.id}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <AccountChips
+          accountId={accountId}
+          onChange={(id) => { setAccountId(id); closeEditor(); }}
+        />
 
         {(adding || editing) && accountId && (
           <RuleEditor

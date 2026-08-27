@@ -11,12 +11,22 @@
  *     has a session. We merge by lastMessage.createdAt, tag each row with
  *     __accountId so the UI can show the colored dot.
  *
- * Polling: 60s, matching the desktop-app's cadence. SSE events drive
- * cheaper between-poll invalidations (Phase B.2).
+ * Polling: a 90s background poll (5min while the tab is hidden) that re-reads
+ * the HEAD PAGE ONLY — see `useHeadPagePoll` below for why, and for what the
+ * deeper pages rely on instead. SSE events drive cheaper between-poll patches
+ * (Phase B.2); the Refresh button is the full re-walk.
  */
 
-import { useCallback, useDeferredValue, useRef } from "react";
-import { keepPreviousData, useInfiniteQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useCallback, useDeferredValue, useEffect, useRef } from "react";
+import {
+  hashKey,
+  keepPreviousData,
+  useInfiniteQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
@@ -25,6 +35,9 @@ import { useActiveAccounts } from "./useAccounts";
 import { useAllModelsInclude } from "./useAllModelsInclude";
 
 const PAGE_SIZE = 25;
+/** Background poll cadence: foreground, and while the document is hidden. */
+const POLL_MS = 90_000;
+const HIDDEN_POLL_MS = 5 * 60_000;
 
 interface ChatListParams {
   filter?: "unread" | "pinned" | "priority" | null;
@@ -240,7 +253,19 @@ async function fetchPage(
   query: ChatListParams["query"],
   limit: number,
   qc: QueryClient,
-  refresh = false,
+  // Named rather than positional. At eight parameters a trailing
+  // `..., qc, false, "background")` told the reader nothing about which knob
+  // was which — and the prefetch call site already reads
+  // `scope, [], 0, null, null, null, limit, qc`.
+  //
+  // `priority` is explicit, never ambient: the relay's `_current_priority`
+  // defaults to 'user' outside a request context, so an untagged call silently
+  // eats one of the per-account lane's reserved user slots. Only a click waits
+  // on 'user'; the 90s head poll and the hover prefetch are 'background'.
+  { refresh = false, priority = "user" }: {
+    refresh?: boolean;
+    priority?: "user" | "background";
+  } = {},
 ): Promise<ChatsPage> {
   const qs = new URLSearchParams();
   qs.set("limit", String(limit));
@@ -264,7 +289,7 @@ async function fetchPage(
   if (scope.kind === "model") {
     try {
       const resp = await relay.get<OFChatsResp>(
-        path, { accountId: scope.accountId }, undefined, { refresh },
+        path, { accountId: scope.accountId, priority }, undefined, { refresh },
       );
       const raw = normalizeChats(resp, scope.accountId);
       perfDelivered(opId, "chat.list", { count: raw.length, hasMore: !!resp.hasMore });
@@ -287,7 +312,7 @@ async function fetchPage(
   const results = await Promise.allSettled(
     accounts.map(async (acc) => {
       const r = await relay.get<OFChatsResp>(
-        path, { accountId: acc.id }, undefined, { refresh },
+        path, { accountId: acc.id, priority }, undefined, { refresh },
       );
       const raw = normalizeChats(r, acc.id);
       void enrichWithUsers(raw, acc.id, qc).catch(() => {});
@@ -331,7 +356,10 @@ export function prefetchModelChatList(
     queryKey: ["chats", "model", accountId, null, null, null, limit] as const,
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
-      fetchPage(scope, [], (pageParam as number) ?? 0, null, null, null, limit, qc, false),
+      fetchPage(
+        scope, [], (pageParam as number) ?? 0, null, null, null, limit, qc,
+        { priority: "background" },
+      ),
     // MUST mirror useChatList's infinite-query config: this prefetch shares the
     // SAME query key as the live list, so an options mismatch (a missing
     // getNextPageParam) corrupts that query and the list fails to load with
@@ -340,6 +368,117 @@ export function prefetchModelChatList(
       lastPage.hasMore ? allPages.length * limit : undefined,
     staleTime: 30_000,
   });
+}
+
+/**
+ * useHeadPagePoll — the background refresh for the inbox list, scoped to PAGE 0.
+ *
+ * **Why not `refetchInterval`.** On an infinite query React Query re-walks
+ * EVERY loaded page on an interval refetch, sequentially — and each page here
+ * is itself the multi-account fan-out gated by the slowest account. A user
+ * parked on page 5 paid five full fan-outs every 90s to re-read rows that had
+ * not moved; roughly 27% of all inbox list traffic was that redundant re-read.
+ * (Background waste and lane pressure — it was never the p99 tail.)
+ *
+ * **What replaces it.** Fetch offset 0 — the *same* per-account offset-0 fetch
+ * page 0 was born from, NOT "the first N of the merged list", which is not a
+ * stable cursor in unified scope where every account paginates independently —
+ * and splice it over page 0, leaving pages 1..n exactly as they were.
+ *
+ * **Why deeper pages are left alone instead of de-duped against the fresh head.**
+ *   • `getNextPageParam` derives the next offset from `allPages.length * limit`,
+ *     so the page COUNT is the cursor. Stripping a row that got promoted into
+ *     the head page would punch a hole in a deep page while the server's own
+ *     offsets stay put, and the next `fetchNextPage` would skip a server row.
+ *   • `useChatList`'s flatten step already de-dupes by (accountId, fanId) and
+ *     walks page 0 first, so the FRESH copy renders and the stale deep copy is
+ *     invisible. This is exactly how `useInboxRealtime`'s bump-to-top has always
+ *     worked: it prepends to page 0 and leaves the old copy where it sits — and
+ *     it still rewrites all pages from SSE, so deep rows keep moving without
+ *     this poll.
+ *
+ * **Known, bounded gap.** A row displaced OFF the fresh head page (something
+ * below it got a new message) now sits at an offset the stale page 1 predates,
+ * so it is invisible until the next `loadMore`, SSE bump, or Refresh. That is
+ * precisely why `refresh()` stays a FULL re-walk: it is the user's recovery path.
+ *
+ * **The poll is silent.** Splicing via `setQueryData` never flips the query's
+ * `fetchStatus`, and ChatList drives the Refresh button's spinner + disabled
+ * state and the row count off `isFetching` — so the background poll no longer
+ * spins and disables that button every 90s. The one tick that still goes
+ * through a real refetch is a key with NO pages (cold or errored), where a
+ * spinner and an error state are exactly what should be showing.
+ */
+function useHeadPagePoll(args: {
+  enabled: boolean;
+  queryKey: QueryKey;
+  fetchHead: () => Promise<ChatsPage>;
+}) {
+  const qc = useQueryClient();
+  const latest = useRef(args);
+  latest.current = args;
+
+  const { enabled, queryKey } = args;
+  // React Query's own key hash — the same function the cache uses to decide
+  // which entry a key addresses, so the timer re-arms on exactly the changes
+  // that move it to a different cache entry.
+  const keyHash = hashKey(queryKey);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+
+    const tick = async () => {
+      const { queryKey: key, fetchHead } = latest.current;
+      const state = qc.getQueryState(key);
+      // A fetch is already running on this key (manual Refresh, filter switch,
+      // an in-flight loadMore) — never race a write against it.
+      if (state && state.fetchStatus !== "idle") return;
+      if (!(state?.data as InfiniteData<ChatsPage> | undefined)?.pages?.length) {
+        // No pages at all: this key is cold or its initial fetch errored (with
+        // `placeholderData: keepPreviousData` the list can still be rendering
+        // the PREVIOUS key's rows meanwhile). There is nothing to splice into,
+        // and a retry is exactly the job a refetch owns — including the error
+        // state, which on a list with no rows is the right thing to show.
+        void qc.refetchQueries({ queryKey: key, exact: true });
+        return;
+      }
+      try {
+        const head = await fetchHead();
+        if (cancelled) return;
+        qc.setQueryData<InfiniteData<ChatsPage>>(key, (prev) => {
+          // `prev` is whatever the cache holds NOW, which is not necessarily
+          // what we checked before the await: the entry can have been reset or
+          // collected meanwhile, and one page is not a list to splice into.
+          if (!prev?.pages?.length) return prev;
+          return { ...prev, pages: [head, ...prev.pages.slice(1)] };
+        });
+      } catch {
+        // A poll the user never asked for must not paint the list red: the
+        // cached pages stand and the next tick (or Refresh) tries again. Not
+        // swallowed silently — `fetchPage` perfError'd on its way out.
+      }
+    };
+
+    // Re-read `document.hidden` at each scheduling point rather than arming one
+    // fixed interval — same shape as the function-form `refetchInterval` this
+    // replaces: 90s in the foreground, 5min once the tab is hidden.
+    const schedule = () => {
+      const hidden = typeof document !== "undefined" && document.hidden;
+      timer = setTimeout(run, hidden ? HIDDEN_POLL_MS : POLL_MS);
+    };
+    // Schedule-AFTER-settle, never a bare interval: at most one tick is ever in
+    // flight, so a slow fan-out can't stack ticks on top of itself.
+    const run = () => {
+      void tick().finally(() => { if (!cancelled) schedule(); });
+    };
+
+    schedule();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // `keyHash` stands in for `queryKey` (read through `latest`): re-arm the
+    // timer when the cache it writes to changes, not on every render.
+  }, [enabled, keyHash, qc]);
 }
 
 export function useChatList(params: ChatListParams = {}) {
@@ -384,10 +523,12 @@ export function useChatList(params: ChatListParams = {}) {
   // unrelated background poll doesn't accidentally bypass the cache.
   const refreshOnceRef = useRef(false);
 
+  const enabled =
+    scope.kind === "model" ? !!scope.accountId : accounts.length > 0;
+
   const q = useInfiniteQuery<ChatsPage>({
     queryKey,
-    enabled:
-      scope.kind === "model" ? !!scope.accountId : accounts.length > 0,
+    enabled,
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) =>
       lastPage.hasMore ? allPages.length * limit : undefined,
@@ -404,20 +545,30 @@ export function useChatList(params: ChatListParams = {}) {
       const offset = (pageParam as number) ?? 0;
       const bypass = refreshOnceRef.current && offset === 0;
       return fetchPage(
-        scope, accounts, offset, filter, listId, query, limit, qc, bypass,
+        scope, accounts, offset, filter, listId, query, limit, qc,
+        { refresh: bypass },
       );
     },
     staleTime: 30_000,
-    // 90s in foreground; backs off to 5min when the document is hidden
-    // (e.g. user switched away). Tanstack pauses intervals on hidden tabs
-    // by default, but specifying explicitly also covers the "visible but
-    // unfocused" case (other monitor, split screen) where the default
-    // would still hammer at the foreground rate.
-    refetchInterval: () =>
-      typeof document !== "undefined" && document.hidden ? 5 * 60_000 : 90_000,
+    // NO refetchInterval — it would re-walk every loaded page. The background
+    // refresh is `useHeadPagePoll` below (90s foreground / 5min hidden, page 0
+    // only); read its comment before reinstating anything here.
     refetchOnWindowFocus: false,
     placeholderData: keepPreviousData,
   });
+
+  // Deliberately NOT memoised: `useHeadPagePoll` re-reads its args every render,
+  // so a fresh closure each render is how the timer sees the current fan-out
+  // set without re-arming. `refresh=false` — the poll rides the relay's Stage C
+  // cache; forcing every background tick through a live OF assemble is the
+  // storm we're avoiding.
+  const fetchHead = () =>
+    fetchPage(
+      scope, accounts, 0, filter, listId, query, limit, qc,
+      { priority: "background" },
+    );
+
+  useHeadPagePoll({ enabled, queryKey, fetchHead });
 
   // Flatten + de-dupe by (accountId, fanId). The realtime SSE handler also
   // moves rows around, so duplication can creep in across pages.

@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { AccountChips } from "@/components/automations/ReadyMadePanel";
+import { AccountChips } from "@/components/AccountChips";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   type ReviewItem,

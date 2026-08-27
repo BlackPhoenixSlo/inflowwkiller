@@ -92,7 +92,7 @@ _DEFAULTS: dict = {
     # `gift_piece_value_cents` solved a piece count from the over-charge and
     # `gift_min_count` + `gift_max_count` clamped it; v2 takes that count directly
     # and has read none of the four since. They outlived their code on the tab long
-    # enough for both Lucas accounts to be set to min/max = 4 and gift 3, with no
+    # enough for both blake accounts to be set to min/max = 4 and gift 3, with no
     # screen saying which number lost. Deleted 2026-08-06 here, on the tab and in the
     # validator, which strips them from a stored config on its next save. If size
     # should key off the over-charge again it belongs INSIDE `gift_pieces_per_step`,

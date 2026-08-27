@@ -13,7 +13,7 @@
 import { type DragEvent as ReactDragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { AccountChips } from "@/components/automations/ReadyMadePanel";
+import { AccountChips } from "@/components/AccountChips";
 import {
   isDrmOnlyVideo,
   progressiveVideoSrc,
@@ -1113,6 +1113,22 @@ export default function VaultManagePanel() {
   );
 }
 
+/** A voice note in the details drawer: the player, and nothing else.
+ *
+ *  Its own component because it shares NOTHING with the picture path below — no
+ *  still, no lightbox, no zoom, no ⤢ — and every one of those would resolve to
+ *  `files.full`, which for audio IS the audio. `preload="none"` so the file is
+ *  fetched only if somebody presses play. */
+function VaultAudioPreview({ media: m, accountId }: { media: VaultMedia; accountId: string }) {
+  const src = proxyImage(m.files?.full?.url, accountId);
+  return (
+    <div className="w-full rounded-lg bg-black px-3 py-4 grid gap-2 justify-items-center text-fg-dim">
+      <span className="text-2xl leading-none" aria-hidden>🎤</span>
+      <audio src={src || undefined} controls preload="none" className="w-full" />
+    </div>
+  );
+}
+
 /** Media block in the details drawer.
  *
  *  A selected video plays INLINE with native controls (same `.vault-video`
@@ -1136,6 +1152,7 @@ function VaultPreviewMedia({
   const playable = isVideo && !!rawSrc && !drmOnly;
   const idNum = Number(m.id);
   const [zoom, setZoom] = useState(false);
+  if (m.type === "audio") return <VaultAudioPreview media={m} accountId={accountId} />;
   // A PHOTO shows the FULL FRAME from the permanent cache — not `_thumb`, which
   // is a 300x300 centre-crop that lops the top and bottom off a 3:4 portrait and
   // hides edge-of-frame detail. A VIDEO keeps its poster (the square is fine as a
@@ -1143,7 +1160,7 @@ function VaultPreviewMedia({
   const photoFull = !isVideo && Number.isFinite(idNum) ? mirrorFullSrc(accountId, idNum) : null;
   const still =
     photoFull ||
-    (m as unknown as { _thumb?: string })._thumb ||
+    m._thumb ||
     proxyImage(
       m.files?.full?.url || m.files?.preview?.url || m.files?.thumb?.url,
       accountId,

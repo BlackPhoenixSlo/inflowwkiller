@@ -759,6 +759,14 @@ export interface VaultMedia {
    *  spinner overlay on the chip so the user knows the file is
    *  attaching, not stuck. Cleared once `mutateAsync` resolves. */
   _uploading?: boolean;
+  /** The relay's PERMANENT, signature-free 300px square for this media, stamped
+   *  by `vault_ai_api._overlay` on a mirror read. Absent on the live OF path,
+   *  and absent for a kind with no still at all (audio) — the relay decides
+   *  that, not the browser, so its presence is the whole answer to "is there a
+   *  picture". A TILE should take it via `vaultTileThumb`, which owns the
+   *  fallback; the detail drawer reads it directly because it wants the
+   *  aspect-preserving full frame first and the square only as a backstop. */
+  _thumb?: string;
 }
 export interface VaultMediaResp {
   list: VaultMedia[];

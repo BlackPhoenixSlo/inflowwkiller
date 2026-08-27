@@ -293,6 +293,107 @@ re-bootstrap required (until the OF revision rolls and your stored
 
 ---
 
+## Scaling: sizing the relay to your VPS plan
+
+Every concurrency cap is editable from the **Concurrency panel** the relay
+serves itself:
+
+    http://127.0.0.1:8787/lanes-panel
+
+The relay port binds to loopback only, so on a VPS open it through an SSH
+tunnel — `ssh -L 8787:127.0.0.1:8787 root@your-vps` — then browse the same
+URL on your own machine.
+
+**There is no login, anywhere.** The page is linked from here and from
+nowhere in the app, and the API behind it (`/admin/lane-config`) answers
+without a session **and without the `SHARE_TOKEN`**. Because the app proxies
+`/admin/*` to the relay, that API is also reachable through the public app
+port — on an internet-facing deploy, *anyone* can read and change the caps.
+That is the intended trade for a friends-only box (retuning must never
+require signing in). If your deploy is public and you don't want it, what
+works depends on the mode:
+
+- **Traefik/https modes** — block `/admin/lane-config` and `/lanes-panel` at
+  the proxy.
+- **Bare-port mode** — restrict who can reach the app port, but know that
+  host `ufw` rules do **not** apply to Docker-published ports (Docker routes
+  the traffic before ufw ever sees it — the same caveat applies to the
+  `ufw allow` line in the deploy section above). What works: your VPS
+  provider's edge firewall; an iptables rule in the `DOCKER-USER` chain,
+  matched on the **container** port (`--dport 3001`) or on
+  `-m conntrack --ctorigdstport <public port>` — Docker rewrites the
+  destination port before that chain runs, so a rule keyed to the public
+  port matches nothing; or republishing the app on `127.0.0.1` in
+  `docker-compose.override.yml` behind your own proxy — but re-running
+  `deploy-here.sh` regenerates that file and silently restores the public
+  bind, so re-apply the edit after every re-run.
+- **Quick-tunnel mode** — no firewall or path rule can help: cloudflared
+  dials *out* to Cloudflare and hands visitors straight to the app over the
+  docker network. Stop just the tunnel with `docker compose stop tunnel`
+  when you don't need it — **not** `docker compose --profile tunnel down`,
+  which tears down the relay and app too — or accept the trade.
+
+The panel shows every knob's current value, its default, where the value came
+from, and a history of past changes. Saved values apply on the next relay
+**restart**, never live. The same caps also answer to environment variables —
+but only ones passed into the relay container, i.e. named in the compose
+`environment:` block (a bare `.env` line reaches nothing here) — and an env
+var **pins** the knob: the panel shows it locked and cannot change it until
+the env line is removed. If the page 404s, your build predates the panel — it
+arrives with a future code sync, and `git pull && docker compose up -d
+--build` picks it up once it has landed upstream. Until then the only
+env-tunable caps in older builds are the four lanes that already existed
+(`VIDEO_STREAM_CONCURRENCY`, `IMG_FETCH_CONCURRENCY`,
+`STORYBOARD_BUILD_CONCURRENCY`, `VAULT_MEDIA_CONCURRENCY`); everything else
+in this section is hardcoded in that code and there is nothing to tune.
+
+The defaults are sized for a **2 vCPU** box. Suggested values by Hostinger
+plan (on another provider, read the vCPU column):
+
+| | KVM 1<br>1 vCPU · 4 GB | KVM 2<br>2 vCPU · 8 GB | KVM 4<br>4 vCPU · 16 GB | KVM 8<br>8 vCPU · 32 GB |
+| --- | --- | --- | --- | --- |
+| `STORYBOARD_BUILD_CONCURRENCY` — ffmpeg, the one CPU-bound lane | 1 | **2** (default) | 3 | 6 |
+| `VAULT_MEDIA_CONCURRENCY` — queues, cheap to raise | 4 | **6** (default) | 10 | 12 |
+| `cpus:` — only if you cap the container; always leave a core for the OS | don't cap | 1.5 | 3.0 | 6.0 |
+| `mem_limit:` — a runaway backstop; exceeding it is an OOM-kill, not a slowdown | 2g | 3g | 4g | 8g |
+| comfortable account count | 2–3 | ~10 | ~25–30 | 30+ needs code, not cores — see below |
+
+**Scaled by accounts, not cores:** `HEALTH_ALL_CONCURRENCY` — set it to at
+least your account count. A slow account holds a probe slot for its full
+timeout, so the cap must exceed the number of *simultaneously slow* accounts
+or perfectly healthy accounts start reporting as timeouts.
+
+**Leave alone at any plan size:**
+
+- `VIDEO_STREAM_CONCURRENCY` (6) and `IMG_FETCH_CONCURRENCY` (8) — sized to
+  one operator's *browser*, not the fleet. Raise them with operator headcount,
+  never with cores.
+- `ACCOUNT_LANE_TOTAL` (5) and `ACCOUNT_LANE_BACKGROUND` (2) — the per-account
+  OF ceiling. Measured blocked rate at the defaults is ~0; background is
+  automatically clamped to total − 1.
+
+**Why the table stops at ~30 accounts.** The automation lane
+(`AUTOMATION_MAX_CONCURRENT_RUNS`, default 4, plus 2 bulk — both panel knobs)
+saturates around ~30 accounts at typical volume, and the symptom is "the bot
+replied late", not an error. You can raise it from the panel, but raise
+`RELAY_EXECUTOR_THREADS` (default 64) with it — every OF call shares that one
+executor, and an automation cap above what the threads can carry just moves
+the queue somewhere with no counter. What no knob fixes: both ingest loops
+walk accounts serially, and SQLite serializes all writes on a single writer
+whatever the core count — Postgres, not cores, is that fix (the engine is
+wired for a `postgresql+asyncpg://` `DATABASE_URL`, but the drivers are not
+shipped: add `asyncpg` — and a psycopg driver for the sync init path — to
+`requirements.txt` first, or the relay fails at boot). A KVM 8 buys ffmpeg
+headroom and burst tolerance, not more write throughput.
+
+**If you're upgrading because the box was throttled:** hypervisor CPU
+throttles show as high `st` (steal) in `top`, and they can outlive the load
+that triggered them. After the resize, confirm steal sits at ~0 before judging
+whether the upgrade helped. (`docker stats` CPU percentages are not
+trustworthy under steal — use `top -H -p <pid>`.)
+
+---
+
 ## Security notes
 
 - The relay is authenticated as your OF account. Anyone with read access

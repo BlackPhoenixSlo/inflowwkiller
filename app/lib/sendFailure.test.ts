@@ -63,12 +63,12 @@ describe("parseSendFailure", () => {
         error: "owned_photos",
         message: "3 of 4 photos here are ones this fan already paid for. "
           + "A priced set needs at least 2 he has not seen.",
-        owned_media: [MEDIA_ID, 3992451982, MEDIA_ID],
+        owned_media: [4000000000, 3992451982, 4000000000],
       },
     };
     expect(parseSendFailure(resale)).toEqual({
       reason: resale.detail.message,
-      refusedMediaIds: [MEDIA_ID, 3992451982, MEDIA_ID],
+      refusedMediaIds: [4000000000, 3992451982, 4000000000],
     });
   });
 

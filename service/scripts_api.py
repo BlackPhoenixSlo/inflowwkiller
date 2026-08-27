@@ -98,6 +98,9 @@ _INT_KNOBS = {
     "daily_quota_replies": (0, _DAILY_QUOTA_MAX),
     "daily_quota_after_sale": (0, _DAILY_QUOTA_MAX),
     "daily_quota_buying_signal": (0, _DAILY_QUOTA_MAX),
+    # Days since his last money event inside which a fan walks the SHORT backoff
+    # ladder instead of the long non-payer one. 0 retires the split entirely.
+    "quota_recent_buyer_days": (0, 365),
     # The per-fan runway: HER replies to this fan before any ceiling applies. 0 retires
     # the runway (the quota then applies from his first reply) — set it deliberately.
     "daily_quota_free_replies": (0, 10_000),
@@ -356,6 +359,15 @@ def _validate_cfg(cfg: dict) -> dict:
     # an operator turning it off to stop the spend would have kept paying for it.
     if "post_purchase_objection_check" in cfg:
         out["post_purchase_objection_check"] = bool(cfg["post_purchase_objection_check"])
+    # 🚨 The model-written PPV caption in 1:1 (ships ON — see ai_chatter._DEFAULTS).
+    # This validator DROPS every key it does not name, and this one is ON by default,
+    # so without this line the OFF SWITCH DOES NOT EXIST: an operator unticks it, the
+    # save returns 200, the key never lands and `_load_config` hands the default back
+    # on the next turn. `truthy`, not `bool()`, for the same reason the pack flags use
+    # it — this decides whether a model writes the line on a PRICED send, and
+    # `bool("false")` is True.
+    if "ppv_caption_1to1" in cfg:
+        out["ppv_caption_1to1"] = truthy(cfg["ppv_caption_1to1"])
     # 1:1 offer engine + human pacing + the editable line pack (all ship OFF).
     if "qualification_gate_enabled" in cfg:
         out["qualification_gate_enabled"] = bool(cfg["qualification_gate_enabled"])
@@ -604,18 +616,22 @@ def _validate_cfg(cfg: dict) -> dict:
                     f"daily_quota_by_spend[{i}] days/min_cents/quota must be numbers")
             qrules.append({"days": days, "min_cents": min_cents, "quota": quota})
         out["daily_quota_by_spend"] = qrules
-    # The backoff ladder: a LIST of positive hour values, walked once per exhaustion
-    # and then cycled. Emitted whole (shallow-merge safe). An empty list is legal and
-    # means "compute the quota but never hold" — the ladder is what does the holding.
-    qbh = cfg.get("quota_backoff_hours")
-    if qbh is not None:
+    # The backoff ladders: LISTS of positive hour values, cycled rather than climbed.
+    # Two of them — the long one a non-payer walks and the short one a recent buyer
+    # walks instead — validated by the same loop so they cannot drift apart. Emitted
+    # whole (shallow-merge safe). An empty list is legal and means "compute the quota
+    # but never hold" for that cohort — the ladder is what does the holding.
+    for _key in ("quota_backoff_hours", "quota_backoff_hours_recent_buyer"):
+        qbh = cfg.get(_key)
+        if qbh is None:
+            continue
         if not isinstance(qbh, (list, tuple)):
-            raise HTTPException(422, "quota_backoff_hours must be a list")
+            raise HTTPException(422, f"{_key} must be a list")
         try:
             hours = [max(0.0, min(float(h), 720.0)) for h in qbh]
         except (TypeError, ValueError):
-            raise HTTPException(422, "quota_backoff_hours must be numbers")
-        out["quota_backoff_hours"] = [h for h in hours if h > 0]
+            raise HTTPException(422, f"{_key} must be numbers")
+        out[_key] = [h for h in hours if h > 0]
     return out
 
 

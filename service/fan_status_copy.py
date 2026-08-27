@@ -110,6 +110,22 @@ def quota_free_at(q: Any, her_last_at: datetime | None) -> datetime | None:
     return her_last_at + timedelta(hours=float(q.wait_h))
 
 
+def _ladder_and_rung(q: Any, cad: dict[str, Any] | None) -> tuple[list[float], int]:
+    """The ladder this fan is actually on, and where he stands on it.
+
+    There are TWO now — a recent buyer's short one, everyone else's long one — and the
+    payload and the badge must never pick different ones for the same fan, which is
+    the reason this is a function and not two copies of the same two lines.
+
+    Recomputed from the two facts `_Quota` carries (`has_paid`, `dry_h`) rather than
+    read off a stored verdict, so an operator editing the window moves this copy and
+    the gate together. Same rule that keeps `rung` off `_Quota`."""
+    c = cad or {}
+    ladder = _leash.quota_ladder(c, recent_buyer=_leash.quota_recent_buyer(
+        c, has_paid=bool(getattr(q, "has_paid", False)), dry_h=float(q.dry_h or 0.0)))
+    return ladder, (_leash.quota_rung(q.dry_h, ladder) if ladder else -1)
+
+
 def daily_payload(q: Any, *, enforced: bool, cad: dict[str, Any] | None = None,
                   free_at: datetime | None = None) -> dict[str, Any]:
     """The daily-ceiling numbers, straight off the engine's own `_Quota`. Same
@@ -128,8 +144,7 @@ def daily_payload(q: Any, *, enforced: bool, cad: dict[str, Any] | None = None,
     ceiling starts applying at all — was computed by the engine and then dropped here.
     Nearly every fan on a roster is inside his runway, so that was the one figure the
     common case needed and the only one the payload refused to carry."""
-    ladder = _leash.quota_ladder(cad or {})
-    rung = _leash.quota_rung(q.dry_h, ladder) if ladder else -1
+    ladder, rung = _ladder_and_rung(q, cad)
     return {
         "reason": q.reason,
         "used": q.used,
@@ -165,21 +180,34 @@ def burst_badge(*, stopped: bool, tier: str, used: int, cap: int,
                  f"a fresh burst.")
 
 
-def _quiet_steps_sentence(ladder: list[float], rung: int, wait: str) -> str:
+def _quiet_steps_sentence(ladder: list[float], rung: int, wait: str, *,
+                          recent_buyer: bool = False) -> str:
     """Where he stands on the cyclic backoff ladder, in words. '' with no ladder.
 
     Not "rung 4/4". That was two pieces of jargon in four characters: a house word for
     the step, wrapped around a fraction that reads like a score climbing to a maximum.
     The ladder does not climb — it WRAPS — so the sentence always ends on the step that
-    comes next, which is the only thing that makes the position legible."""
+    comes next, which is the only thing that makes the position legible.
+
+    It also says WHICH ladder. Two fans on the same roster now serve different shapes,
+    and an operator comparing them without being told why would read the difference as
+    a bug — the short one is earned by a purchase, and that is the interesting half."""
     if rung < 0:
         return ""
+    why = (" He has paid inside the recent-buyer window, so he is on the SHORT ladder: "
+           "a man with money on the board is not made to wait days."
+           if recent_buyer else "")
+    if len(ladder) == 1:
+        # One rung is not a ladder and must not be dressed as one — "step 1 of 1, and
+        # after the last one they start again at 4h" is three clauses saying nothing.
+        return (f"{why} There is one quiet step and it does not change: "
+                f"{round(ladder[0], 1):g}h, jittered to {wait}.")
     steps = " → ".join(f"{round(h, 1):g}h" for h in ladder)
-    return (f" This is quiet step {rung + 1} of {len(ladder)}: the steps are {steps} "
-            f"and after the last one they start again at {round(ladder[0], 1):g}h — "
-            f"they never keep growing. His step is {round(ladder[rung], 1):g}h "
-            f"(jittered to {wait}), and the one after it is "
-            f"{round(ladder[(rung + 1) % len(ladder)], 1):g}h.")
+    return (f"{why} This is quiet step {rung + 1} of {len(ladder)}: the steps are "
+            f"{steps} and after the last one they start again at "
+            f"{round(ladder[0], 1):g}h — they never keep growing. His step is "
+            f"{round(ladder[rung], 1):g}h (jittered to {wait}), and the one after it "
+            f"is {round(ladder[(rung + 1) % len(ladder)], 1):g}h.")
 
 
 def daily_quota_badge(q: Any, *, enforced: bool, cad: dict[str, Any] | None = None,
@@ -199,8 +227,10 @@ def daily_quota_badge(q: Any, *, enforced: bool, cad: dict[str, Any] | None = No
     fix is to say WHICH number this is, not to imply it caused the hold."""
     if not (q.hold and enforced):
         return None
-    ladder = _leash.quota_ladder(cad or {})
-    rung = _leash.quota_rung(q.dry_h, ladder) if ladder else -1
+    ladder, rung = _ladder_and_rung(q, cad)
+    recent = _leash.quota_recent_buyer(
+        cad or {}, has_paid=bool(getattr(q, "has_paid", False)),
+        dry_h=float(q.dry_h or 0.0))
     # `:g` alone printed SIX significant figures of a jittered float — the step is
     # multiplied by a random ±25%, so a live thread read "She goes quiet for 3.58587h".
     # Round first, then `:g`, so 24.0 still prints as "24" and not "24.0".
@@ -221,7 +251,8 @@ def daily_quota_badge(q: Any, *, enforced: bool, cad: dict[str, Any] | None = No
                  f"{opened} The thread stays quiet for {wait} counted from the "
                  f"ACCOUNT'S OWN last reply — a manual message or a mass send does not "
                  f"move it — then the thread opens again."
-                 f"{_quiet_steps_sentence(ladder, rung, wait)} This slows the thread "
+                 f"{_quiet_steps_sentence(ladder, rung, wait, recent_buyer=recent)}"
+                 f" This slows the thread "
                  f"down, it never stops it. A purchase or a content ask resumes it "
                  f"immediately.",
                  _iso(free_at))

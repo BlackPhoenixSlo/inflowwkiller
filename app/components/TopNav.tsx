@@ -7,7 +7,7 @@
  * as Phase B/C ship Inbox / Vault / etc.
  */
 
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -44,6 +44,37 @@ const NudgeComposer = dynamic(
   () => import("@/components/compose/NudgeComposer").then((m) => m.NudgeComposer),
   { ssr: false },
 );
+
+/**
+ * The label inside a nav <Link>, which knows whether its own navigation is
+ * still in flight.
+ *
+ * Why this exists: App Router keeps the CURRENT page mounted for the whole
+ * transition, and `active` up there is derived from `usePathname()`, which
+ * doesn't move until the transition COMMITS. So between the click and the
+ * commit — chunk fetch, RSC payload, hydration — literally nothing on screen
+ * changed, not even the item you just clicked. Operators read that as a dead
+ * click and click again, which is the "I had to click twice" report. Every
+ * other latency fix in this change makes that window shorter; this is the one
+ * that makes it VISIBLE, which matters more, because the window can never be
+ * zero on a cold route chunk.
+ *
+ * `useLinkStatus` must be called from a DESCENDANT of the <Link> — that is the
+ * whole reason the label is its own component rather than an inline span.
+ *
+ * The pending look deliberately adds no element and changes no box: this strip
+ * horizontally auto-scrolls to the active item (useScrollStrip), so a spinner
+ * appearing beside a label would reflow the strip and move the very thing the
+ * user is pointing at. Dimming to the resting foreground plus a pulse says
+ * "heard you" without touching layout. On an already-prefetched route `pending`
+ * flips true→false inside a frame and nothing is seen, which is correct.
+ */
+function NavLabel({ label }: { label: string }) {
+  const { pending } = useLinkStatus();
+  return (
+    <span className={cn(pending && "animate-pulse text-fg")}>{label}</span>
+  );
+}
 
 interface NavLink {
   href: string;
@@ -217,7 +248,7 @@ export default function TopNav() {
                     : "text-fg-dim hover:text-fg hover:bg-bg-elev-1/50",
                 )}
               >
-                {l.label}
+                <NavLabel label={l.label} />
               </Link>
             );
           })}
@@ -384,7 +415,7 @@ export default function TopNav() {
                     : "text-fg-dim hover:text-fg hover:bg-bg-elev-1/50",
                 )}
               >
-                {l.label}
+                <NavLabel label={l.label} />
               </Link>
             ))}
             <button

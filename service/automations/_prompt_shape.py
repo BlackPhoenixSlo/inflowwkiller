@@ -109,7 +109,7 @@ def facts_are_redundant(system: str, elsewhere: str = "") -> bool:
     read the transcript, the same account would drop the block for one fan and keep it
     for the next — a system prefix that varies per fan, which defeats DeepSeek's
     prefix cache (the whole reason static text is kept static) and makes behaviour
-    non-deterministic. Measured live 2026-08-13: account 2024813 flipped 1-of-2 that
+    non-deterministic. Measured live 2026-08-13: account ACCOUNT_ID_2 flipped 1-of-2 that
     way. So callers pass nothing; the bio lines carry the duplication or they do not.
 
     Conservative by construction: a block whose fields cannot be parsed returns False

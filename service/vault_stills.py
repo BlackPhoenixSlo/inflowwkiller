@@ -119,7 +119,8 @@ _IMAGE_MAGIC = (
 #
 # Queueing behind it is the POINT. A tile that waits renders late; a tile that
 # takes the last descriptor takes the relay down with it.
-_MAX_INFLIGHT_FETCHES = max(1, int(os.environ.get("VAULT_STILL_CONCURRENCY", "6")))
+import lane_config as _lane_config
+_MAX_INFLIGHT_FETCHES = _lane_config.resolve("VAULT_STILL_CONCURRENCY", 6)
 
 # Per-loop, because the test harness runs each case in its own `asyncio.run()`
 # and an `asyncio.Semaphore` that has parked a waiter belongs to the loop it
@@ -345,6 +346,15 @@ async def bytes_for(account_id: str, media_id: int, path: Path, pick: Pick) -> S
         # OF calls.
         if item is not None and item.removed_at is not None:
             return Still(None, "gone")
+        # The second negative cache, and the cheaper one: a kind that can never
+        # yield a picture (see `vault_mirror.has_still`). `no_variant` is the
+        # honest verdict — asking again changes nothing — and unlike `gone` it
+        # must NOT soft-delete: the voice note is perfectly fine, it is just not
+        # a picture. Nothing renders a `_thumb` for one any more, so this is the
+        # backstop for the surfaces that build the url from an id alone
+        # (`mirrorThumbSrc`, `mirrorFullSrc`, the legacy panes).
+        if item is not None and not vault_mirror.has_still(item.kind):
+            return Still(None, "no_variant")
 
         url: str | None = None
         if item is not None:

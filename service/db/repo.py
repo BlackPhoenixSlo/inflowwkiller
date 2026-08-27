@@ -34,9 +34,35 @@ from .models import (
     EventInbox,
     GrokDailyCost,
     Proxy,
+    UserAccount,
 )
 
 log = logging.getLogger("of-relay.db")
+
+
+# ── Account ownership ────────────────────────────────────────────────
+
+async def ensure_user_account_link(user_id: str, account_id: str) -> None:
+    """Give a freshly captured OF account its owner. Idempotent.
+
+    The caller MUST have synced the registry into SQL first — `accounts` is
+    this row's parent and `PRAGMA foreign_keys=ON` is wired at connect, so
+    linking ahead of the import is a FOREIGN KEY violation, not a duplicate.
+    The bootstrap path used to fire the import and this link as two racing
+    tasks and swallow the resulting IntegrityError as though it could only
+    mean "already linked" — which is how a captured account reached HTTP 200
+    owned by nobody (2026-08-22: blake, blake and ACCOUNT_ID all landed that
+    way). Ordering the two is the fix; this function stays a plain insert and
+    deliberately does NOT create the parent, because inventing an `accounts`
+    row the importer never wrote is how you get a DB account with no registry
+    folder — see the 21-vs-6 divergence in scripts/purge_stale.py.
+
+    Anything that goes wrong here raises. Silence is the bug this replaces.
+    """
+    async with get_session() as s:
+        if await s.get(UserAccount, (user_id, account_id)) is not None:
+            return
+        s.add(UserAccount(user_id=user_id, account_id=account_id))
 
 
 # ── Event inbox ──────────────────────────────────────────────────────

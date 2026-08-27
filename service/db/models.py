@@ -378,6 +378,19 @@ class Fan(Base):
     # "everything this fan owed up to here is settled", which is one moment, not
     # a set of rows. Nullable, so init_db's additive catch-up adds it in place.
     customs_cleared_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # When the gather-close PPV was last ATTEMPTED for this fan. THE RETRY CLOCK,
+    # not a receipt: a refusal stamps it too, and that is the whole reason it
+    # exists as a column. The graduation fires once and then skip-lists the fan,
+    # so it could never storm — but `ai_chatter`'s payer-floor rescue re-evaluates
+    # every ~30s tick for as long as he stays unanswered, and an attempt is a
+    # vault read plus a claim LLM call. Unstamped, the 2026-08-23 refusal would
+    # have replayed roughly 2,400 times before he wrote again.
+    #
+    # One writer (`pack_farewell.send_gather_close`) for the same reason
+    # `customs_owed_at` above is a column rather than a suffix on a name someone
+    # else rewrites. Nullable, so init_db's additive catch-up adds it in place —
+    # a NOT-NULL column here would be silently skipped on boot (engine.py:179).
+    gather_close_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # ── Tags / custom fields ─────────────────────────────────
     tags: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
@@ -1562,7 +1575,7 @@ class AccountAiConfig(Base):
     # True = the operator ticked "Always tag videos" on a COLLAB account: every
     # send attaching a vault VIDEO then carries the co-performer tag even when
     # the describe verdict reads it as solo — video describes are cut from
-    # stills and miss the POV partner, which is how Lucas1/Lucas2 clips shipped
+    # stills and miss the POV partner, which is how blake/blake clips shipped
     # untagged. The describe-verdict decision itself is never weakened by this.
     cotag_tag_videos: Mapped[bool | None] = mapped_column(Boolean)
     # The handle to tag, stored without the '@' (media_cotag folds it the way OF
@@ -1909,6 +1922,32 @@ class ScheduledJob(Base):
 
     __table_args__ = (
         Index("ix_jobs_due", "run_at", "status"),
+        # ⚠️ `ix_jobs_due` leads on `run_at`, and EVERY hot query here bounds
+        # `run_at <= now` — an open range from the oldest row. So the planner
+        # walks that index from the beginning of time and filters status /
+        # account_id / kind row by row. That was fine while this table held a
+        # dozen rows a day; on 2026-08-12 the engines came on and it started
+        # taking ~20k/day. Measured 2026-08-25 at 263,790 rows (of which 316
+        # were actually pending/running): the executor spent 6.7s of every 30s
+        # tick scanning, and `/admin/automation-rules` paid 833ms of it per
+        # load. These three make the same questions O(matching rows).
+        #
+        # `ix_jobs_due` is deliberately KEPT: init_db()'s catch-up can create a
+        # missing index but never drops a stale one, so removing it here would
+        # leave it on disk everywhere anyway — and an A/B showed that taking an
+        # index away can flip the planner onto a worse one.
+        #
+        # _has_pending_job (automation_rules_api), _claim_due_job and
+        # _materialize_due_rules' pending guard — all (account, kind, status)
+        # with a run_at bound.
+        Index("ix_jobs_account_kind_status_run",
+              "account_id", "kind", "status", "run_at"),
+        # _due_job_pairs — status-first, no account, once per supervisor tick.
+        Index("ix_jobs_status_run", "status", "run_at"),
+        # The cadence anchor (`max(created_at) WHERE rule_id = ?`) had NO index
+        # to use at all — a full table scan per rule per tick, 1.4s across 85
+        # enabled rules.
+        Index("ix_jobs_rule_created", "rule_id", "created_at"),
     )
 
 
@@ -1927,6 +1966,25 @@ class AutomationRun(Base):
 
     __table_args__ = (
         Index("ix_runs_kind_started", "kind", "started_at"),
+        # `_last_run` and the max_runs counter both filter (account_id, kind).
+        # `ix_runs_kind_started` answers those by walking the KIND partition and
+        # discarding rows belonging to other accounts — cheap while every model
+        # runs every kind, and 297ms for the one shape that matters most: a kind
+        # this account has NEVER run, where it walks the partition to find
+        # nothing. That is exactly what a freshly-created rule asks.
+        Index("ix_runs_account_kind_started", "account_id", "kind", "started_at"),
+        # `/admin/stats/automation-runs` — ORDER BY started_at DESC over the
+        # principal's accounts. clamp_account_filter turns the card's
+        # unqualified call into `account_id IN (<every account you own>)`, so the
+        # filtered shape IS the user-facing one; unindexed it scanned all 409k
+        # rows into a temp b-tree (1.0s) on a card that polls every 60s.
+        #
+        # ⚠️ This one must ship WITH `ix_runs_account_kind_started`, never
+        # instead of it. Measured on a snapshot: alone, the planner prefers it
+        # for `_last_run` too and then walks the whole account partition
+        # filtering kind — 0.2ms → 156ms, and max_runs_count 285ms → 1,443ms,
+        # i.e. FIVE TIMES WORSE than adding no index at all.
+        Index("ix_runs_account_started", "account_id", "started_at"),
     )
 
 

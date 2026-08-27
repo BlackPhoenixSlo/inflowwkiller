@@ -134,7 +134,7 @@ describe("useSellerConfig save gating", () => {
       media_ids: [], preview_media_ids: [], price_cents: 800, tip_unlock_cents: 800,
       is_free_teaser: false, tags: [], enabled: true }];
     relayGet.mockResolvedValue({ ...CONFIG_RESPONSE, starter_singles: rows });
-    const { result } = renderHook(() => useSellerConfig("2024813"), { wrapper });
+    const { result } = renderHook(() => useSellerConfig("ACCOUNT_ID_2"), { wrapper });
     await waitFor(() => expect(result.current.starterSingles).toEqual(rows));
 
     cleanup();

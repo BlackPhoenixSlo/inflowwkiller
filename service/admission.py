@@ -14,15 +14,18 @@ Anything that can be started N-at-a-time by a person scrolling therefore needs a
 ceiling, and a ceiling nobody can read the current value of is a ceiling nobody
 maintains — hence `stats()`.
 
-THREADING, NOT ASYNCIO, AND THAT IS THE POINT. These lanes guard SYNC call sites
-(`/img` is a plain `def` streaming endpoint; `vault_frames.warm_one_sync` runs
-inside `asyncio.to_thread`). The relay also has asyncio-side ceilings —
-`server._MAX_INFLIGHT_VAULT_READS`, `vault_stills._MAX_INFLIGHT_FETCHES`,
-`vault_ai_api._VISION_GLOBAL_CONCURRENCY` — which park waiters on the event loop
-instead of on a thread. Those are deliberately NOT modelled here: an asyncio
-semaphore binds to a running loop and a threading one does not, so one type
-covering both would have to hide that difference, and the difference is the
-whole reason each exists. Two mechanisms, honestly named, beats one that lies.
+TWO TYPES, HONESTLY NAMED, NOT ONE THAT LIES. `Lane` guards SYNC call sites and
+parks waiters on a THREAD (`/img` is a plain `def` streaming endpoint;
+`vault_frames.warm_one_sync` runs inside `asyncio.to_thread`). `LoopLane` guards
+async ones and parks waiters on the EVENT LOOP. They are not one class with a
+flag, because an asyncio semaphore binds to a running loop and a threading one
+does not, and what a waiter COSTS is the whole reason each exists — a `Lane`
+waiter is holding a thread hostage, so it gives up after `wait_s`; a `LoopLane`
+waiter holds nothing, so it simply queues.
+
+`vault_stills._MAX_INFLIGHT_FETCHES` and `vault_ai_api._VISION_GLOBAL_CONCURRENCY`
+are still hand-rolled copies of `LoopLane` in their own modules; they belong
+here, and moving them is the obvious follow-up.
 
 This module imports nothing from the relay. It is a leaf on purpose, so
 `vault_frames` can take a lane at module scope instead of reaching through
@@ -32,9 +35,16 @@ stays open.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 import threading
+import weakref
+from typing import Any
+
+# The only import, and it is another leaf (it pulls in nothing from the relay
+# either). Lanes are built at MODULE IMPORT, before the loop or the DB exist,
+# so whatever feeds them has to be importable and readable synchronously here.
+import lane_config
 
 log = logging.getLogger("of-relay.admission")
 
@@ -54,7 +64,12 @@ class Lane:
         # Env-overridable so a cap can be retuned on the VPS without a deploy —
         # these numbers are sized against a 2-core box and the right value is an
         # operational question, not a source-code one.
-        self.cap = max(1, int(os.environ.get(env_var, str(default_cap))))
+        # Kept so `describe()` can name the tuning surface without a second
+        # table that could drift from the constructor call.
+        self.env_var = env_var
+        # env var > value saved from the Concurrency panel > this default.
+        # See lane_config's docstring for why the env var wins.
+        self.cap = lane_config.resolve(env_var, default_cap)
         self.wait_s = wait_s
         # BOUNDED, so that releasing a slot nobody holds raises instead of
         # silently inflating the ceiling. See `exit`.
@@ -99,6 +114,82 @@ class Lane:
         return {f"{self.name}_cap": self.cap,
                 f"{self.name}_busy": self.busy,
                 f"{self.name}_rejected": self.rejected}
+
+
+class LoopLane:
+    """`Lane`'s asyncio peer: a named ceiling whose waiters park on the event
+    loop instead of on a thread.
+
+    A separate class rather than a flag on `Lane`, for the reason the module
+    docstring gives: what a waiter COSTS is different, and one class covering
+    both would have to hide that. It lives here rather than at a call site
+    because the same ten lines had already been hand-rolled three times (the
+    by-id vault read, `vault_stills._SLOTS`, `vault_ai_api._vision_sema`) —
+    which is exactly the situation that produced `Lane` in the first place.
+
+    Two things follow from parking a coroutine rather than a thread:
+
+    • It never rejects. `Lane.enter()` gives up after `wait_s` because a queued
+      caller there is holding a thread hostage while it waits. A queued caller
+      here holds nothing, so queueing is simply the right answer and a timeout
+      would only invent a failure mode the callers would have to handle.
+    • The semaphore is PER RUNNING LOOP. An `asyncio.Semaphore` that has parked
+      a waiter belongs to the loop it parked it on, and the test harness gives
+      every case its own `asyncio.run()`. Weak keys, so a finished loop takes
+      its semaphore with it.
+
+    A slot is held for the whole `async with` body — including a blocking call
+    dispatched to a thread inside it. That is the point: the ceiling has to
+    outlive any cancellation of the awaiting task, because cancelling a task
+    does not stop the thread it is waiting on.
+    """
+
+    def __init__(self, name: str, env_var: str, default_cap: int) -> None:
+        self.name = name
+        # Kept so `describe()` can name the tuning surface without a second
+        # table that could drift from the constructor call.
+        self.env_var = env_var
+        self.cap = lane_config.resolve(env_var, default_cap)
+        self._sems: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+        # `busy` may be touched from more than one loop thread, and the module
+        # docstring's rule is that a ceiling nobody can read is a ceiling nobody
+        # maintains — so it is counted, and counted safely.
+        self._lock = threading.Lock()
+        self.busy = 0
+        self.peak = 0
+
+    def _semaphore(self) -> asyncio.Semaphore:
+        # `cap` is read the first time a given loop needs a semaphore, so
+        # changing it afterwards only reaches loops that have not started yet.
+        # That is what makes it settable from a test (one loop per case) and
+        # what makes it useless as a runtime knob (one loop for the process).
+        loop = asyncio.get_running_loop()
+        sem = self._sems.get(loop)
+        if sem is None:
+            sem = self._sems[loop] = asyncio.Semaphore(self.cap)
+        return sem
+
+    async def __aenter__(self) -> "LoopLane":
+        await self._semaphore().acquire()
+        with self._lock:
+            self.busy += 1
+            self.peak = max(self.peak, self.busy)
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        # Resolved by RUNNING loop, so this releases the same semaphore
+        # `__aenter__` took — there is no per-entry state to carry.
+        self._semaphore().release()
+        with self._lock:
+            self.busy = max(0, self.busy - 1)
+
+    def stats(self) -> dict[str, int]:
+        """This lane's numbers for /admin/streams. `peak` rather than
+        `rejected`: nothing is ever turned away here, so the only question a
+        reader can have is whether the ceiling is being reached at all."""
+        return {f"{self.name}_cap": self.cap,
+                f"{self.name}_busy": self.busy,
+                f"{self.name}_peak": self.peak}
 
 
 # ── The lanes themselves ────────────────────────────────────────────
@@ -162,16 +253,109 @@ IMG_FETCH = Lane("img_fetch", "IMG_FETCH_CONCURRENCY", 8, 15.0)
 STORYBOARD_BUILD = Lane("storyboard_build", "STORYBOARD_BUILD_CONCURRENCY", 2, 20.0)
 
 
+# ── The loop lanes ──────────────────────────────────────────────────
+#
+# Same law as above — the instances live here, not at their busiest call site.
+
+# `/api/of/v2/vault/media/{id}` — the by-id read. `_proxy` already caps UPSTREAM
+# calls per account, so OF never sees a storm; the problem is WHERE the waiting
+# happens, because that cap is a threading semaphore acquired INSIDE
+# `asyncio.to_thread`. The upstream is protected, the executor is not. And this
+# is the route the UI asks for a whole library at a time: `useVaultMediaByIds`
+# issues one request per stored id and PPVLibraryTab hands it every id there is,
+# so 200 ids wanted 200 threads for 5 usable slots — which starves the
+# automation lane sharing that executor (the 2026-07-04 "socket hang up") and
+# holds 200 inbound sockets and their DB connections open while they wait.
+# Gating on the ASYNC side, before the dispatch, makes a queued request cost a
+# parked coroutine instead. Same default as VAULT_STILL_CONCURRENCY, separate
+# budget: a vault pane storm must not spend the stills allowance or vice versa.
+VAULT_MEDIA_READ = LoopLane("vault_media_read", "VAULT_MEDIA_CONCURRENCY", 6)
+
+# `/health?all_accounts=1` — the /setup table's per-account OF probe. It calls
+# `_load_client()` + `c.me()` DIRECTLY rather than through `_proxy`, so no
+# priority lane stands between a fan-out and the shared proxy/executor/descriptor
+# ceilings, and a per-account cap would be the wrong shape anyway: this spends
+# one call on each of N accounts rather than N on one. Sized well below the vault
+# lanes because it is an admin table nobody is watching — it must never be the
+# reason a chat read waits.
+HEALTH_PROBE = LoopLane("health_probe", "HEALTH_ALL_CONCURRENCY", 4)
+
+
 # Every lane, so diagnostics can be DERIVED rather than restated. `admin_streams`
 # merges `all_stats()`; adding a lane above and forgetting it here is the only
 # way it can go unreported, which is one place to look instead of two files.
 LANES = (VIDEO_STREAM, IMG_FETCH, STORYBOARD_BUILD)
+LOOP_LANES = (VAULT_MEDIA_READ, HEALTH_PROBE)
+
+
+def describe() -> list[dict[str, Any]]:
+    """Every lane as a ROW, for the operator panel.
+
+    `all_stats()` below flattens to prefixed keys because `/admin/streams`
+    merges it into one counter bag; a reader that wants "the lanes" then has to
+    reassemble them by string-splitting. This returns them already assembled,
+    and it is derived from the same LANES/LOOP_LANES tuples, so a lane added
+    there cannot be missing here.
+
+    ⚠️ THE CAPS ARE NOW WRITABLE, reversing a deliberate earlier decision.
+    The previous text here said `cap` was "deliberately NOT settable over HTTP.
+    These ceilings are what stopped the 2026-08-08 descriptor exhaustion from
+    recurring, and a control that can widen them is a control that can reproduce
+    it." That reasoning is still TRUE and is the cost being accepted: the
+    Concurrency panel can now widen any of these, and the panel's own door is
+    unauthenticated by explicit choice (see `lane_config_api`, which serves the
+    same resource twice: ungated at `/lanes-panel/config`, which no Next rewrite
+    exposes, and gated at `/admin/lane-config` for the in-app card). What
+    changed is the judgement, not the risk — the ceilings had never been retuned
+    once because retuning meant editing an env file the deploy rsync excludes,
+    which is the failure this module's own docstring names.
+
+    Two things keep the reversal honest. A saved value applies at RESTART, so a
+    bad number still costs a restart rather than an outage — the property the
+    old text was protecting. And `lane_config.describe()` reports whether an env
+    var is pinning a lane, so the panel cannot pretend to have changed something
+    it did not.
+
+    These rows deliberately stay OBSERVATIONAL — cap, busy, peak, rejected. Where
+    a value came from and what it will be after a restart is `lane_config`'s
+    view, served at `/lanes-panel/config`; restating it here would be two answers
+    to one question, and the second one is the one that goes stale.
+    """
+    rows: list[dict[str, Any]] = []
+    for lane in LANES:
+        rows.append({
+            "name": lane.name,
+            "kind": "thread",
+            "cap": lane.cap,
+            "busy": lane.busy,
+            "rejected": lane.rejected,
+            "peak": None,
+            # A thread waiter is holding a thread hostage, so this lane gives up
+            # after `wait_s` and the caller gets a retryable 503.
+            "wait_s": lane.wait_s,
+            "env_var": lane.env_var,
+        })
+    for lane in LOOP_LANES:
+        rows.append({
+            "name": lane.name,
+            "kind": "loop",
+            "cap": lane.cap,
+            "busy": lane.busy,
+            # Nothing is ever turned away here — a coroutine waiter holds
+            # nothing, so it queues. `peak` is the only question worth asking:
+            # has the ceiling been reached at all?
+            "rejected": None,
+            "peak": lane.peak,
+            "wait_s": None,
+            "env_var": lane.env_var,
+        })
+    return rows
 
 
 def all_stats() -> dict[str, int]:
     """Every lane's numbers, merged. Keys are prefixed by lane name, so they
     cannot collide."""
     out: dict[str, int] = {}
-    for lane in LANES:
+    for lane in (*LANES, *LOOP_LANES):
         out.update(lane.stats())
     return out

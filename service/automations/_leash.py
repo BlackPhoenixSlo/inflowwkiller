@@ -342,6 +342,15 @@ class _Quota(NamedTuple):
                                 # picked the rung, not the one running now
     reason: str = QUOTA_OFF     # which branch decided it (one of the QUOTA_* above)
     runway_left: int = 0        # replies of his per-fan runway still unspent
+    has_paid: bool = False      # he has a money event AT ALL — the fact `dry_h` cannot
+                                # carry, because a man first seen two days ago and a man
+                                # who PAID two days ago both read 48. Stored because it
+                                # is an INPUT, not a verdict: the window that turns it
+                                # into "recent buyer" is operator config, so THAT stays
+                                # derived (see the `rung` note above), never stored.
+                                # Only set where `dry_h` is, for the same reason — the
+                                # exits that never look at his money leave both at their
+                                # defaults rather than reporting half an answer.
 
 
 def quota_used(times, now: datetime, *, window: timedelta = QUOTA_WINDOW,
@@ -387,10 +396,38 @@ def quota_used(times, now: datetime, *, window: timedelta = QUOTA_WINDOW,
     return 0 if start is None or closed(now, start, times[-1]) else n
 
 
-def quota_ladder(cad: Any) -> list[float]:
+def quota_recent_buyer(cad: Any, *, has_paid: bool, dry_h: float) -> bool:
+    """Has this fan got money on the board inside `quota_recent_buyer_days`?
+
+    Needs BOTH facts, which is the whole reason `_Quota` carries `has_paid`: `dry_h`
+    alone cannot answer it, since a man first seen two days ago and a man who PAID two
+    days ago both read 48 and only one of them has earned a short leash.
+
+    Read off the same FROZEN `dry_h` the rung is, never off `now`, so a fan cannot be
+    reclassified part-way through a hold he is already serving — the same argument the
+    rung and the jitter both already make one layer down.
+
+    0 days retires the split and puts everyone back on the one long ladder, which is
+    the behaviour that shipped before 2026-08-27 and the off switch for this rule."""
+    days = float(cad.get("quota_recent_buyer_days") or 0)
+    return bool(has_paid and days > 0 and dry_h <= days * 24.0)
+
+
+def quota_ladder(cad: Any, *, recent_buyer: bool = False) -> list[float]:
     """The backoff rungs as configured, cleaned of blanks and non-positives. One
-    reader, so the gate and the status copy cannot disagree about which rungs exist."""
-    return [float(h) for h in (cad.get("quota_backoff_hours") or ())
+    reader, so the gate and the status copy cannot disagree about which rungs exist.
+
+    TWO ladders, picked by `recent_buyer`. The long one is a NON-PAYER's leash and its
+    shape only reads as one: the bands are as wide as their own rungs (see
+    `quota_rung`), so on [4, 12, 24, 72] a mere 40h of dry time already lands a fan on
+    the 72h rung. Aimed at a man who paid the day before yesterday that is a
+    punishment for buying — live, a $10 fan whose spending had LIFTED his ration to
+    25/day went 82.5h dark the moment he used it, 2.1 days after his purchase.
+
+    An EMPTY ladder is legal on either side and means what it always means here:
+    nothing to serve, so that cohort is never held at all."""
+    key = "quota_backoff_hours_recent_buyer" if recent_buyer else "quota_backoff_hours"
+    return [float(h) for h in (cad.get(key) or ())
             if float(h or 0) > 0]
 
 
@@ -456,7 +493,15 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     who take 15-30 of them to convert are the best customers on the roster — ~$241
     lifetime against ~$74 for the ones who buy on day one. Freezing a quiet fan at
     three-day silence forever would slowly strand exactly that cohort. Any purchase
-    moves the anchor and drops him straight back to rung 0."""
+    moves the anchor and drops him straight back to rung 0.
+
+    But that ladder is a NON-PAYER's, and a purchase resetting the anchor was never
+    enough on its own: the rungs are as wide as themselves, so 40h of dry time already
+    lands a man on 72h, and a fan who paid two days ago was being sent to three days
+    of silence for spending. So the ladder is chosen before the rung is —
+    `quota_recent_buyer` picks the short `quota_backoff_hours_recent_buyer` for anyone
+    with money on the board inside `quota_recent_buyer_days`, and everyone else keeps
+    the long one."""
     if not cad.get("daily_quota_enabled"):
         return _Quota(reason=QUOTA_OFF)
     used = int(c.day_out_n or 0)
@@ -505,13 +550,9 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
         reason = lifted_by if used >= base else QUOTA_UNDER
         return _Quota(quota=quota, used=used, reason=reason, runway_left=runway_left)
 
-    ladder = quota_ladder(cad)
-    if not ladder:                                   # no ladder ⇒ nothing to serve
-        return _Quota(quota=quota, used=used, reason=QUOTA_NO_LADDER,
-                      runway_left=runway_left)
-
-    # Dry streak → which rung. `first_at` stands in for a fan who has never paid at
-    # all; with neither anchor we cannot judge him, so he starts at the shortest rung.
+    # Dry streak → which LADDER, then which rung of it. `first_at` stands in for a fan
+    # who has never paid at all; with neither anchor we cannot judge him, so he starts
+    # at the shortest rung.
     #
     # Measured to HER LAST REPLY — the moment the hold began — and NOT to `now`. The
     # hold is served from that same frozen anchor, so reading the streak at `now`
@@ -526,6 +567,25 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     anchor = money_at or c.first_at
     dry_h = (max((c.her_last_at - anchor).total_seconds() / 3600.0, 0.0)
              if anchor else 0.0)
+    has_paid = money_at is not None
+
+    # WHICH ladder, before which rung of it. Money on the board inside
+    # `quota_recent_buyer_days` puts him on the short one; everyone else walks the long
+    # one. Derived here rather than stored, from the two facts `_Quota` does carry, so
+    # `fan_status_copy` reaches the same verdict and an operator editing the window
+    # moves the gate and the copy together.
+    #
+    # It is a CLIFF, deliberately. The first reply after he crosses the window drops him
+    # onto the long ladder at whatever rung his streak has already reached — rung 3, on
+    # the default shape, for anything past 40h dry. There is no glide between them, and
+    # there should not be a third ladder to build one: widen the window if it lands too
+    # hard.
+    ladder = quota_ladder(cad, recent_buyer=quota_recent_buyer(
+        cad, has_paid=has_paid, dry_h=dry_h))
+    if not ladder:                                   # no ladder ⇒ nothing to serve
+        return _Quota(quota=quota, used=used, reason=QUOTA_NO_LADDER,
+                      dry_h=dry_h, has_paid=has_paid, runway_left=runway_left)
+
     cycle_h = sum(ladder)
     rung = quota_rung(dry_h, ladder)
     # Jitter, because a woman who drifts back after EXACTLY 24.0 hours, every time, on
@@ -548,7 +608,8 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     else:
         reason = lifted_by if used >= base else QUOTA_UNDER
     return _Quota(hold=hold, quota=quota, used=used, wait_h=wait_h,
-                  dry_h=dry_h, runway_left=runway_left, reason=reason)
+                  dry_h=dry_h, has_paid=has_paid, runway_left=runway_left,
+                  reason=reason)
 
 
 async def _write_quota_audit(account_id: str, rows: list[tuple[int, _Quota]], *,

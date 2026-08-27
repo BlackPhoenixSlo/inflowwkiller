@@ -21,7 +21,7 @@ richer than the ledger for this job:
      "createdAt": "2026-07-21T15:26:00+00:00",
      "replacePairs": {"{NAME}": "Daniel",
                       "{AMOUNT}": "$6.00",
-                      "{MESSAGE_LINK}": "…/chats/chat/580481431?firstId=10491720677794"}}
+                      "{MESSAGE_LINK}": "…/chats/chat/FAN_ID?firstId=10491720677794"}}
 
 `firstId` is **the exact message that was bought**. That is what makes this worth
 having: the global payment→message linker bails `ambiguous` whenever a fan holds
@@ -73,6 +73,7 @@ from typing import Any
 from sqlalchemy import or_, select, update
 
 import ownership
+import relay_cache
 from db.engine import get_session
 from db.models import Message
 
@@ -283,6 +284,14 @@ async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> None:
 
     Never raises: a broadcast failure must not cost us the is_paid flip.
     """
+    # Drop the relay's cached money feeds first, so the refetch this broadcast
+    # provokes cannot be served our own pre-sale snapshot. This is the ONLY
+    # money lane that fires in production — the WS carries no purchase frame,
+    # so event_transcoder's unlock handlers never run and this 30s poll is how
+    # a sale becomes visible at all. Sits under the `_should_announce` claim in
+    # `_handle_items`, so it costs one bust per NEW purchase rather than one
+    # per 30s re-sighting.
+    relay_cache.invalidate_money_feeds(str(account_id))
     try:
         from events import broadcast as _sse_broadcast
         await _sse_broadcast({

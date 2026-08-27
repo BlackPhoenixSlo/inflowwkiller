@@ -144,19 +144,63 @@ class PackPlan:
         return self.refusal is None and bool(self.media)
 
 
-async def _filter_kind(account_id: str, media: list[int], kind: str | None) -> list[int]:
-    """Keep only media of the promised KIND. "send me a video" is a promise too,
-    and a photo does not satisfy it."""
-    if kind not in ("photo", "video") or not media:
+async def _live_of_kind(account_id: str, media: list[int],
+                        kind: str | None) -> list[int]:
+    """The ids still in her vault, narrowed to the promised KIND. ONE read.
+
+    Both facts are columns of the SAME mirror row, so asking for them separately
+    buys a second round-trip over the same id set on every priced send.
+
+    KIND is a promise: "send me a video" is not satisfied by a photo.
+
+    🚨 LIVENESS IS NOT THE AUDIT'S JOB ALONE, even though the audit is where the
+    rule is written down (`pack_audit._live_media`, reached as `audit_ask` rule 2
+    and `audit_pack` rule 5). The audit is a VETO — it refuses the WHOLE send
+    over one dead id — so a stale `removed_at` does not cost a pick, it silences
+    the lane for every fan at once. On 2026-08-11 a render-path 404 stamped 22
+    items in one second; two sat in a gather-close folder OF still serves from,
+    `rank_by_tier` put one of those first for every fan, and the parting PPV then
+    refused three fans out of three, having never once shipped. Dropped here it
+    costs one pick instead, and the audit still stands at the wire — where a dead
+    id means the media died between the pick and the send, which is the case it
+    can actually act on.
+
+    An id with no mirror row at all USED to pass the kind filter (it had no kind
+    on file to disagree with) and then die at that audit. It cannot now: a row we
+    have never seen is exactly a row we cannot promise will arrive.
+    """
+    if not media:
         return media
     async with get_session() as s:
         rows = (await s.execute(
             select(VaultItem.media_id, VaultItem.kind).where(
                 VaultItem.account_id == str(account_id),
-                VaultItem.media_id.in_(media))
+                VaultItem.media_id.in_(media),
+                VaultItem.removed_at.is_(None))
         )).all()
-    by_id = {int(m): str(k or "") for m, k in rows}
-    return [m for m in media if by_id.get(m, kind) == kind]
+    live = {int(m): str(k or "") for m, k in rows}
+    # Only "photo"/"video" are real promises; anything else (None included) is
+    # "he named no kind", which every kind satisfies.
+    want = kind if kind in ("photo", "video") else None
+    kept, dead = [], []
+    for m in media:
+        k = live.get(m)                       # None = no live row, "" = no kind
+        if k is None:
+            dead.append(m)
+        elif want is None or k == want:
+            kept.append(m)
+    if dead:
+        # Never silent. A curated shelf is mirror-derived and cannot go stale
+        # this way, but a folder pool is read LIVE from OF — so a steady stream
+        # here says OUR mirror is wrong, not that she deleted anything. That is
+        # a vault-collect problem, and this line is the only place it surfaces.
+        #
+        # ⚠️ Worded so it can never be confused with `audit_ask`'s "N dead media"
+        # — that one is a REFUSAL and this one is a skip on a send that goes out.
+        # Grepping the two together is how a healthy lane reads as a broken one.
+        log.info("pick skipped %d dead media (send proceeds) account=%s: %s",
+                 len(dead), account_id, dead[:4])
+    return kept
 
 
 async def _bought_media(account_id: str, fan_id: int) -> set[int]:
@@ -295,13 +339,14 @@ async def _available(account_id: str, fan_id: int, media_ids: list[int], *,
                      company: bool, media_kind: str | None = None) -> list[int]:
     """The house rules every source obeys, in the order they must run.
 
-    KIND is a promise, so it narrows before anything is priced. SOLO is applied
-    even to a curated shelf, because an operator who filed a photo under `feet`
-    said nothing about who else was in it. TIER is last because it ORDERS rather
-    than excludes — see `rank_by_tier`.
+    LIVENESS and KIND come off the same mirror row and are read together, first:
+    a promise narrows before anything is priced, and an id that cannot arrive is
+    dropped here rather than left to veto the whole send (`_live_of_kind`). SOLO
+    is applied even to a curated shelf, because an operator who filed a photo
+    under `feet` said nothing about who else was in it. TIER is last because it
+    ORDERS rather than excludes — see `rank_by_tier`.
     """
-    if media_kind:
-        media_ids = await _filter_kind(account_id, media_ids, media_kind)
+    media_ids = await _live_of_kind(account_id, media_ids, media_kind)
     if not company:
         media_ids = await content_resolver.solo_only(account_id, media_ids)
     _cap, max_tier = await spend_bounds(account_id, fan_id)

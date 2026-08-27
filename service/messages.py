@@ -16,6 +16,10 @@ Four endpoints, all keyed on (account_id, fan_id):
                                             on (…, flagged_by_employee_id
                                             from X-Employee-Id header)
 
+Plus the mirror writes at the bottom of the file (`mark_unsent` and
+friends): the local half of an unsend, called by the relay's OF routes and
+by the unsend_messages automation once OF confirms.
+
 This file owns NONE of the OF-network logic — every row served comes from
 the local `messages` / `message_flags` / `chats` tables that the WS
 transcoder populates. Outbound sends + OF-side read receipts live in
@@ -30,12 +34,12 @@ import io
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Sequence
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import Select, and_, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -311,17 +315,25 @@ async def reconcile_rest_media(
         await s.commit()
 
 
-async def sync_rest_media_dims(
+async def stamp_rest_media_dims(
     account_id: str, fan_id: int, of_messages: list[dict],
 ) -> None:
-    """Live-route entry point: persist OF REST dims into message_media AND
-    mutate each media item in `of_messages` to carry top-level width/height
+    """Mutate each media item in `of_messages` to carry top-level width/height
     (so the client gets dims without parsing OF's nested files/info).
 
     Source order per item: OF inline dims first; then a stored message_media
-    row (e.g. a prior client onload→PATCH) for items OF never sized. Opens its
-    own session; best-effort — callers wrap in try/except so a media hiccup
-    never breaks chat load. Leaves dims null when neither source has them."""
+    row (e.g. a prior client onload→PATCH) for items OF never sized. Leaves
+    dims null when neither source has them.
+
+    READ-ONLY by design. `sync_rest_media_dims` used to do this AND the write
+    in one await; it is gone, split into this half — the part the HTTP
+    response actually needs, so it stays on the request path — and
+    `persist_rest_media_dims`, which the caller fires and forgets. That split
+    took a write transaction on the single shared SQLite writer off every chat
+    open and every 30s/2min poll.
+
+    Best-effort — callers wrap in try/except so a media hiccup never breaks
+    chat load."""
     if not of_messages:
         return
     need_db: dict[int, list[dict]] = {}
@@ -343,25 +355,51 @@ async def sync_rest_media_dims(
                 mid = item.get("id")
                 if isinstance(mid, int):
                     need_db.setdefault(mid, []).append(item)
+    if not need_db:
+        return
     async with get_session() as s:
-        await reconcile_rest_media(s, account_id, fan_id, of_messages)
-        if need_db:
-            rows = (
-                await s.execute(
-                    select(
-                        MessageMedia.media_id,
-                        MessageMedia.width,
-                        MessageMedia.height,
-                    ).where(
-                        MessageMedia.account_id == account_id,
-                        MessageMedia.media_id.in_(list(need_db.keys())),
-                    )
+        rows = (
+            await s.execute(
+                select(
+                    MessageMedia.media_id,
+                    MessageMedia.width,
+                    MessageMedia.height,
+                ).where(
+                    MessageMedia.account_id == account_id,
+                    MessageMedia.media_id.in_(list(need_db.keys())),
                 )
-            ).all()
-            for media_id, w, h in rows:
-                if w and h:
-                    for item in need_db.get(media_id, []):
-                        item["width"], item["height"] = w, h
+            )
+        ).all()
+        for media_id, w, h in rows:
+            if w and h:
+                for item in need_db.get(media_id, []):
+                    item["width"], item["height"] = w, h
+
+
+async def persist_rest_media_dims(
+    account_id: str, fan_id: int, of_messages: list[dict],
+) -> None:
+    """Persist OF REST dims into message_media. The WRITE half of what used to
+    be `sync_rest_media_dims`, meant to be fired and forgotten by the route.
+
+    Nothing in the HTTP response depends on it: `stamp_rest_media_dims` has
+    already put every dim the client needs on the payload, and this only
+    populates the store that a LATER request reads from. Running it off the
+    request path means a chat open no longer waits on the shared SQLite writer.
+
+    Swallows its own exceptions rather than relying on the caller: it runs in a
+    bare `create_task`, where an escaping error would only surface as an
+    unretrieved-task warning."""
+    if not of_messages:
+        return
+    try:
+        async with get_session() as s:
+            await reconcile_rest_media(s, account_id, fan_id, of_messages)
+    except Exception:  # noqa: BLE001
+        log.debug(
+            "persist_rest_media_dims failed account=%s fan=%s",
+            account_id, fan_id, exc_info=True,
+        )
 
 
 def _flag_to_dict(f: MessageFlag) -> dict[str, Any]:
@@ -1000,6 +1038,12 @@ async def list_messages(
                 Message.message_id >= _TIP_MSG_ID_BASE,
                 Message.created_at >= placeholder_floor,
             ))
+            # An unsent bubble is gone from OF, so it must not seed the pane:
+            # the seed carries no media, so it would repaint as an empty
+            # locked shell on every reload. The client drops these too, but
+            # filtering here is what makes the mirror flip (mark_unsent below)
+            # effective for a browser still running an older bundle.
+            .where(Message.is_unsent.is_(False))
             .order_by(Message.message_id.desc())
             .limit(limit)
         )
@@ -1463,3 +1507,98 @@ async def flag_message(
         await s.commit()
         await s.refresh(f)
         return _flag_to_dict(f)
+
+
+# ── OF unsend → local mirror ────────────────────────────────────────
+# An unsend that OF accepted has to be mirrored onto `messages`, or the
+# chat pane's cold-start seed (GET /admin/messages/… above) paints the
+# bubble again on the next reload — as an EMPTY locked shell, since the
+# seed carries `media: []` and the row's body is blank for a PPV. The
+# relay's DELETE /api/of/v2/messages/{id} and .../queue/{id} routes call
+# these right after the upstream call succeeds; the unsend_messages
+# automation reaches the same rows through its own `_flip_*` wrappers.
+
+async def mark_unsent(
+    account_id: str,
+    message_id: int,
+    fan_id: int | None = None,
+    reason: str = "manual:chat",
+) -> int:
+    """Flip one per-chat mirror row to unsent. Returns rows flipped (0 when
+    we never held the row — OF still unsent it, we just have nothing to
+    mirror).
+
+    OF message ids are global, so account + message identifies the row on
+    their own and `fan_id` is optional — the relay route parses it out of an
+    optional request body. Pass it when you have it: the PK is
+    (account_id, fan_id, message_id) and nothing else indexes message_id, so
+    with the fan this is a seek and without it a scan of the account's rows.
+    Correct either way; the fallback is what keeps a bodyless unsend from
+    leaving the stale row this whole helper exists to prevent."""
+    stmt = (
+        update(Message)
+        .where(
+            Message.account_id == str(account_id),
+            Message.message_id == int(message_id),
+        )
+        .values(is_unsent=True, unsent_reason=reason,
+                unsent_at=datetime.utcnow())
+    )
+    if fan_id is not None:
+        stmt = stmt.where(Message.fan_id == int(fan_id))
+    async with get_session() as s:
+        res = await s.execute(stmt)
+    return res.rowcount or 0
+
+
+async def mark_mass_runs_unsent(
+    account_id: str,
+    mass_run_ids: Sequence[int] | Select,
+    reason: str = "manual:queue",
+) -> int:
+    """Flip mass runs' BROADCAST mirror rows once OF cancels their queue.
+    `mass_run_ids` is whatever `.in_()` takes — the ids themselves, or a
+    SELECT of them (see mark_queue_unsent).
+
+    `funnel_step IS NULL` scopes the flip to the broadcast itself: the
+    reply_mass_funnel walker stamps its per-chat follow-ups with the SAME
+    mass_run_id (+ a step number), and those stay live on OF when the queue
+    is canceled. `purchased_at IS NULL` for the same reason — OF's cancel
+    only pulls the broadcast from fans who did NOT buy it, so a purchaser
+    keeps their paid copy in-chat forever (seen live on fan FAN_ID: a
+    bought $3.99 PPV vanished from the mirror while OF still showed it)."""
+    async with get_session() as s:
+        res = await s.execute(
+            update(Message)
+            .where(
+                Message.account_id == str(account_id),
+                Message.mass_run_id.in_(mass_run_ids),
+                Message.funnel_step.is_(None),
+                Message.purchased_at.is_(None),
+                Message.is_unsent.is_(False),
+            )
+            .values(is_unsent=True, unsent_reason=reason,
+                    unsent_at=datetime.utcnow())
+        )
+    return res.rowcount or 0
+
+
+async def mark_queue_unsent(
+    account_id: str,
+    queue_id: int,
+    reason: str = "manual:queue",
+) -> int:
+    """The same flip entered from OF's queue id — what the UI's "also unsend
+    from everyone" knows. The queue → runs lookup rides along as a subquery
+    so the whole broadcast flips in ONE statement: a per-run loop could stop
+    half-applied and leave some recipients' bubbles seeding. 0 when the queue
+    was never ours — a scheduled message canceled before it ever sent has no
+    mirror rows to flip."""
+    return await mark_mass_runs_unsent(
+        account_id,
+        select(MassRun.id).where(
+            MassRun.account_id == str(account_id),
+            MassRun.queue_id == int(queue_id),
+        ),
+        reason=reason,
+    )

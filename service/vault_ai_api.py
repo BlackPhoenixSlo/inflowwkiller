@@ -478,7 +478,14 @@ def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]
         }
     # Stable, signature-free cached-thumb URL (self-heals on miss). Frontend
     # prefers this over the expiring OF url so tiles never break.
-    base["_thumb"] = f"/admin/vault-ai/thumb?account_id={item.account_id}&media_id={item.media_id}"
+    #
+    # Only for a kind that HAS a still. Its presence is the browser's whole
+    # answer to "is there a picture" — every tile surface renders it and asks
+    # nothing else — so stamping it on a voice note is not a harmless extra
+    # field, it is an instruction to fetch a picture that cannot exist. See
+    # `vault_mirror.has_still` for what that used to cost per paint.
+    if vault_mirror.has_still(item.kind):
+        base["_thumb"] = f"/admin/vault-ai/thumb?account_id={item.account_id}&media_id={item.media_id}"
     return base
 
 

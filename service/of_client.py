@@ -19,7 +19,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from curl_cffi import requests  # Chrome TLS fingerprint via libcurl-impersonate
@@ -83,6 +83,50 @@ def _wrap_text_as_p(text: str) -> str:
         .replace("\n", "<br />")
     )
     return f"<p>{escaped}</p>"
+
+
+# The release-form arrays, which OF's composer always emits together. A send
+# body either declares all three itself (the 1:1 chat send) or none of them.
+_RF_KEYS = ("rfTag", "rfGuest", "rfPartner")
+
+
+class _CoTagRetry(NamedTuple):
+    """What a 4xx retry needs to rebuild a send body's tag block.
+
+    One value rather than two loose ones, because the two are only meaningful
+    together: `None` is "we added nothing of our own, so do not retry", and
+    that state cannot be confused with "retry, keeping nobody" (`keep=[]`).
+    """
+    keep: list[int]     # the OPERATOR's own picks, the only ids that survive
+    native_rf: bool     # did the body declare the rf* arrays itself?
+
+
+def _write_tag_block(body: dict, ids: list[int], *, native_rf: bool) -> None:
+    """Put `ids` — and only `ids` — into every field a tag rides in.
+
+    The ONE definition of the tag block's shape, called both when a send is
+    built and when the 4xx retry rebuilds it from the operator's picks alone.
+    Two functions writing the same fields in opposite directions is how the last
+    silent drop shipped: the retry blanked what it had never set.
+
+    `native_rf` is whether the body declared the rf* arrays itself. Those stay
+    through an empty write — empty is their resting shape, and omitting them is
+    what used to 400 creator-to-creator sends. The ones we INTRODUCED come back
+    out instead, so a queue or wall body falls back to byte-for-byte what it
+    was: if OF ever objects to the field itself on an endpoint, the cost is an
+    untagged send, never a dead sender.
+    """
+    if ids:
+        body["userTags"] = list(ids)
+    else:
+        body.pop("userTags", None)
+    if ids or native_rf:
+        body["rfTag"] = list(ids)
+        body.setdefault("rfGuest", [])
+        body.setdefault("rfPartner", [])
+    else:
+        for key in _RF_KEYS:
+            body.pop(key, None)
 
 
 class OFClient:
@@ -539,7 +583,7 @@ class OFClient:
 
         OF accepts up to ~50 ids per call; chunk larger lists yourself.
 
-        Returns a dict keyed by user-id string: `{"117183": {...}, "470702183": {...}}`.
+        Returns a dict keyed by user-id string: `{"117183": {...}, "FAN_ID": {...}}`.
         Use `.values()` if you need a flat iterable."""
         if not user_ids:
             return {}
@@ -1183,26 +1227,45 @@ class OFClient:
     # OF's release-form rule: media showing anyone besides the account owner
     # must name that person. Enforced here rather than at the ~20 senders that
     # attach media, because a sender added later would forget — every body
-    # below that carries vault media ids goes through these two helpers.
+    # below that carries vault media ids goes through these two helpers and
+    # the module-level `_write_tag_block`.
     # See service/media_cotag.py for the solo/not-solo decision.
+    #
+    # WHERE the tag rides: `rfTag`, never `userTags`. The string `userTags`
+    # appears in ZERO of the 268 captured OF chunks — OF's own client never
+    # emits it. Every composer marshals the picks into the release-form arrays
+    # (chunk 14562): {rfTag: picks type=="user", rfGuest: …, rfPartner: …},
+    # which is the `partnerSource: "tag"` shape that comes back on a message's
+    # `releaseForms`. Proven for the 1:1 chat body 2026-08-16 (two sends with
+    # valid `userTags` → 200, `releaseForms: []`), and `rfTag` was added there —
+    # but ONLY there, on the theory that `/messages/queue` honoured `userTags`.
+    # It does not: across August 2026, 1,903 mass `ppv_send` messages with
+    # intact `raw_json` stored `releaseForms: []`, every single one, while the
+    # 1:1 lane landed its tags. (The two 2026-08-14 queue sends that looked
+    # tagged carried TWO ids where `cotags_for` returns exactly one — OF's own
+    # media-level forms, not ours.) So the arrays go on every body that tags.
+    # `userTags` stays: it costs nothing, and dropping a field OF has tolerated
+    # for months is a second change with no evidence behind it.
 
     def _apply_cotags(self, body: dict, media_files, tagged_users,
-                      auto_tag: bool) -> list[int] | None:
-        """Set the tag fields; return the OPERATOR's ids, or None if we added none.
+                      auto_tag: bool) -> _CoTagRetry | None:
+        """Decide WHO this body tags and write the block. Returns the retry plan.
 
-        Owns the whole marshalling — which ids, the int coercion, the key names,
-        and the "omit when empty" rule — so the five bodies below state none of
-        it. An operator's explicit picks always survive; the auto tag is
-        appended, never substituted. Any failure degrades to "send what the
-        caller asked for": resolving a tag must not be able to block a send.
+        Owns the decision — whose ids, the int coercion, the "operator first"
+        order — while `_write_tag_block` owns the fields, so the five bodies
+        below state neither. An operator's explicit picks always survive; the
+        auto tag is appended, never substituted. Any failure degrades to "send
+        what the caller asked for": resolving a tag must not be able to block a
+        send.
 
-        The return value is what the retry must PUT BACK, not a bare "did we add
-        one?" — both sources share one array, so a boolean left the retry unable
-        to strip selectively and it blanked a human's pick along with ours. It is
-        a LOCAL for the caller to hand to `_post_dropping_auto_cotag`,
-        deliberately not instance state — one OFClient is shared across accounts'
-        concurrent `to_thread` sends (client_pool), so anything remembered on
-        `self` would be a data race.
+        `None` back means we added nobody, so a 4xx has nothing to retry away.
+        Otherwise the plan carries the operator's ids rather than a bare "we
+        added one" — both sources share a single array, and a boolean left the
+        retry unable to strip selectively, so it blanked a human's pick along
+        with ours. It is a LOCAL for the caller to hand to
+        `_post_dropping_auto_cotag`, deliberately not instance state — one
+        OFClient is shared across accounts' concurrent `to_thread` sends
+        (client_pool), so anything remembered on `self` would be a data race.
         """
         explicit = [int(u) for u in (tagged_users or [])]
         extra: list[int] = []
@@ -1213,34 +1276,16 @@ class OFClient:
                          if u not in explicit]
             except Exception:
                 log_of.exception("co-performer tag resolution failed — sending as-is")
-        if explicit or extra:
-            body["userTags"] = explicit + extra
-            # `userTags` is NOT what tags a 1:1 chat send. OF web never sends
-            # that field — it appears in zero captured chunks — and its composer
-            # marshals the same ids into the RELEASE-FORM arrays instead:
-            #   {rfTag: picks(type=="user"), rfGuest: …, rfPartner: …}
-            # which is exactly the `partnerSource: "tag"` shape that comes back
-            # on a message's `releaseForms`. Proven live 2026-08-16: two chat
-            # sends carrying `userTags` (one an operator pick, one the auto
-            # co-tag) both returned 200 and both stored `releaseForms: []`,
-            # while `/messages/queue` sends the same day landed their tags. The
-            # ids were valid — both are on the account's tagged-friend list.
-            #
-            # Keyed off the body's own shape rather than a parameter: the chat
-            # send is the only body here that declares `rfTag`, so this reaches
-            # it and cannot touch /messages/queue, /posts or /stories. `userTags`
-            # stays because the queue path demonstrably reads it.
-            if "rfTag" in body:
-                body["rfTag"] = explicit + extra
-        # What the retry below must PUT BACK, not a bare "did we add one?".
-        # Both sources share one array, so a boolean left the retry unable to
-        # strip selectively — it blanked the lot, taking the operator's own
-        # release-form pick with it and sending the media anyway. None = we
-        # added nothing, so there is nothing to retry away.
-        return (explicit if extra else None)
+        # Read before the write, and write unconditionally: with no ids the
+        # block is a no-op on every body here (nothing sets `userTags` itself,
+        # and a native `rfTag` is already `[]`), so the untagged path needs no
+        # branch of its own.
+        native_rf = "rfTag" in body
+        _write_tag_block(body, explicit + extra, native_rf=native_rf)
+        return _CoTagRetry(explicit, native_rf) if extra else None
 
     def _post_dropping_auto_cotag(self, path: str, body: dict,
-                                  keep_tags: list[int] | None):
+                                  retry_plan: _CoTagRetry | None):
         """POST, and if OF refuses a body we auto-tagged, retry with OUR id gone.
 
         OF 400s the entire send on a tag id it does not accept, so an auto-tag
@@ -1251,24 +1296,26 @@ class OFClient:
         multi-person send is exactly what this feature exists to prevent — it
         should be visible, not silently absorbed.
 
-        `keep_tags` is the OPERATOR's own picks (None = we added nothing, so no
-        retry). The retry restores them rather than blanking the field: both
-        sources share one array, so blanking it dropped a human's explicit
-        release-form pick and shipped the media untagged behind a 200. If OF
-        refuses that second body too, it raises — an operator's own rejected
-        pick is a real error and has to surface (test_media_cotag.py).
+        `retry_plan` is None when we added nobody — then any error is the
+        caller's and raises untouched. Otherwise the retry REWRITES the block
+        from the operator's own picks through the same `_write_tag_block` that
+        built it, so the two directions cannot drift: an undo that blanked what
+        it had never set is how a human's explicit release-form pick once got
+        dropped behind a 200. If OF refuses that second body too it raises — an
+        operator's own rejected pick is a real error and has to surface
+        (test_media_cotag.py).
         """
         try:
             return self.post_json(path, json_body=body)
         except OFAPIError as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
-            if keep_tags is None or status not in (400, 422):
+            if retry_plan is None or status not in (400, 422):
                 raise
             log_of.error(
                 "OF rejected %s with auto co-tag userTags=%r rfTag=%r (%s) — "
                 "RESENDING with operator picks %r only: %s",
                 path, body.get("userTags"), body.get("rfTag"), status,
-                keep_tags, str(exc).splitlines()[0][:200],
+                retry_plan.keep, str(exc).splitlines()[0][:200],
             )
             # Forget the id OF just refused, or the resolver keeps serving it
             # for the rest of its TTL and every send pays POST → 400 → POST.
@@ -1277,18 +1324,10 @@ class OFClient:
                 media_cotag.forget_tag_id(getattr(self, "account_id", ""))
             except Exception:
                 log_of.exception("could not invalidate the rejected co-tag id")
-            # Rebuild BOTH fields the tag rides in from the operator's picks.
-            # `rfTag` is set rather than dropped — the rf* arrays are part of the
-            # body shape OF requires, and omitting them is what used to 400
-            # creator-to-creator sends. `userTags` is omitted when empty, which
-            # is the shape a never-tagged body has.
+            # The same writer, one id list shorter — the operator's picks alone.
             retry = dict(body)
-            if keep_tags:
-                retry["userTags"] = list(keep_tags)
-            else:
-                retry.pop("userTags", None)
-            if "rfTag" in retry:
-                retry["rfTag"] = list(keep_tags)
+            _write_tag_block(retry, retry_plan.keep,
+                             native_rf=retry_plan.native_rf)
             return self.post_json(path, json_body=retry)
 
     # ── Messages: write ─────────────────────────────────────────
@@ -1358,7 +1397,7 @@ class OFClient:
         # rejects unknown / non-friend ids with 400, so the picker UI is
         # the contract: only ids it surfaces will succeed. Set before the log
         # below so the diagnostic reports what OF actually receives.
-        keep_tags = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
         # Diagnostic — confirms OF receives the previews subset we expect.
         # OF silently ignores previews on free messages, so price=0 + a
         # non-empty previews list is also worth flagging.
@@ -1374,7 +1413,7 @@ class OFClient:
             body.get("giphyId"),
         )
         return self._post_dropping_auto_cotag(
-            f"{API_BASE}/chats/{chat_id}/messages", body, keep_tags)
+            f"{API_BASE}/chats/{chat_id}/messages", body, retry_plan)
 
     # ── Chat message-level writes — VERIFIED LIVE ──────────────
     # All four paths are under /messages/{id}/..., NOT /chats/{cid}/messages/{mid}/...
@@ -2008,9 +2047,9 @@ class OFClient:
             "scheduledDate": scheduled_date,
             "userIds": [int(chat_id)],
         }
-        keep_tags = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
         return self._post_dropping_auto_cotag(
-            f"{API_BASE}/messages/queue", body, keep_tags)
+            f"{API_BASE}/messages/queue", body, retry_plan)
 
     def schedule_mass_message(self, *, text: str, scheduled_date: str,
                               user_ids: list[int] | None = None,
@@ -2062,11 +2101,11 @@ class OFClient:
             merged_filters["online"] = 1
         if merged_filters:
             body["filters"] = merged_filters
-        keep_tags = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
         if giphy_id:
             body["giphyId"] = str(giphy_id)
         return self._post_dropping_auto_cotag(
-            f"{API_BASE}/messages/queue", body, keep_tags)
+            f"{API_BASE}/messages/queue", body, retry_plan)
 
     def cancel_scheduled(self, queue_id: int) -> Any:
         """DELETE /api2/v2/messages/queue/{queue_id} — cancel a scheduled send."""
@@ -2132,14 +2171,14 @@ class OFClient:
             body["filters"] = merged_filters
         if scheduled_date:
             body["scheduledDate"] = scheduled_date
-        keep_tags = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
         if giphy_id:
             # Same wire-shape as the chat send: top-level `giphyId`, sibling
             # of `mediaFiles`. OF web includes GIFs on broadcasts; mirror the
             # field so the relay forwards rather than dropping silently.
             body["giphyId"] = str(giphy_id)
         return self._post_dropping_auto_cotag(
-            f"{API_BASE}/messages/queue", body, keep_tags)
+            f"{API_BASE}/messages/queue", body, retry_plan)
 
     # ── Posts: write ───────────────────────────────────────────
 
@@ -2172,8 +2211,9 @@ class OFClient:
         if voting_due_date:     body["votingDueDate"] = voting_due_date
         if expire_period is not None: body["expirePeriod"] = expire_period
         if giphy_id:            body["giphyId"] = str(giphy_id)
-        keep_tags = self._apply_cotags(body, media_files, tagged_users, auto_tag)
-        return self._post_dropping_auto_cotag(f"{API_BASE}/posts", body, keep_tags)
+        retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        return self._post_dropping_auto_cotag(
+            f"{API_BASE}/posts", body, retry_plan)
 
     def edit_post(self, post_id: int, *,
                   text: str | None = None,
@@ -2248,7 +2288,7 @@ class OFClient:
     # ── Subscriber tools ───────────────────────────────────────
 
     # ── Fan note + custom name ─────────────────────────────────
-    # FOUND via Playwright UI capture (chat 470702183):
+    # FOUND via Playwright UI capture (chat FAN_ID):
     # `PUT /subscriptions/{user_id}` with `{notice}` OR `{displayName}` body.
     # ONE endpoint, TWO fields — clear in OF UI as "fan notes" + "custom name"
     # but they share the same OF API call. The fields can be sent together or
