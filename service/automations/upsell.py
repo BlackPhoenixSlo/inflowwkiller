@@ -624,7 +624,7 @@ def next_price(*, fan: FanState, band: tuple[int, int], last_paid_cents: int | N
     # deliberately drives the first purchase down to the $3 wire minimum — and a $3
     # first buy read literally puts his ceiling at $9, i.e. BELOW the $59 he had while
     # he was still a stranger. Buying would make him less sellable than not buying.
-    # Measured 2026-08-01 on Isabelle (337749380): a fan whose only purchases were two
+    # Measured 2026-08-01 on Dana (ACCOUNT_ID_4): a fan whose only purchases were two
     # $3 convo teasers could be quoted 2 of her 15 catalog items; the other 13 returned
     # None and he was silently offered nothing at all.
     #

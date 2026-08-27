@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from collections import defaultdict
@@ -49,6 +50,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import accounts as account_registry
 from attribution_backfill import attribute_orphans
+from cadence import boot_grace
+import client_pool
 from db.engine import engine, get_session
 from db.models import (
     Account,
@@ -67,6 +70,21 @@ import ownership
 import purchase_notifications
 
 log = logging.getLogger("of-relay.ingest_tx")
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float knob from the environment. A malformed value must not take
+    the relay down at import time — it degrades to the default, loudly."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning("ingest_bad_env name=%s value=%r — using default %.0f",
+                    name, raw, default)
+        return default
+
 
 # ── Knobs ────────────────────────────────────────────────────────────
 _TICK_INTERVAL_S = 300                  # 5 minutes (was 600 — too slow vs the 30m green tier ceiling)
@@ -91,6 +109,18 @@ _BACKFILL_CONCURRENCY = 4               # synthesis review §4
 # (interval - elapsed is far larger than the floor), so the anti-drift intent
 # is preserved exactly.
 _MIN_CYCLE_GAP_S = 5.0
+# Boot grace — how long each loop below holds its FIRST cycle after process
+# start. `_MIN_CYCLE_GAP_S` bounds a cycle that OVERRUNS; this bounds the one
+# that starts too early, which the floor cannot see. At t=0 the relay is still
+# spawning the WS pumps, the pump supervisor, the automation executor's
+# immediate first drain and the fleet-wide scrape_chats seed, so a full-fleet
+# ledger walk fired at t=0 competes with the startup it is part of — and a
+# RESTART is precisely what produced the 2026-08-21 CPU cap (three inside
+# ~64 min). Costs at most one cycle of ledger freshness on a boot and nothing
+# at all in steady state. Zero disables, for a recovery boot where freshness
+# beats politeness. See cadence.boot_grace.
+_BOOT_GRACE_S = _env_float("INGEST_BOOT_GRACE_S", 90.0)
+_FAST_BOOT_GRACE_S = _env_float("INGEST_FAST_BOOT_GRACE_S", 30.0)
 _PPV_LINK_LOOKBACK_DAYS = 30
 _FAILS_BEFORE_PAUSE = 3
 # Per-tick orphan-attribution sweep window (see attribution_backfill). Covers
@@ -921,8 +951,21 @@ async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
 # ── Supervisor / tick ───────────────────────────────────────────────
 
 def _client_for(account_id: str) -> OFClient | None:
+    """The pooled OFClient for `account_id`, or None if it cannot be built.
+
+    Goes through `client_pool` rather than `OFClient.from_account` so the two
+    ingest ticks (300s scan, 30s fast tick) reuse one long-lived client per
+    account instead of building ~18k throwaway ones a day. Each throwaway
+    started with an empty connection cache — a cold TLS handshake per call plus
+    a pure-overhead x-hash GET, since of_client caches x-hash per instance. It
+    was also the last fd-per-call site in production, the pattern that took the
+    relay to EMFILE (see client_pool's module docstring).
+
+    Do NOT close the returned client: pooled clients are shared and long-lived,
+    and eviction is the pool's job (re-bootstrap / proxy edit already call it).
+    """
     try:
-        return OFClient.from_account(account_id)
+        return client_pool.get(account_id)
     except Exception:
         return None
 
@@ -1461,6 +1504,9 @@ async def start_fast_poll() -> None:
     duration."""
     log.info("ingest_tx_fast_poll_started tick=%ds limit=%d",
              _FAST_TICK_INTERVAL_S, _FAST_PAGE_LIMIT)
+    # One tick interval of politeness, once, so the first fleet walk does not
+    # land on top of the pumps still connecting. See _FAST_BOOT_GRACE_S.
+    await boot_grace(_FAST_BOOT_GRACE_S, name="ingest-fast-poll")
     while True:
         try:
             cycle_started = time.monotonic()
@@ -1622,6 +1668,11 @@ async def start_supervisor() -> None:
         # A failed sweep doesn't block startup; the stale-age escape
         # valve is the second line of defense.
         log.warning("ingest_tx_supervisor_boot_sweep_failed", exc_info=True)
+    # AFTER the sweep, never before it: the sweep is a single cheap UPDATE that
+    # unlocks accounts the previous process left stamped in-flight, and holding
+    # it for the grace would leave /run 409-ing for that whole window. The grace
+    # covers the expensive part — the fleet walk below. See _BOOT_GRACE_S.
+    await boot_grace(_BOOT_GRACE_S, name="ingest-supervisor")
     # Sleep AT END so the inter-scan gap is _TICK_INTERVAL_S regardless
     # of how long the cycle took. Original code slept first, so a slow
     # cycle pushed the last-account stamp to (_TICK_INTERVAL_S + duration)

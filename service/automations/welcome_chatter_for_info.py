@@ -1397,57 +1397,6 @@ async def _graduate(client, account_id: str, fan_id: int, f: Fan) -> None:
                   account_id, fan_id, exc_info=True)
 
 
-# Digit- and currency-free on purpose: `compose_caption` REJECTS a voice line
-# carrying either (the claim clause above it is the contract), so a number here
-# would silently drop the whole line.
-_FAREWELL_LINE = "made u a lil something 😘 open it when ur alone"
-
-
-async def _send_gather_close(client, cfg: dict, account_id: str, fan_id: int,
-                             *, dry_run: bool = False) -> bool:
-    """The gather-close PPV: a few pictures from the operator-picked folder,
-    priced, sent as this lane's LAST message to a graduating fan.
-
-    True only when the priced send went out (or dry-ran) — every other outcome
-    (no folder configured, folder missing, pool too thin, audit refusal, wire
-    error, unexpected exception) is logged and False. NEVER RAISES, so the
-    caller's graduation can never hinge on a send.
-
-    The folder knob doubles as the switch: empty → the feature is off and this
-    returns immediately. Media resolution is `_vault_pick.folder_media_pool` —
-    the one name→ids read every folder-configured lane shares.
-    """
-    folder = str((cfg or {}).get("gather_close_folder") or "").strip()
-    if not folder:
-        return False
-    try:
-        # `pack_farewell` plans it (its own product), `pack_sender` ships it
-        # (the wire every lane shares).
-        from . import _vault_pick, pack_farewell, pack_sender
-        pool = await asyncio.to_thread(_vault_pick.folder_media_pool, client, folder)
-        if pool is None:
-            log.info("gather-close folder not found account=%s name=%r",
-                     account_id, folder)
-            return False
-        d, refused = await pack_farewell.plan_farewell_delivery(
-            account_id, fan_id, pool,
-            price_cents=int(cfg.get("gather_close_price_cents") or 1000),
-            count=int(cfg.get("gather_close_count") or 3),
-            cfg=cfg)
-        if d is None:
-            log.info("gather-close refused account=%s fan=%s: %s %s",
-                     account_id, fan_id, refused.get("reason"),
-                     refused.get("detail") or "")
-            return False
-        res = await pack_sender.deliver(client, d, voice_line=_FAREWELL_LINE,
-                                        dry_run=dry_run)
-        return str(res.get("status")) in ("ok", "dry_run")
-    except Exception:
-        log.warning("welcome_chatter_for_info gather-close failed account=%s fan=%s",
-                    account_id, fan_id, exc_info=True)
-        return False
-
-
 async def _maybe_push_nickname(client, account_id: str, fan_id: int, f: Fan) -> None:
     """Update the structured nickname EVERY convo tick and push it to OF when it
     changed (V1 apply_nickname_in_chat). Mirrors to fans.custom_nickname. Notes are
@@ -1877,14 +1826,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     lane = await sell_lane.for_run(account_id, engine=_PURPOSE,
                                    permission_key="welcome_chatter_for_info_sell_on_ask")
 
-    async def _close_with_farewell(fan_id: int) -> None:
+    async def _close_with_farewell(fan_id: int, f: Fan | None) -> None:
         """The gather-close PPV + its bookkeeping — ONE copy for both graduation
-        paths (the runaway cut and the info handoff). `_send_gather_close` never
+        paths (the runaway cut and the info handoff). `send_gather_close` never
         raises; a False just means the graduation goes out silent, as it always
-        did. A priced send IS a send — lease + state as one."""
+        did. A priced send IS a send — lease + state as one.
+
+        This is the FIRST attempt on the fan's retry clock, not the only one:
+        `ai_chatter` re-offers to a graduate its payer floor turns away, every
+        `pack_farewell.GATHER_CLOSE_RETRY_DAYS`. `f` carries the clock."""
         nonlocal farewells_sent, sent, sent_ok
-        if await _send_gather_close(client, lane.cfg, account_id, fan_id,
-                                    dry_run=dry_run):
+        from . import pack_farewell
+        if await pack_farewell.send_gather_close(client, lane.cfg, account_id,
+                                                 fan_id, f, dry_run=dry_run):
             farewells_sent += 1
             sent += 1
             sent_ok = True
@@ -1913,7 +1867,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # extract first — the old cut path never spent an LLM call on him,
             # and the graduation's gen_info regen still runs.
             if c.farewell:
-                await _close_with_farewell(fan_id)
+                await _close_with_farewell(fan_id, f)
                 await _skip_and_collect(account_id, fan_id, "too_long")
                 newly_skiplisted += 1
                 continue
@@ -1972,7 +1926,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # PPV (folder knob set) so the graduation's last message is
                     # the parting set, not the tail of a question. A refusal
                     # changes nothing: he graduates either way.
-                    await _close_with_farewell(fan_id)
+                    await _close_with_farewell(fan_id, f)
                     await _graduate(client, account_id, fan_id, f)
                     newly_skiplisted += 1
                     continue  # finally releases the lease

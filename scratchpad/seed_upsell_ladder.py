@@ -18,7 +18,7 @@ from sqlalchemy import select
 from db.engine import get_session
 from db.models import CatalogItem, Account
 
-TARGET_NICKNAMES = ["the graded vault", "the graded vault", "the graded vault", "sakai free", "Lexi", "maile free"]
+TARGET_NICKNAMES = ["the graded vault", "the graded vault", "the graded vault", "a seller free", "Ava", "a second seller free"]
 
 # (label, kind, description_for_ai, price_cents, tip_unlock_cents)
 LADDER = [

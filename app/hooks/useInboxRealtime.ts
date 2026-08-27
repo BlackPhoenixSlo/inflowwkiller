@@ -82,7 +82,7 @@ export interface ChatTarget {
  * outbound event omits the recipient, so worker-emitted outbound events carry
  * the recipient as `__fan_id` (with `toUser.id` as a fallback). Returns null for
  * a malformed event OR a bare OF outbound echo with no recipient to route to —
- * those are left to the optimistic path + the 60s chat-list refetch.
+ * those are left to the optimistic path + the 90s chat-list poll.
  */
 export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
   const accountId = e.__account_id ?? null;
@@ -403,7 +403,8 @@ export function useInboxRealtime() {
         const base: OFChatItem = existing ?? ({
           __accountId: accountId,
           // Outbound to a fan not yet in the list: fromUser is US, so we don't
-          // know the fan's name — leave it blank; the 60s refetch fills it in.
+          // know the fan's name — leave it blank; the 90s head-page poll fills
+          // it in (we prepend to page 0, which is the page that poll re-reads).
           withUser: {
             id: fanId,
             name: isOutbound ? "" : (fromUser.name ?? fromUser.username ?? ""),
@@ -456,8 +457,10 @@ export function useInboxRealtime() {
     // but with useInfiniteQuery that refetches *every* loaded page — after a
     // few "load more" clicks that becomes 40+ pages per OF preview event.
     // The api2_chat_message handler above already patches rows in place
-    // (preview, unread flag), and the 60s refetchInterval on useChatList
-    // covers anything that slipped through.
+    // (preview, unread flag) across EVERY page, and useChatList's 90s poll —
+    // head page only since the P4 fix, see `useHeadPagePoll` — covers anything
+    // that slipped through near the top. Deep rows keep moving on this handler
+    // alone, which is exactly why the poll no longer needs to re-walk them.
 
     return () => { offMsg(); offTx(); };
   }, [qc]);

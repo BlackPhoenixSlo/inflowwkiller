@@ -26,11 +26,12 @@ import MassMessagesTab from "@/components/settings/MassMessagesTab";
 import AutoStoriesTab from "@/components/settings/AutoStoriesTab";
 import RestrictionsTab from "@/components/settings/RestrictionsTab";
 import TransferTab from "@/components/settings/TransferTab";
+import LanesTab from "@/components/settings/LanesTab";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { cn } from "@/lib/utils";
 
-type Tab = "employees" | "chatters" | "templates" | "scheduled" | "mass" | "stories" | "restrictions" | "audit" | "transfer";
+type Tab = "employees" | "chatters" | "templates" | "scheduled" | "mass" | "stories" | "restrictions" | "audit" | "transfer" | "lanes";
 
 interface TabDef {
   key: Tab;
@@ -51,6 +52,8 @@ const TABS: TabDef[] = [
   { key: "restrictions", label: "Restrictions" },
   { key: "transfer",  label: "Transfer model", chatterHidden: true },
   { key: "audit",     label: "Audit log",      chatterHidden: true },
+  // Owner-only: it reports process-wide ceilings, which are not a chatter concern.
+  { key: "lanes",     label: "Concurrency",   chatterHidden: true },
 ];
 
 export default function SettingsPage() {
@@ -91,6 +94,7 @@ export default function SettingsPage() {
       {tab === "restrictions" && <RestrictionsTab />}
       {tab === "transfer" && !isChatterOnly && <TransferTab />}
       {tab === "audit" && !isChatterOnly && <AuditTab />}
+      {tab === "lanes" && !isChatterOnly && <LanesTab />}
     </div>
   );
 }

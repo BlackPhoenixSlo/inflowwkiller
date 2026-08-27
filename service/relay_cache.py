@@ -202,6 +202,39 @@ def invalidate(
     return removed
 
 
+# The namespaces whose bodies show MONEY — see `invalidate_money_feeds`.
+_MONEY_FEED_NAMESPACES = ("notifications", "notifications_count", "init")
+
+
+def invalidate_money_feeds(account_id: str) -> int:
+    """Drop every cached view of an account's money.
+
+    OF serves three facts off one upstream state — the notifications feed,
+    its per-category badge counts, and the counts embedded in the /init
+    bootstrap — so a tip, a subscribe or a PPV unlock changes all three at
+    once. Callers are the money-event paths: an inbound tip and a `toasts`
+    frame (`event_transcoder`), and a PPV purchase
+    (`purchase_notifications._broadcast_purchase`). Each is the server-side
+    twin of a client-side `["notif-list", aid]` invalidation in
+    `NotificationToaster` — the browser refetches the moment it hears the
+    event, so if the relay does not drop its own entry on the SAME event,
+    that refetch just re-reads our cached body and the feed lags the toast
+    by a whole TTL.
+
+    One named set rather than three `invalidate()` calls per site, because
+    the three are one fact. Re-deriving the set at each event path is how
+    the purchase lane — the only one that fires in production — ended up
+    busting the feed but neither the badge nor `init`, and `init` has a
+    5-minute TTL. A named set has one place to be wrong.
+
+    Sync (RAM-only), like `invalidate`. Returns the total count removed.
+    """
+    removed = 0
+    for namespace in _MONEY_FEED_NAMESPACES:
+        removed += invalidate(namespace, account_id)
+    return removed
+
+
 def invalidate_account(account_id: str) -> int:
     """Drop EVERY cached entry for an account across ALL namespaces.
 

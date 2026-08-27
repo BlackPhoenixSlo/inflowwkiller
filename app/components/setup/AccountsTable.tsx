@@ -31,6 +31,8 @@ interface HealthAllResp {
     ok: boolean;
     name?: string;
     error?: string;
+    timed_out?: boolean;
+    message?: string;
     upstream_body?: string;
     upstream_status?: number;
     proxy?: { label?: string | null; url?: string | null } | null;
@@ -50,8 +52,9 @@ export default function AccountsTable() {
     queryKey: ["health-all"],
     queryFn: () => relay.get<HealthAllResp>("/health?all_accounts=1"),
     staleTime: 60_000,
-    // Probing live OF can take 2-5s per account; keep the table
-    // responsive by showing accountsQ data first and overlaying health.
+    // Still a live OF round-trip per account (bounded + budgeted server-side,
+    // see server.py's `_health_all_accounts`), so keep the table responsive by
+    // showing accountsQ data first and overlaying health when it lands.
   });
 
   const renameM = useMutation({
@@ -179,6 +182,12 @@ function Row({
       statusBadge = <Badge color="muted">probing…</Badge>;
     } else if (health.ok) {
       statusBadge = <Badge color="ok">live · {health.name || "OF"}</Badge>;
+    } else if (health.timed_out) {
+      // A probe that outran the relay's budget is NOT a verdict on the session:
+      // the relay stopped waiting, it did not cancel, and the OF call is still
+      // running upstream. Red here would flag a healthy-but-slow account as
+      // dead, which is the one failure the budget must not manufacture.
+      statusBadge = <Badge color="warn" title={health.message}>still probing…</Badge>;
     } else {
       statusBadge = <Badge color="err">{health.error || "down"}</Badge>;
     }

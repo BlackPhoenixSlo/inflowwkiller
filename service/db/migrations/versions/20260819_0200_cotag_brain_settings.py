@@ -7,7 +7,7 @@ send:
     operator's opt-in on a collab account: any send attaching a vault VIDEO
     carries the co-performer tag even when the describe verdict says solo.
     Video describes are cut from stills and miss the POV partner, which is how
-    Lucas1/Lucas2 clips shipped untagged.
+    blake/blake clips shipped untagged.
   • cotag_username — the handle to tag, no '@'. NULL → OF_COTAG_USERNAME env →
     the built-in 'jakabasej'.
 

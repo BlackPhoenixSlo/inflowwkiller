@@ -68,7 +68,7 @@ def bundle_plan(price_cents: int, sizing: BundleSizing, *,
     budget 4 → 1 premium + 1 normal + 2 free = 4 photos.
 
     The `min_photos` floor is what stops a SOFTENED ask landing under one weight
-    unit and rounding to a lonely single — live on 337749380, a $13.34 tease sent
+    unit and rounding to a lonely single — live on ACCOUNT_ID_4, a $13.34 tease sent
     exactly one image at $10/photo, as did its $6.67 predecessor. `max_photos`
     stays the hard ceiling, clamping the floor if the two ever cross."""
     price = int(price_cents or 0)

@@ -67,6 +67,9 @@ import automation_executor as ax  # shared _make_client seam (tests patch ax._ma
 from automation_registry import register
 from db.engine import get_session
 from db.models import Action, MassBroadcastCache, MassRun, Message, Post
+from messages import mark_mass_runs_unsent, mark_unsent  # the mirror-write half
+
+UNSENT_REASON = "automation:unsend_messages"  # stamped on every row we flip
 
 log = logging.getLogger("of-relay.automation.unsend")
 
@@ -443,55 +446,16 @@ async def _refresh_mass_cache(account_id: str, client) -> bool:
     return True
 
 
-async def _flip_chat_unsent(account_id: str, fan_id: int, message_id: int) -> int:
-    """Mark one per-chat message unsent in our DB. Returns rows flipped (0 if we
-    don't hold the row — OF still unsent it; we just have nothing to mirror)."""
-    now = datetime.utcnow()
-    async with get_session() as s:
-        res = await s.execute(
-            update(Message)
-            .where(
-                Message.account_id == str(account_id),
-                Message.fan_id == int(fan_id),
-                Message.message_id == int(message_id),
-            )
-            .values(is_unsent=True, unsent_reason="automation:unsend_messages", unsent_at=now)
-        )
-    return res.rowcount or 0
-
-
 async def _flip_mass_unsent(account_id: str, mass_run_id: int | None) -> int:
     """Mark a mass run's BROADCAST rows unsent once OF cancels the queue.
     Without a `mass_run_id` we can't map the OF queue id back to our rows, so we
     flip nothing locally (the OF unsend still happened). Returns rows flipped.
-
-    `funnel_step IS NULL` scopes the flip to the broadcast itself: the
-    reply_mass_funnel walker stamps its per-chat follow-up sends with the SAME
-    mass_run_id (+ a step number), and those are individual messages that stay
-    live on OF when the queue is canceled — flipping them would hide real,
-    still-delivered bubbles from every is_unsent reader.
-
-    `purchased_at IS NULL` for the same reason: OF's queue cancel only pulls
-    the broadcast from fans who did NOT buy it — a purchaser keeps their paid
-    copy in-chat forever. Flipping a purchased row hid bought PPVs from the
-    thread mirror (seen live: fan 550702326's $3.99 buy vanished locally while
-    OF still showed it)."""
+    The funnel-step / purchased-row guards live in `messages.mark_mass_runs_unsent`,
+    shared with the relay's manual "unsend from everyone" route."""
     if mass_run_id is None:
         return 0
-    now = datetime.utcnow()
-    async with get_session() as s:
-        res = await s.execute(
-            update(Message)
-            .where(
-                Message.account_id == str(account_id),
-                Message.mass_run_id == int(mass_run_id),
-                Message.funnel_step.is_(None),
-                Message.purchased_at.is_(None),
-                Message.is_unsent.is_(False),
-            )
-            .values(is_unsent=True, unsent_reason="automation:unsend_messages", unsent_at=now)
-        )
-    return res.rowcount or 0
+    return await mark_mass_runs_unsent(account_id, [int(mass_run_id)],
+                                       reason=UNSENT_REASON)
 
 
 async def _flip_cache_canceled(account_id: str, queue_id: int) -> int:
@@ -685,8 +649,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await asyncio.to_thread(
                     client.unsend_message, t["message_id"], t["fan_id"]
                 )
-                flipped = await _flip_chat_unsent(
-                    account_id, t["fan_id"], t["message_id"]
+                flipped = await mark_unsent(
+                    account_id, t["message_id"], fan_id=t["fan_id"],
+                    reason=UNSENT_REASON,
                 )
             await _write_action(account_id, t, flipped)
             unsent += 1

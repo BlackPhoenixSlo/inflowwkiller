@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
-import { searchOf, useMirrorItems, useVaultCacheSummary } from "@/hooks/useVaultCache";
+import { searchOf, useMirrorItems, useVaultCacheSummary, vaultTileThumb } from "@/hooks/useVaultCache";
 import { useFanVaultHistory, type FanVaultEntry } from "@/hooks/useFanVaultHistory";
 import { useWallMedia } from "@/hooks/useWallMedia";
 import { useBlurMode, blurImageClass } from "@/hooks/useBlurMode";
@@ -1240,17 +1240,10 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
           >
             {visibleItems.map((m, tileIdx) => {
               const selected = selectedIds.has(m.id);
-              const rawThumb =
-                m.files?.thumb?.url ||
-                m.files?.squarePreview?.url ||
-                m.files?.preview?.url ||
-                null;
-              // Prefer the relay's PERMANENT cached 300px thumb (present on
-              // mirror/cache-path items as `_thumb`) over the expiring OF CDN
-              // url — instant, signature-free, and no re-fetch/re-cache. Falls
-              // back to the proxied raw url on the live (uncached) path.
-              const cachedThumb = (m as unknown as { _thumb?: string })._thumb;
-              const thumb = cachedThumb || proxyImage(rawThumb, accountId);
+              // Permanent cached thumb on the mirror path, proxied OF url on the
+              // live one, "" for a media with no picture at all (a voice note) —
+              // in which case the `{m.type}` placeholder below renders.
+              const thumb = vaultTileThumb(m, accountId);
               // The playable mp4 — null for DRM-only videos. We do NOT fall
               // back to files.preview.url here: that's a static poster JPEG,
               // and feeding it to <video>/`/img/scrub` is exactly what made

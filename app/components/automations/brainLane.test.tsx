@@ -29,7 +29,7 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 // The panel's non-lane dependencies. Everything else is real, because the thing
 // under test is BrainPanel's own wiring.
 vi.mock("@/hooks/useAccounts", () => ({
-  useActiveAccounts: () => [{ id: "2024813", username: "lucas" }],
+  useActiveAccounts: () => [{ id: "ACCOUNT_ID_2", username: "blake" }],
 }));
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
 vi.mock("@/hooks/useVaultMediaByIds", () => ({ useVaultMediaByIds: () => ({}) }));
@@ -42,7 +42,7 @@ import { relay } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
 
-const ACC = "2024813";
+const ACC = "ACCOUNT_ID_2";
 
 let client: QueryClient;
 const wrapper = ({ children }: { children: ReactNode }) =>
@@ -67,7 +67,7 @@ describe("the starter brain follows the SELECTED lane", () => {
     defaults: { persona: "You are Ava, flirty and fabulous." },
     defaults_by_voice: {
       her: { persona: "You are Ava, flirty and fabulous." },
-      him: { persona: "You are Lucas, a fighter's build." },
+      him: { persona: "You are blake, a fighter's build." },
     },
     persona_fact_fields: [
       { key: "why_of", label: "Why she started OF", placeholder: "", operator_only: false }],
@@ -111,7 +111,7 @@ describe("the starter brain follows the SELECTED lane", () => {
     // The bug this branch exists to fix: one click turned a male account into a
     // 22-year-old woman with "him" still selected in the dropdown.
     await waitFor(() =>
-      expect(screen.getByDisplayValue("You are Lucas, a fighter's build.")).toBeTruthy());
+      expect(screen.getByDisplayValue("You are blake, a fighter's build.")).toBeTruthy());
     expect(screen.queryByDisplayValue("You are Ava, flirty and fabulous.")).toBeNull();
     expect((creatorSelect() as HTMLSelectElement).value).toBe("him");
   });
@@ -127,10 +127,10 @@ describe("the starter brain follows the SELECTED lane", () => {
     expect(screen.queryByText("Why she started OF")).toBeNull();
     // …and a blank male account seeds from the MALE starter brain, not Ava.
     await waitFor(() =>
-      expect(screen.getByDisplayValue("You are Lucas, a fighter's build.")).toBeTruthy());
+      expect(screen.getByDisplayValue("You are blake, a fighter's build.")).toBeTruthy());
     await act(async () => { fireEvent.click(screen.getByText("Reset to defaults")); });
     await waitFor(() =>
-      expect(screen.getByDisplayValue("You are Lucas, a fighter's build.")).toBeTruthy());
+      expect(screen.getByDisplayValue("You are blake, a fighter's build.")).toBeTruthy());
     expect(screen.queryByDisplayValue("You are Ava, flirty and fabulous.")).toBeNull();
   });
 
@@ -141,7 +141,7 @@ describe("the starter brain follows the SELECTED lane", () => {
    *  Reset: a control that cannot be answered for is not clickable. */
   it("Enrich is not clickable while the canon slate is empty", async () => {
     await mount({ ...ACCOUNT_CONFIG,
-                  config: { ...ACCOUNT_CONFIG.config, persona: "Lucas, written by hand." },
+                  config: { ...ACCOUNT_CONFIG.config, persona: "blake, written by hand." },
                   persona_fact_fields_by_voice: {} });
     expect((screen.getByText("🪄 Enrich") as HTMLButtonElement).disabled).toBe(true);
   });

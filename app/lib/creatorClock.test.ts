@@ -6,7 +6,7 @@ import {
 
 /**
  * The creator clock. These are the functions that decide what an operator picks
- * and therefore what a fan is told the time is — Isabelle spent days telling new
+ * and therefore what a fan is told the time is — Dana spent days telling new
  * subscribers "it's Friday night in US" at 07:38 her time because two clocks were
  * stored and the invisible one won.
  *

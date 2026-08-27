@@ -23,6 +23,7 @@ import { TagCreatorsPicker, TaggedCreatorChips, type TaggedCreatorChoice } from 
 import { EmojiPickerButton, EmojiQuickRow, insertAtCursor } from "@/components/chat/EmojiBar";
 import { GifPickerButton, GifPickerStrip, type PickedGif } from "@/components/chat/GifPicker";
 import { Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import { AccountChips } from "@/components/AccountChips";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useSavedReplies,
@@ -328,29 +329,11 @@ export default function TemplatesTab() {
             {tplQ.isFetching || replyQ.isFetching ? "Refreshing…" : "Refresh"}
           </Button>
         </div>
-        {accounts.length > 1 && (
-          <div className="flex items-center gap-1.5 flex-wrap mb-3">
-            <span className="text-[10px] uppercase tracking-wide text-fg-dim mr-1">Account</span>
-            {accounts.map((a) => {
-              const active = accountId === a.id;
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => { setAccountId(a.id); setDraft(null); }}
-                  className={cn(
-                    "px-2.5 py-1 rounded-full text-xs border transition-colors",
-                    active
-                      ? "bg-accent text-white border-accent"
-                      : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg hover:border-fg-dim",
-                  )}
-                >
-                  {a.nickname || a.id}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <AccountChips
+          accountId={accountId}
+          onChange={(id) => { setAccountId(id); setDraft(null); }}
+          className="mb-3"
+        />
 
         {(tplQ.error || replyQ.error) && (
           <div className="text-sm text-err mb-3">

@@ -93,9 +93,11 @@ export default function AudienceSection({
       <p className="text-[11px] text-fg-dim">
         Run automations on fans in one folder. Off = everyone (today&apos;s
         behavior). Shadow = nothing changes, but every would-be skip is counted
-        so the cost is readable before you enforce. Enforce = gated automations
-        act on folder members; broadcasts keep their audience and subtract
-        everyone else via the AUTOFENCE list.
+        so the cost is readable before you enforce. Enforce = folder members
+        only, and that covers priced sends as well as chat: per-tier PPV sends
+        are intersected with the folder too, so PPV reach drops with it. List
+        broadcasts keep their audience and subtract everyone else via the
+        AUTOFENCE list.
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <label className="block space-y-1">
@@ -158,10 +160,12 @@ export default function AudienceSection({
         </p>
       )}
       <p className="text-[11px] text-fg-dim">
-        Exemptions — these still reach fans regardless of the folder:
+        Exemptions — these escape the folder fence:
         manual/chatter sends (including force-targeted runs), tip-reward
         acknowledgments, make-right repair messages, unsend cleanup, profile
-        posts &amp; stories, and OF&apos;s own native welcome message.
+        posts &amp; stories, OF&apos;s own native welcome message, and the PPV
+        house broadcast (&quot;following + fans&quot;), which already excludes
+        every known fan and so only ever reaches people outside your fan list.
         &quot;Only this folder&quot; always means: only, except this list.
       </p>
     </div>

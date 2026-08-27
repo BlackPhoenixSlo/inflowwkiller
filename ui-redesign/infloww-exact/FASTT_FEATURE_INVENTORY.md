@@ -140,7 +140,7 @@ surfaces, (c) turn the ~11 invisible-plumbing automations into toggle cards with
 > Read live from the VPS on 2026-07-22 (`account_ai_config` + `automation_rules`, cross-referenced against
 > the code defaults). **These are the values to PREFILL** in the beginner-first UI so the mockup mirrors the
 > real setup — not the ship-disabled code defaults. "Code" = fresh-account fallback; "PROD" = what's set on the
-> ~10 active seller accounts (Isabelle, Fernanda, Aria×2, Jade, Sofia, Camilla, Ava, Sakai, Maile).
+> ~10 active seller accounts (names withheld).
 >
 > ⚠️ **CORRECTED same day after the DB recovery — reference accounts = the graded vault + Ava** (per the operator).
 > Where 4b–4f below disagree with this block, THIS block wins:

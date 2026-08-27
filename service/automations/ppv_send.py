@@ -29,6 +29,10 @@ Per run it:
   4. if `resend_monthly`, enqueues a one-shot `ppv_send` at now+30d (a later day →
      a different rotated preview). Buyers drop out (exclude_buyers); non-buyers keep
      getting the same locked content re-pitched with a new teaser until they unlock.
+  5. `owner_second_leg` (per account, default OFF): the fans step 3's ownership
+     guard removed get a SECOND cell pass with a different library PPV instead of
+     nothing. Cells only, and its ledger rows carry `{ppv_id}#sub` so neither the
+     duplicate gate nor the rotator can see them. See `_pick_second_ppv`.
 
 Idempotency / duplicate-fire protection:
   • duplicate-fire gate — skip when THIS ppv already sent (cells_sent>0) within
@@ -86,6 +90,7 @@ from db.models import (
 from ._common import load_hard_skip_ids, load_voice_blocks
 from ._leash import _last_money_at
 from . import _customs, _ghost, _voice
+from . import describe_media
 
 log = logging.getLogger("of-relay.automation.ppv_send")
 
@@ -874,7 +879,7 @@ def _pct_off(now_cents: int, was_cents: int) -> int:
 
 
 def _pick_caption(ppv: dict, cell_price_cents: int, lang: str = "en",
-                  voice: str = _voice.VOICE_HER) -> str:
+                  voice: str = _voice.VOICE_HER, hook: str | None = None) -> str:
     """Random caption (custom caption_texts win over the pool), discount tokens filled:
     {now} = this segment's price, {was} = an auto anchor ~4x above (always a discount),
     {off} = the resulting percent off (e.g. '75%'). `lang` selects the language pool
@@ -907,7 +912,12 @@ def _pick_caption(ppv: dict, cell_price_cents: int, lang: str = "en",
         line = (line.replace("{now}", _money(cell_price_cents))
                     .replace("{was}", _money(was))
                     .replace("{off}", f"{_pct_off(cell_price_cents, was)}%"))
-    return line
+    # `hook` is a model-written line about the MEDIA, generated once per run and
+    # identical across every cell — the pool line under it is what carries this
+    # cell's price. Composed AFTER the token fill on purpose: the hook is inert
+    # text, never a template, so a stray brace in model output can never be
+    # interpreted as a price token.
+    return f"{hook}\n\n{line}" if hook else line
 
 
 def _rotate_preview(pool: list, idx: int) -> list[int]:
@@ -1262,6 +1272,30 @@ async def _all_fan_ids(account_id: str) -> list[int]:
 _owners_of_media = ownership.owners_of_media
 
 
+# ── what a library entry's media IS ──────────────────────────────────────────
+def _clean_media_ids(ppv: dict) -> list[int]:
+    return [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
+
+
+class PpvMedia(NamedTuple):
+    """A library entry's media, resolved once: everything attached, and the slice
+    of it shown FREE as the teaser. They travel together everywhere — the send
+    payload, the ownership question, the preview rotation — so they are one value
+    and not two locals that can drift apart on the second leg."""
+    ids: list[int]
+    previews: list[int]
+
+
+def _ppv_media(ppv: dict) -> PpvMedia:
+    """Resolve a library entry's media. OF `previews` are attached media shown FREE,
+    so each preview id MUST also be in media_files — anything else → OF 400 "Wrong
+    preview". Non-members are dropped; an empty pool = a fully locked PPV (valid)."""
+    ids = _clean_media_ids(ppv)
+    keep = set(ids)
+    return PpvMedia(ids, [int(x) for x in (ppv.get("preview_options") or [])
+                          if str(x).strip() and int(x) in keep])
+
+
 async def _hero_media_ids(account_id: str, media_ids: list[int],
                           preview_ids: list[int]) -> list[int]:
     """Plain-id-list adapter over `ownership.hero_media_map` for the
@@ -1270,6 +1304,30 @@ async def _hero_media_ids(account_id: str, media_ids: list[int],
         account_id,
         {0: ([int(x) for x in media_ids],
              [int(x) for x in (preview_ids or [])])}))[0]
+
+
+async def _split_owners(account_id: str, media: PpvMedia,
+                        rows: list) -> tuple[list, list]:
+    """Partition fan rows into (may be sent this PPV, already own it).
+
+    HERO media only (operator ruling 07-23): the previews pool is the free-visible
+    tease slice, so a fan who merely owns a shared preview frame is still sendable
+    — only owning the payoff (a video, or a non-preview image) puts him on the
+    right-hand side. Preview-listed ids the vault mirror knows are VIDEOS stay hero
+    (a video is never mere filler). No previews ⇒ hero == the full media set.
+
+    BOTH legs ask this, about different PPVs: the primary leg to find the owners it
+    must not re-sell to, the owner leg to drop whoever owns the substitute as well.
+    One function so the second pass can never become a weaker version of the first.
+    Nobody owns the media ⇒ the right-hand list is empty and nothing moves."""
+    owners = await _owners_of_media(
+        account_id, await _hero_media_ids(account_id, media.ids, media.previews))
+    if not owners:
+        return list(rows), []
+    keep, held = [], []
+    for r in rows:
+        (held if int(r[0]) in owners else keep).append(r)
+    return keep, held
 
 
 # ── Per-account cap: max PPV sends per rolling day / week / month ────────────
@@ -1430,10 +1488,6 @@ def _load_ppv(cfg_json: str | None, ppv_id: str) -> tuple[dict, dict] | tuple[No
     return None, cfg
 
 
-def _clean_media_ids(ppv: dict) -> list[int]:
-    return [int(x) for x in (ppv.get("media_ids") or []) if str(x).strip()]
-
-
 def _unsendable_reason(cfg: dict, ppv: dict) -> str | None:
     """Why this library entry cannot send right now — None means it can. THE
     definition of sendability, shared by run()'s gates and the rotator's
@@ -1482,6 +1536,56 @@ _ROTATION_LOOKBACK = timedelta(seconds=_WEEK_S + 86_400)
 _LAST_PICKED: dict[str, dict[str, datetime]] = {}
 
 
+# ── the owner leg's ledger ref ───────────────────────────────────────────────
+# The second leg stamps `{ppv_id}#sub` instead of the bare id, and that suffix is
+# LOAD-BEARING, not decoration. Exactly two things read `$.ref`, both in this
+# module: the duplicate-fire gate (exact match on the id) and `_pick_due_ppv`
+# (group-by). A suffixed ref is invisible to both with ZERO changes to either —
+# which is the whole point. Deliver PPV B to ~13 owners under a BARE ref and the
+# ledger says "B was delivered": the rotator then withholds B from its real
+# ~400-fan audience until B's own gap expires, every tick burns two PPVs instead
+# of one, and main blast throughput HALVES.
+# Ownership stamping is unaffected either way — that rides
+# mass_run_id → queue_id → the broadcast cache, never `$.ref`.
+# `#` is RESERVED in a library id. The config API refuses it at the one place ids
+# enter the system, which is what turns `_base_ref` from a hopeful string
+# operation into a sound one: no operator-authored id can ever collide with, or
+# be folded onto, another entry's starvation clock.
+_REF_RESERVED = "#"
+_SUB_REF_SUFFIX = _REF_RESERVED + "sub"
+
+
+def _base_ref(ref) -> str:
+    """A ledger ref back to the PPV id it belongs to — `p7#sub` → `p7`. Only the
+    owner leg's OWN starvation ranking uses this; the dup gate and `_pick_due_ppv`
+    deliberately keep reading the raw ref, which is how the suffix stays invisible
+    to them."""
+    r = str(ref or "")
+    return r[:-len(_SUB_REF_SUFFIX)] if r.endswith(_SUB_REF_SUFFIX) else r
+
+
+async def _delivered_by_ref(account_id: str, now: datetime) -> dict[str, datetime]:
+    """Newest DELIVERED ppv_send per ledger ref, within the rotation window — the
+    starvation clock both pickers rank on, read once.
+
+    Keys are the ref exactly as it was STAMPED, never normalized here. That is the
+    whole reason the two pickers can share this: `_pick_due_ppv` looks up a bare
+    ppv id and so a `{id}#sub` row simply never matches it (which is what keeps the
+    owner leg invisible to the rotator), while `_pick_second_ppv` folds the suffix
+    itself because it must see its own deliveries. Normalizing here would silently
+    hand the rotator the one fact it must not have."""
+    ref = func.json_extract(MassRun.audience_filter, "$.ref")
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(ref, func.max(MassRun.started_at)).where(
+                MassRun.account_id == str(account_id),
+                MassRun.automation_kind == "ppv_send",
+                MassRun.status == "ok",
+                MassRun.started_at >= now - _ROTATION_LOOKBACK,
+            ).group_by(ref))).all()
+    return {str(r): t for r, t in rows if r and t is not None}
+
+
 def _ppv_gap_seconds(sends_per_week) -> int:
     try:
         spw = int(sends_per_week or 1)
@@ -1508,17 +1612,7 @@ async def _pick_due_ppv(account_id: str, cfg: dict, now: datetime) -> dict | Non
     if not cands:
         return None
 
-    ref = func.json_extract(MassRun.audience_filter, "$.ref")
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(ref, func.max(MassRun.started_at)).where(
-                MassRun.account_id == str(account_id),
-                MassRun.automation_kind == "ppv_send",
-                MassRun.status == "ok",
-                MassRun.started_at >= now - _ROTATION_LOOKBACK,
-            ).group_by(ref))).all()
-    last_sent = {str(r): t for r, t in rows if r}
-
+    last_sent = await _delivered_by_ref(account_id, now)
     picked = _LAST_PICKED.get(str(account_id)) or {}
     due: list[tuple[datetime, int, dict]] = []
     for idx, p in enumerate(cands):
@@ -1533,6 +1627,230 @@ async def _pick_due_ppv(account_id: str, cfg: dict, now: datetime) -> dict | Non
         return None
     due.sort(key=lambda t: (t[0], t[1]))
     return due[0][2]
+
+
+async def _pick_second_ppv(account_id: str, cfg: dict, now: datetime,
+                           *, exclude_id: str) -> dict | None:
+    """Which PPV does the OWNER leg send? The most-starved sendable entry that is
+    not the one the primary leg just sent. None = the library has no substitute.
+
+    Three ways this differs from `_pick_due_ppv`, all deliberate:
+
+    • NO DUE GATE. `sends_per_week` is a minimum gap for the MAIN audience — the
+      several-hundred-fan blast. This leg reaches the handful the ownership guard
+      just removed (≤15 on the measured accounts), and going early to those is
+      fine. Honouring the gate here would make the feature almost never fire on
+      exactly the accounts that need it: Ava has 3 rotator PPVs against a 14/week
+      cap, so `_pick_due_ppv` returns None most ticks.
+
+    • ARC ENTRIES ARE ELIGIBLE. The rotator fences `arc_owned` out because those
+      fire once, on their own day, via vault_arc's one-shot. Here they are
+      inventory — and they are what makes the leg work on a thin library (Ava's
+      pool goes 3 → ~19). ONE GUARD: an arc entry that still has a PENDING
+      `ppv_send` job is an UNTOLD story beat and must not be pulled early (day 25
+      landing before day 23). An arc day whose job already fired has no pending
+      row and is just inventory. Batched into one query, same shape as
+      `_defer_capped`'s dedup probe.
+
+    • STARVATION IS MEASURED ACROSS BOTH LEGS (`_base_ref`). This leg's own rows
+      carry `{id}#sub`, so ranking on the raw ref would never see them: it would
+      re-pick the same PPV every tick, deliver to nobody once its owners owned it
+      too, and never rotate to the next one.
+
+    `_LAST_PICKED` is READ (same anchor formula as the rotator, so the two agree
+    about who is starved) and never WRITTEN — a stamp here would push the entry
+    down the rotator's own queue, which is the interference the `#sub` ref exists
+    to prevent."""
+    cands = [p for p in (cfg.get("ppvs") or [])
+             if isinstance(p, dict) and str(p.get("id")) != str(exclude_id)
+             and _unsendable_reason(cfg, p) is None]
+    if not cands:
+        return None
+
+    if any(p.get("arc_owned") for p in cands):
+        async with get_session() as s:
+            rows = (await s.execute(
+                select(func.json_extract(ScheduledJob.payload_json, "$.ppv_id")).where(
+                    ScheduledJob.account_id == str(account_id),
+                    ScheduledJob.kind == "ppv_send",
+                    ScheduledJob.status == "pending",
+                    ScheduledJob.run_at > now,
+                ))).scalars().all()
+        pending = {str(x) for x in rows if x}
+        cands = [p for p in cands
+                 if not (p.get("arc_owned") and str(p.get("id")) in pending)]
+        if not cands:
+            return None
+
+    last_sent: dict[str, datetime] = {}
+    for r, t in (await _delivered_by_ref(account_id, now)).items():
+        base = _base_ref(r)
+        if t > last_sent.get(base, datetime.min):
+            last_sent[base] = t
+
+    picked = _LAST_PICKED.get(str(account_id)) or {}
+    ranked = sorted(
+        ((max(last_sent.get(str(p.get("id"))) or datetime.min,
+              picked.get(str(p.get("id"))) or datetime.min), idx, p)
+         for idx, p in enumerate(cands)),
+        key=lambda t: (t[0], t[1]))
+    return ranked[0][2]
+
+
+# ── the send legs: the cell loop, and the owner leg that reuses it ───────────
+class _SendCtx(NamedTuple):
+    """Everything a cell send needs that is FIXED for the whole run — the account,
+    the operator price bounds, her language and voice, the contact-guard window,
+    the day's preview rotation, the run id. Built once in `run()` and handed to
+    both legs, so the only things that vary between them are the ones that
+    genuinely do: the fan set, the PPV, and the ledger ref."""
+    account_id: str
+    bounds: tuple[int, int]
+    lang: str
+    voice: str | None
+    pause_hours: int
+    day_idx: int
+    run_id: int
+    # One model-written caption line about the media, or None for "pool only".
+    # Fixed for the run BY DEFINITION: every cell ships the same media, so a
+    # per-cell hook would pay a dozen times for one sentence. Defaulted so every
+    # existing construction site keeps working untouched.
+    ai_hook: str | None = None
+
+
+class _LegResult(NamedTuple):
+    """What one pass of the cell loop did. Returned rather than accumulated into
+    the caller's locals: a leg that reached into `run()`'s `results` and
+    `send_errors` could not be read — or tested — on its own."""
+    cells: int
+    recipients: int
+    errors: int
+    rows: list[dict]
+
+
+async def _send_cells(ctx: _SendCtx, cells: dict, ppv: dict, media: PpvMedia,
+                      ref: str, *, tag: str = "") -> _LegResult:
+    """One mass call per non-empty cell: matrix price, rotated preview, this PPV's
+    media, under `ref` as the ledger key.
+
+    Called TWICE per run — once for the primary audience under the bare ppv id,
+    once for the owners under `{id}#sub`. Sharing the body is the point: two copies
+    would drift on exactly the parts that took live incidents to get right (the
+    per-cell error containment, the recorded `reason`, the skipped/error
+    accounting). `tag` prefixes the results-row cell key so the two legs stay
+    distinguishable in `automation_runs.stats_json`."""
+    from automations.send_mass_message import run as send_mass_run
+
+    ppv_id = str(ppv.get("id"))
+    base_cents = int(ppv.get("base_price_cents") or 0)
+    cells_ok = 0
+    recipients = 0
+    errors = 0
+    rows: list[dict] = []
+    for key, cell in sorted(cells.items()):
+        fan_ids = cell["fan_ids"]
+        if not fan_ids:
+            continue
+        price = round_to_99(base_cents * cell["spend_mult"] * cell["rec_mult"],
+                            ctx.bounds)
+        row = {"cell": tag + key, "price": price / 100, "recipients": len(fan_ids)}
+        if tag:
+            row["ppv_id"] = ppv_id
+        send_payload = {
+            # Text is intentionally NOT locked — fans see the teaser caption free,
+            # only the media sits behind the price (locked_text defaults off).
+            "text": _pick_caption(ppv, price, ctx.lang, ctx.voice,
+                                  hook=ctx.ai_hook),
+            "media_files": media.ids,
+            "previews": _rotate_preview(media.previews, ctx.day_idx),
+            "price": price / 100,                 # OF wants dollars
+            "included_users": fan_ids,
+            "automation_kind": "ppv_send",        # Mass Messages tab attribution
+            "automation_ref": ref,                # the duplicate gate's ledger key
+            # Pause = the contact guard. 0 → guard OFF (send to everyone, the
+            # default); >0 → skip fans messaged in the last N hours.
+            "exclude_replied_hours": ctx.pause_hours,
+            "exclude_inbound_hours": ctx.pause_hours,
+        }
+        try:
+            res = await send_mass_run(ctx.account_id, send_payload,
+                                      run_id=ctx.run_id)
+        except Exception as e:  # noqa: BLE001 — one cell must NOT fail the batch
+            # A raise here fails the WHOLE job and the executor retries it —
+            # re-broadcasting every cell that already went out (the live
+            # double-send of 2026-07-01/03). Contain it: record the error,
+            # move on; this cell's fans catch the next cadence fire.
+            log.warning("ppv_send cell send failed account=%s ppv=%s cell=%s: %r",
+                        ctx.account_id, ppv_id, key, e)
+            errors += 1
+            rows.append({**row, "status": "error", "error": repr(e)[:200]})
+            continue
+        # `reason` is why a skip/error happened. Recording only `status` is what
+        # kept the broadcast outage invisible for 45 days — the run still reads
+        # 'ok' at the top.
+        rows.append({**row, "status": res.get("status"),
+                     "reason": res.get("reason")})
+        if res.get("status") not in ("skipped", "error"):
+            cells_ok += 1
+            recipients += len(fan_ids)
+    return _LegResult(cells_ok, recipients, errors, rows)
+
+
+async def _run_owner_leg(ctx: _SendCtx, cfg: dict, now: datetime, *,
+                         primary_id: str, owner_rows: list,
+                         last_purchase: dict) -> tuple[dict, _LegResult]:
+    """Send the fans the ownership guard removed a DIFFERENT library PPV, in this
+    same tick, instead of nothing. Returns (report, leg): the report is what lands
+    in the run's stats blob, and `leg` is an EMPTY result when nothing went out
+    rather than None — the caller then has no special case to write.
+
+    CELLS ONLY. No broadcast (that leg's audience is the uncached rest of the page,
+    who are not owners of anything), no feed post (one wall drop per run, and the
+    primary PPV is the one the run is about), no monthly resend (this leg reaches
+    ≤15 fans on a schedule the rotator does not own — a +30d repeat booked off it
+    would put a second, unrelated cadence into the library).
+
+    Whoever owns the substitute as well is dropped by `_split_owners`, the same
+    partition the primary leg just used, asked about a different PPV. There is no
+    second ownership concept and no per-fan scoring: take the next PPV, let the
+    existing guard skip whoever owns that one too.
+
+    The cap needs nothing from us: both legs land inside this run's timestamp
+    window, so the account's next even-spread gap is measured from the moment it
+    would have been anyway, and each fan still receives exactly one PPV this tick
+    (the two audiences are disjoint by construction — one is the complement of the
+    other)."""
+    owner_fans = len(owner_rows)
+    ppv = await _pick_second_ppv(ctx.account_id, cfg, now, exclude_id=primary_id)
+    if ppv is None:
+        report = {"status": "skipped", "reason": "no_second_ppv",
+                  "owner_fans": owner_fans}
+        leg = _LegResult(0, 0, 0, [])
+    else:
+        ppv_id = str(ppv.get("id"))
+        media = _ppv_media(ppv)
+        rows, _ = await _split_owners(ctx.account_id, media, owner_rows)
+        if not rows:
+            report = {"status": "skipped", "reason": "owns_both", "ppv_id": ppv_id,
+                      "owner_fans": owner_fans, "recipients": 0,
+                      "owns_both": owner_fans}
+            leg = _LegResult(0, 0, 0, [])
+        else:
+            leg = await _send_cells(
+                ctx, _segments(rows, last_purchase, now), ppv, media,
+                f"{ppv_id}{_SUB_REF_SUFFIX}", tag="sub:")
+            report = {
+                "status": "ok" if leg.cells else "skipped",
+                "reason": None if leg.cells else "all_cells_empty",
+                "ppv_id": ppv_id, "cells": leg.cells, "recipients": leg.recipients,
+                # The owner group, and how much of it owns the substitute as well —
+                # the number that says whether this library is deep enough for the
+                # leg to keep working.
+                "owner_fans": owner_fans, "owns_both": owner_fans - len(rows),
+            }
+    log.info("ppv_send owner-leg account=%s primary=%s owners=%d %s",
+             ctx.account_id, primary_id, owner_fans, report)
+    return report, leg
 
 
 @register("ppv_send")
@@ -1615,20 +1933,45 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         pause_hours = max(0, int(cfg.get("pause_hours") or 0))
     except (TypeError, ValueError):
         pause_hours = 0
+    # A live, unscoped run — the one condition BOTH optional legs below hang off.
+    # A plan must not send or spend (dry_run), and force_ids/only_fan_ids mean
+    # "these fans and nobody else": quietly widening a scoped run — to a second
+    # PPV, or to a paid model call the last real send never made — is exactly
+    # what a scope exists to prevent. Named once because it was written out twice
+    # and the second copy is how the third one drifts.
+    live_unscoped = not dry_run and not force_ids and not only_fan_ids
+
+    # ── the owner leg. Default OFF, per account. ─────────────────────────
+    # The ownership guard below removes the fans who already unlocked this PPV's
+    # hero media and the run then sends them NOTHING — measured 2026-08-22, buyers
+    # receive 12-52% fewer mass PPVs than non-buyers on all six live accounts,
+    # because ownership only ever accumulates. With this on, those fans get a
+    # DIFFERENT library PPV in the same tick instead of nothing.
+    #
+    # Per-account and not global on purpose: the all-lanes count (mass + 1:1)
+    # flips three of the six — the 1:1 seller lane already targets payers
+    # (`payers_only` defaults on), so on those accounts buyers ALREADY receive
+    # more total priced offers than non-buyers and this leg would over-serve them.
+    #
+    # `live_unscoped` below is what skips it outright.
+    owner_leg = bool(cfg.get("owner_second_leg", False)) and live_unscoped
 
     base_cents = int(ppv.get("base_price_cents") or 0)
     # Operator price limits — every COMPUTED price (per-cell, broadcast, feed)
     # is clamped into these; the authored base_price_cents is never rewritten.
     bounds = price_bounds(cfg)
     bcast_cents = max(bounds[0], min(base_cents, bounds[1]))
-    media_ids = _clean_media_ids(ppv)     # non-empty — _unsendable_reason gated it
-    media_set = set(media_ids)
-    # OF `previews` are the attached media shown FREE as the teaser, so each preview
-    # id MUST be one of media_files — anything else → OF 400 "Wrong preview". Keep
-    # only valid ones; an empty pool = a fully-locked PPV (also valid).
-    preview_pool = [int(x) for x in (ppv.get("preview_options") or [])
-                    if str(x).strip() and int(x) in media_set]
+    media = _ppv_media(ppv)      # non-empty ids — _unsendable_reason gated it
     day_idx = now.toordinal()   # rotates the preview once per day → fresh on each resend
+    # AI caption at send: ONE finished line about this media, written now and
+    # shared by every cell below. Default OFF per account. Arrives already
+    # word-filtered — see `describe_media.send_time_hook`.
+    ai_hook = None
+    if live_unscoped and cfg.get("ai_caption_at_send"):
+        ai_hook = await describe_media.send_time_hook(
+            account_id, media.ids, day_idx=day_idx)
+    ctx = _SendCtx(account_id, bounds, account_lang, account_voice,
+                   pause_hours, day_idx, run_id, ai_hook)
 
     # ── per-account cap: even-spread the day/week/month limit (one send every
     #    window/N, re-scheduling a too-soon send to its slot).
@@ -1688,6 +2031,37 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if only_fan_ids:
         fan_rows = [r for r in fan_rows if int(r[0]) in only_fan_ids]
 
+    # ── ghost cycle: she is dark on him today, so this lane is too ──────
+    # Unlike the ownership guard below, this one DOES yield to `force_ids`: the
+    # ghost is a gate (a schedule about when she talks), not a fact about the fan,
+    # and an operator firing at named fans has overridden every other gate here.
+    # `only_fan_ids` is a machine scope and does not — see the header.
+    #
+    # The broadcast leg below needs no filter: it excludes `_all_fan_ids`, and a
+    # fan with an anchor is by definition one we know.
+    #
+    # IT RUNS ABOVE THE OWNERSHIP SPLIT, and that order is load-bearing. The
+    # primary audience is the same set either way (all − owners − dark ==
+    # all − dark − owners), but the OWNER group that falls out below is only
+    # ghost-clean if the dark fans are already gone — and the owner leg sends to
+    # that group. Filtered the old way round it would have been the one lane in
+    # this module that blasts a fan she is deliberately silent on. One call, not
+    # two: a second `_ghost_dark_ids` would be a second opinion about the same day.
+    #
+    # `ghost_skipped` therefore counts EVERY eligible fan the cycle took out,
+    # including ones ownership would also have removed. Under the old order those
+    # overlapping fans were dropped as owners first and never counted here; the
+    # three counters now partition the eligible set instead of shadowing each other.
+    ghost_skipped = 0
+    if not force_ids:
+        dark = await _ghost_dark_ids(account_id, [int(r[0]) for r in fan_rows], now)
+        if dark:
+            before = len(fan_rows)
+            fan_rows = [r for r in fan_rows if int(r[0]) not in dark]
+            ghost_skipped = before - len(fan_rows)
+            log.info("ppv_send ghost-skip account=%s ppv=%s skipped=%d (dark today)",
+                     account_id, ppv_id, ghost_skipped)
+
     # ── ownership guard — UNCONDITIONAL, and deliberately NOT under exclude_buyers ─
     # Re-selling a fan a clip he ALREADY UNLOCKED is a money bug in both directions:
     # he pays twice for the same media (refund + chargeback risk, and chargebacks are
@@ -1700,51 +2074,34 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     #   force_ids may scope WHO we send to; it may NEVER license re-selling media a
     #   fan already owns. force_ids bypasses GATES (cap, dup-fire) — it is not a
     #   whitelist, and ownership is not a gate, it is a fact about the fan.
-    # Nobody owns the media ⇒ owners is empty ⇒ the audience is untouched.
     #
-    # HERO media only (operator ruling 07-23): the previews pool is the free-
-    # visible tease slice, so a fan who merely owns a shared preview frame still
-    # gets the blast — only owning the payoff (a video, or a non-preview image)
-    # skips him. Preview-listed ids the vault mirror knows are VIDEOS stay hero
-    # (a video is never mere filler). No previews ⇒ hero == full media set.
-    hero_ids = await _hero_media_ids(account_id, media_ids, preview_pool)
-    owners = await _owners_of_media(account_id, hero_ids)
-    if owners:
-        before = len(fan_rows)
-        fan_rows = [r for r in fan_rows if int(r[0]) not in owners]
-        if before != len(fan_rows):
-            log.info("ppv_send owner-skip account=%s ppv=%s skipped=%d (already unlocked)",
-                     account_id, ppv_id, before - len(fan_rows))
-
-    # ── ghost cycle: she is dark on him today, so this lane is too ──────
-    # Unlike the ownership guard above, this one DOES yield to `force_ids`: the
-    # ghost is a gate (a schedule about when she talks), not a fact about the fan,
-    # and an operator firing at named fans has overridden every other gate here.
-    # `only_fan_ids` is a machine scope and does not — see the header.
-    #
-    # The broadcast leg below needs no filter: it excludes `_all_fan_ids`, and a
-    # fan with an anchor is by definition one we know.
-    ghost_skipped = 0
-    if not force_ids:
-        dark = await _ghost_dark_ids(account_id, [int(r[0]) for r in fan_rows], now)
-        if dark:
-            before = len(fan_rows)
-            fan_rows = [r for r in fan_rows if int(r[0]) not in dark]
-            ghost_skipped = before - len(fan_rows)
-            log.info("ppv_send ghost-skip account=%s ppv=%s skipped=%d (dark today)",
-                     account_id, ppv_id, ghost_skipped)
+    # A SPLIT, not a drop: the fans on the right are kept as `owner_rows` for the
+    # owner leg at the bottom of this run. With the leg off they are simply
+    # discarded, as they always were — but `owner_skipped` now REPORTS them either
+    # way. That number only ever reached a log line before, which is precisely why
+    # the gap it measures went unnoticed for as long as it did.
+    fan_rows, owner_rows = await _split_owners(account_id, media, fan_rows)
+    owner_skipped = len(owner_rows)
+    if owner_skipped:
+        log.info("ppv_send owner-skip account=%s ppv=%s skipped=%d (already unlocked)",
+                 account_id, ppv_id, owner_skipped)
 
     # No known fans is only a hard stop when we're NOT also broadcasting to the
     # house audience (reach_all): the broadcast can still reach the uncached list.
     # A fan-scoped run (force_ids/only_fan_ids) never broadcasts — the whole point of
     # a scope is that the audience is those fans and nobody else.
     broadcasting = reach_all and not force_ids and not only_fan_ids
-    if not fan_rows and not broadcasting:
-        # Carry the counter even here: "no_fans" because everyone is mid-ghost is a
-        # very different run from "no_fans" because the roster is empty, and the
-        # stats row is the only place anyone can tell them apart.
+    # Everyone owning the hero media is the live `the second account` shape — the whole primary
+    # audience gone and nothing to send. That run is exactly the one the owner leg
+    # exists for, so it may not stop here.
+    primary_audience = bool(fan_rows) or broadcasting
+    if not primary_audience and not (owner_leg and owner_rows):
+        # Carry the counters even here: "no_fans" because everyone is mid-ghost is a
+        # very different run from "no_fans" because the roster is empty or because
+        # every last fan already owns this one, and the stats row is the only place
+        # anyone can tell them apart.
         return {"status": "skipped", "reason": "no_fans",
-                "ghost_skipped": ghost_skipped}
+                "ghost_skipped": ghost_skipped, "owner_skipped": owner_skipped}
 
     cells = _segments(fan_rows, last_purchase, now)
 
@@ -1757,11 +2114,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 "cell": key, "recipients": len(cell["fan_ids"]),
                 "price": price / 100,
                 "caption": _pick_caption(ppv, price, account_lang, account_voice)[:80],
-                "preview": _rotate_preview(preview_pool, day_idx),
+                "preview": _rotate_preview(media.previews, day_idx),
             })
         return {"dry_run": True, "ppv_id": ppv_id, "is_resend": is_resend,
                 "cells": len(plan), "fans": len(fan_rows), "plan": plan, "sent": 0,
-                "ghost_skipped": ghost_skipped,
+                "ghost_skipped": ghost_skipped, "owner_skipped": owner_skipped,
                 "broadcast_all": broadcasting,
                 "broadcast_price": (bcast_cents / 100) if broadcasting else None,
                 "pause_hours": pause_hours}
@@ -1769,53 +2126,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # ── send: one mass call per non-empty cell, matrix price + rotated preview
     from automations.send_mass_message import run as send_mass_run
 
-    sent_cells = 0
-    total_recipients = 0
     send_errors = 0
     results: list[dict] = []
-    for key, cell in sorted(cells.items()):
-        fan_ids = cell["fan_ids"]
-        if not fan_ids:
-            continue
-        price = round_to_99(base_cents * cell["spend_mult"] * cell["rec_mult"], bounds)
-        send_payload = {
-            # Text is intentionally NOT locked — fans see the teaser caption free,
-            # only the media sits behind the price (locked_text defaults off).
-            "text": _pick_caption(ppv, price, account_lang, account_voice),
-            "media_files": media_ids,
-            "previews": _rotate_preview(preview_pool, day_idx),
-            "price": price / 100,                 # OF wants dollars
-            "included_users": fan_ids,
-            "automation_kind": "ppv_send",        # Mass Messages tab attribution
-            "automation_ref": str(ppv_id),        # the duplicate gate's ledger key
-            # Pause = the contact guard. 0 → guard OFF (send to everyone, the
-            # default); >0 → skip fans messaged in the last N hours.
-            "exclude_replied_hours": pause_hours,
-            "exclude_inbound_hours": pause_hours,
-        }
-        try:
-            res = await send_mass_run(account_id, send_payload, run_id=run_id)
-        except Exception as e:  # noqa: BLE001 — one cell must NOT fail the batch
-            # A raise here fails the WHOLE job and the executor retries it —
-            # re-broadcasting every cell that already went out (the live
-            # double-send of 2026-07-01/03). Contain it: record the error,
-            # move on; this cell's fans catch the next cadence fire.
-            log.warning("ppv_send cell send failed account=%s ppv=%s cell=%s: %r",
-                        account_id, ppv_id, key, e)
-            send_errors += 1
-            results.append({"cell": key, "price": price / 100,
-                            "recipients": len(fan_ids), "status": "error",
-                            "error": repr(e)[:200]})
-            continue
-        results.append({"cell": key, "price": price / 100,
-                        "recipients": len(fan_ids), "status": res.get("status"),
-                        # `reason` is why a skip/error happened. Recording only
-                        # `status` is what kept the broadcast outage invisible
-                        # for 45 days — the run still reads 'ok' at the top.
-                        "reason": res.get("reason")})
-        if res.get("status") not in ("skipped", "error"):
-            sent_cells += 1
-            total_recipients += len(fan_ids)
+
+    leg = await _send_cells(ctx, cells, ppv, media, str(ppv_id))
+    sent_cells, total_recipients = leg.cells, leg.recipients
+    send_errors += leg.errors
+    results.extend(leg.rows)
 
     # ── broadcast: ONE default-price send to the house audience (OF-resolved:
     #    fans + following), with EVERY known fan excluded (the per-tier sends above
@@ -1837,9 +2154,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if broadcasting:
         known_ids = await _all_fan_ids(account_id)
         broadcast_payload = {
-            "text": _pick_caption(ppv, bcast_cents, account_lang, account_voice),  # default-price caption
-            "media_files": media_ids,
-            "previews": _rotate_preview(preview_pool, day_idx),
+            # default-price caption, same run-fixed hook as the cells
+            "text": _pick_caption(ppv, bcast_cents, account_lang,
+                                  account_voice, hook=ai_hook),
+            "media_files": media.ids,
+            "previews": _rotate_preview(media.previews, day_idx),
             "price": bcast_cents / 100,               # the DEFAULT price, clamped
             # Operator audience. DEFAULT (key absent) is the historical
             # fans + following — an account that never opens these controls
@@ -1901,8 +2220,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             feed_post = {"status": "error", "reason": "exception"}
 
     # ── monthly resend: one-shot +30d (a resend gets a fresh random preview) ─
+    # `primary_audience` is what the old `no_fans` return used to guarantee: before
+    # the owner leg existed, reaching this line at all meant the primary leg had
+    # someone to send to. The leg can now carry a run whose primary audience was
+    # empty, and such a run must not book a monthly repeat of a PPV it never sent.
     resend_job_id = None
-    if ppv.get("resend_monthly") and not is_resend:
+    if primary_audience and ppv.get("resend_monthly") and not is_resend:
         import automation_executor as ax
         resend_job_id = await ax.enqueue_job(
             account_id, "ppv_send",
@@ -1910,22 +2233,49 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             run_at=now + timedelta(days=30),
         )
 
+    # ── the owner leg. Runs LAST, below every gate above, so none of them can
+    #    read a counter it moved: `sent_cells` still gates the feed post,
+    #    `primary_audience` still gates the resend, and the cap/dup ledger sees
+    #    only what it saw before. ─────────────────────────────────────────────
+    second_leg = None
+    sub = _LegResult(0, 0, 0, [])
+    if owner_leg and owner_rows:
+        second_leg, sub = await _run_owner_leg(
+            ctx, cfg, now, primary_id=str(ppv_id), owner_rows=owner_rows,
+            last_purchase=last_purchase)
+        send_errors += sub.errors
+        results.extend(sub.rows)
+
     log.info("ppv_send account=%s ppv=%s cells=%d recipients=%d errors=%d broadcast=%s "
-             "resend_job=%s feed=%s",
+             "resend_job=%s feed=%s owner_skipped=%d sub_cells=%d",
              account_id, ppv_id, sent_cells, total_recipients, send_errors, broadcast,
-             resend_job_id, (feed_post or {}).get("status"))
+             resend_job_id, (feed_post or {}).get("status"), owner_skipped, sub.cells)
     # NOTE: an all-failed run returns status 'error' in the STATS only — it must
     # not raise, or the executor's job retry would re-broadcast any cell that
     # did go out. The failed cells simply wait for the next cadence fire.
     return {
-        "status": "ok" if sent_cells else ("error" if send_errors else "skipped"),
-        "reason": None if sent_cells else
+        # A run whose primary cells were all empty but whose owner leg delivered
+        # DID send — reading it as 'skipped' would hide the one thing this feature
+        # exists to do on a fully-owned-out account.
+        "status": "ok" if (sent_cells or sub.cells) else
+                  ("error" if send_errors else "skipped"),
+        "reason": None if (sent_cells or sub.cells) else
                   ("all_sends_failed" if send_errors else "all_cells_empty"),
         "ppv_id": ppv_id, "is_resend": is_resend,
+        # PRIMARY leg only (plus the broadcast, as always) — the owner leg keeps its
+        # own counts under `second_leg` rather than inflating the number every
+        # report and dashboard already reads as "the blast".
         "cells_sent": sent_cells, "recipients": total_recipients,
         # How many fans the ghost cycle took out of this blast. Without it the run
         # just quietly reaches fewer people and nothing says why.
         "ghost_skipped": ghost_skipped,
+        # How many already owned this PPV's hero media. `ghost_skipped` and
+        # `spend_capped` have always reported themselves; this one only ever
+        # reached a log line, which is how a 12-52% shortfall in what buyers
+        # receive stayed unmeasured.
+        "owner_skipped": owner_skipped,
+        # The owner leg's own outcome, None when it is off or had nobody.
+        "second_leg": second_leg,
         # How many fans the whale gate took out (0 when it's off). Same reason
         # ghost_skipped exists: a shrinking audience must say why.
         "spend_capped": spend_capped,

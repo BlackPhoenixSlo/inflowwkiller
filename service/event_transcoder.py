@@ -125,8 +125,10 @@ async def transcode(event: dict) -> None:
             # log + record a best-effort transaction so the first one in
             # the wild leaves enough breadcrumbs to refine the parser.
             await _transcode_ppv_unlock(account_id, event_type, payload)
+        elif event_type == "toasts":
+            await _transcode_toast(account_id, payload)
         else:
-            # Toasts/online/subscribe/etc. don't get full transcodes yet,
+            # Online/typing/stories/etc. don't get full transcodes yet,
             # but they often carry up-to-date avatar + display name. Touch
             # the Fan row so the inbox cold-start renders from DB without
             # waiting on OF.
@@ -134,6 +136,25 @@ async def transcode(event: dict) -> None:
             _log_unknown(event_type, payload)
     except Exception:
         log.exception("transcode failed (account=%s type=%s)", account_id, event_type)
+
+
+async def _transcode_toast(account_id: Any, payload: Any) -> None:
+    """OF's own alert frame — `subscribed`, `favorited`, `commented`.
+
+    No canonical row of its own yet (the shapes are still being learned, hence
+    the discovery log), but every toast carries a fresh creator-side user blob
+    AND is itself a row in the notifications feed, the subscribe lane being
+    money.
+
+    A named branch rather than a condition inside the unknown-event
+    fall-through: EVERY OF frame reaches that branch, `typing` and online
+    frames dwarfing all others, so busting there would keep the money feeds
+    permanently cold.
+    """
+    await _touch_fan_from_event(account_id, payload)
+    if account_id:
+        relay_cache.invalidate_money_feeds(str(account_id))
+    _log_unknown("toasts", payload)
 
 
 async def _touch_fan_from_event(account_id: Any, payload: Any) -> None:
@@ -420,11 +441,15 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # Cache invalidation — must run AFTER the `async with get_session()`
     # block has exited (auto-commit on success) so a concurrent reader
     # that re-fetches doesn't cache the pre-commit upstream state.
-    # No-ops against namespaces Stage C hasn't wired in yet.
     aid_s = str(account_id)
     relay_cache.invalidate("list_chats", aid_s)
-    relay_cache.invalidate("init", aid_s)
-    relay_cache.invalidate("notifications_count", aid_s)
+    # A tip rides on an inbound chat_message (isTip, $ in tipAmount), so this
+    # is the tip lane as well as the DM lane. Deliberately NOT gated on
+    # `is_tip`: a plain DM is not a notifications-feed row, but the browser
+    # refetches its notif-list on every inbound message anyway, and a gate
+    # here that mis-reads one degenerate tip frame silently costs a sale its
+    # bust. Unconditional is the cheap side of that trade.
+    relay_cache.invalidate_money_feeds(aid_s)
     # Roster strip badge: an inbound DM bumps this model's unread, our reply
     # clears its owe-reply — bust the cached count so the next 60s poll recomputes
     # from OF. This is what keeps the unread badge live off the WS pump.
@@ -521,8 +546,7 @@ async def _transcode_ppv_unlock(
     # Post-commit cache invalidation. See `_transcode_chat_message` for the
     # ordering rationale.
     aid_s = str(account_id)
-    relay_cache.invalidate("init", aid_s)
-    relay_cache.invalidate("notifications_count", aid_s)
+    relay_cache.invalidate_money_feeds(aid_s)
 
     # Tell the browser a sale landed — same event the ledger ingest emits, so
     # the fan drawer's revenue caches refresh on the spot instead of waiting

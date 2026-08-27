@@ -4,6 +4,13 @@
  * MoneyRail — sticky bottom-right dock for money notifications (purchases
  * + tips) so chatters can jump straight to the fans who just paid.
  *
+ * TWO components, on purpose. `MoneyRail` is a gate: it owns the surface and
+ * the settings and nothing else, and mounts `MoneyRailPanel` only where the
+ * rail is meant to appear. Everything below — the fetches, the dock, the
+ * drag — lives in the panel and may assume it is on a surface the user asked
+ * for. See the gate's own note for why that boundary has to be a mount and
+ * can't be a flag.
+ *
  * It fetches OF's /notifications?type=purchases|tip on mount — collapsed or
  * not — so the rail is fresh on first page load rather than only after the
  * user expands it. Those rows are merged with the localStorage notif-history
@@ -54,6 +61,7 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 
 import { chatTabName, openChatTab } from "@/lib/chatPopout";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useRailSettings } from "@/hooks/useRailSettings";
 import { relay, proxyImage, type OFChatItem } from "@/lib/relay";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
 import { cn } from "@/lib/utils";
@@ -68,10 +76,7 @@ import {
 import {
   BIG_ROW_CHOICES,
   DEFAULT_DOCK,
-  DEFAULT_SETTINGS,
   SEEN_KEY,
-  SETTINGS_EVENT,
-  SETTINGS_KEY,
   SMALL_ROW_CHOICES,
   SNAPSHOT_MAX_ITEMS,
   parseSurfaces,
@@ -79,7 +84,6 @@ import {
   readDock,
   readMoneySnapshot,
   readSeenTs,
-  readSettings,
   resolveRailAccounts,
   slimNotif,
   snapshotKeyOf,
@@ -89,7 +93,6 @@ import {
   writeDock,
   writeMoneySnapshot,
   writeSeenTs,
-  writeSettings,
   type DockState,
   type NotificationItem,
   type RailSettings,
@@ -275,35 +278,21 @@ function parseList(raw: unknown): NotificationItem[] {
  * only un-hide control) down with it. The 🔔 bell is mounted everywhere, so
  * it renders this inside its dropdown to offer the way back when the rail is
  * hidden on the CURRENT surface. Self-contained — it owns the surface read,
- * the settings-event subscription, the hidden-here check and the restore
- * write, and returns null when the rail isn't hidden here, so hosts can
- * mount it unconditionally.
+ * the hidden-here check and the restore write, and returns null when the rail
+ * isn't hidden here, so hosts can mount it unconditionally.
  */
 export function MoneyRailRestoreButton() {
   const surface = surfaceOf(usePathname());
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const bump = () => setTick((t) => t + 1);
-    window.addEventListener(SETTINGS_EVENT, bump);
-    return () => window.removeEventListener(SETTINGS_EVENT, bump);
-  }, []);
-  // Reading localStorage at render is safe here: the bell's dropdown (this
-  // component's only host) exists only after a click, well past hydration.
-  // `tick` re-evaluates it whenever the rail's settings change under us.
-  const hiddenHere = useMemo(
-    () => !railVisibleOn(readSettings(), surface),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [surface, tick],
-  );
+  const { settings, commit } = useRailSettings();
   const showHere = () => {
-    const s = readSettings();
+    if (!settings) return;
     // Adding the last missing surface normalises to null (= everywhere).
-    writeSettings({
-      ...s,
-      surfaces: parseSurfaces([...(s.surfaces ?? []), surface]),
+    commit({
+      ...settings,
+      surfaces: parseSurfaces([...(settings.surfaces ?? []), surface]),
     });
   };
-  if (!hiddenHere) return null;
+  if (!settings || railVisibleOn(settings, surface)) return null;
   return (
     <button
       type="button"
@@ -320,17 +309,36 @@ export function MoneyRailRestoreButton() {
   );
 }
 
+/**
+ * The rail is mounted once in the ROOT layout, so it is on every route, but
+ * `settings.surfaces` decides where it actually appears. That decision lives
+ * HERE, in a parent that owns nothing else, rather than inside the panel:
+ * hooks can't be conditional, so a panel that judged its own visibility would
+ * judge it only AFTER every fetch, effect, listener and cache subscription it
+ * declares had already fired — which is exactly what it used to do, paying
+ * ~14 OF round-trips on each of the 8 routes where it then painted nothing.
+ * A gate makes that structurally impossible instead of individually gated:
+ * on a surface the user didn't tick, MoneyRailPanel never mounts, so there is
+ * nothing to remember to switch off.
+ */
 export function MoneyRail() {
-  const activeAccounts = useActiveAccounts();
   const surface = surfaceOf(usePathname());
+  const { settings, commit } = useRailSettings();
+  if (!settings || !railVisibleOn(settings, surface)) return null;
+  return <MoneyRailPanel surface={surface} settings={settings} onSettingsChange={commit} />;
+}
 
-  // Settings are global (not per-surface) and hydration-gated like the dock.
-  const [settings, setSettings] = useState<RailSettings>(DEFAULT_SETTINGS);
+function MoneyRailPanel({
+  surface,
+  settings,
+  onSettingsChange,
+}: {
+  surface: Surface;
+  settings: RailSettings;
+  onSettingsChange: (next: RailSettings) => void;
+}) {
+  const activeAccounts = useActiveAccounts();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const commitSettings = useCallback((next: RailSettings) => {
-    setSettings(next);
-    writeSettings(next);
-  }, []);
 
   // Dock state is per-surface, so it can't be read during the first render
   // (the server doesn't know the surface OR localStorage). Hydration-gate the
@@ -348,7 +356,6 @@ export function MoneyRail() {
   const [seenTs, setSeenTs] = useState(0);
   useEffect(() => {
     setDock(readDock(surface));
-    setSettings(readSettings());
     setSnapshot(readMoneySnapshot());
     // First-ever use: nothing that predates the rail counts as "new" — a
     // fresh install greeting the user with "50 new" is noise, not signal.
@@ -361,22 +368,6 @@ export function MoneyRail() {
     setViewportH(window.innerHeight);
     setMounted(true);
   }, [surface]);
-
-  // The bell's "show the rail here" button (and any other tab) writes the
-  // settings from outside this component — re-read on its event, or the rail
-  // stays hidden until the next full reload.
-  useEffect(() => {
-    const reread = () => setSettings(readSettings());
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === SETTINGS_KEY) reread();
-    };
-    window.addEventListener(SETTINGS_EVENT, reread);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(SETTINGS_EVENT, reread);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
 
   const open = dock.open;
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -525,8 +516,11 @@ export function MoneyRail() {
     };
   }, []);
 
-  // OF fan-out — one query per account × money type, enabled only while
-  // expanded. Query keys intentionally match the bell's so both share one
+  // OF fan-out — one query per account × money type. Gated only on hydration
+  // (the snapshot below is a localStorage read); the surface question was
+  // already answered by MoneyRail, or this panel wouldn't exist. Deliberately
+  // NOT gated on `open` either: a COLLAPSED rail still renders `smallRows`
+  // live rows. Query keys intentionally match the bell's so both share one
   // cache entry per (account, type).
   const queryDefs = useMemo(
     () => targetAccountIds.flatMap((aid) => MONEY_TYPES.map((type) => ({ aid, type }))),
@@ -627,14 +621,13 @@ export function MoneyRail() {
   const unseen = unseenCountOf(merged, seenTs);
   useEffect(() => {
     if (!mounted || merged.length === 0) return;
-    if (!railVisibleOn(settings, surface)) return;
     if ((open ? settings.bigRows : settings.smallRows) === 0) return;
     const newest = merged[0]?.ts ?? 0; // merged is sorted newest-first
     if (newest > seenTs) {
       writeSeenTs(newest);
       setSeenTs(newest);
     }
-  }, [mounted, merged, open, settings, surface, seenTs]);
+  }, [mounted, merged, open, settings, seenTs]);
 
   // ── Per-fan chat detail: the last message in the thread + whether the
   // fan has read it. OF's /chats/{fanId} carries `lastMessage` and
@@ -663,7 +656,13 @@ export function MoneyRail() {
   const chatQueries = useQueries({
     queries: detailTargets.map(({ aid, fanId }) => ({
       queryKey: ["chat-detail", aid, fanId] as const,
-      queryFn: () => relay.get<OFChatItem>(`/api/of/v2/chats/${fanId}`, { accountId: aid }),
+      // 'background': up to DETAIL_ROWS_MAX (12) OF calls per account, re-fired
+      // on every SSE money event. Nobody is waiting on the rail's read-receipt
+      // ticks, and at 'user' priority this fan-out crowds out the actual click
+      // in the relay's per-account lane.
+      queryFn: () => relay.get<OFChatItem>(
+        `/api/of/v2/chats/${fanId}`, { accountId: aid, priority: "background" },
+      ),
       enabled: mounted,
       staleTime: 60_000,
       refetchOnWindowFocus: false,
@@ -780,7 +779,7 @@ export function MoneyRail() {
     return m;
   }, [activeAccounts]);
 
-  if (!mounted || targetAccountIds.length === 0 || !railVisibleOn(settings, surface)) return null;
+  if (!mounted || targetAccountIds.length === 0) return null;
 
   // Collapsed no longer truncates the feed — it just shrinks the window onto
   // it. Every row stays in the DOM and scrolls, so one row is visible but the
@@ -897,7 +896,7 @@ export function MoneyRail() {
         <SettingsPanel
           settings={settings}
           accounts={activeAccounts}
-          onChange={commitSettings}
+          onChange={onSettingsChange}
         />
       )}
       {visRows > 0 && (

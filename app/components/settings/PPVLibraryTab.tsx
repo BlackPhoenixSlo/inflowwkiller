@@ -20,6 +20,7 @@ import { DollarSign, Image as ImageIcon, Copy } from "lucide-react";
 import { Button, Card } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "./JsonConfigModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
+import { CaptionSetPanel, useCaptionSetKnobs } from "./CaptionSetPanel";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { useReorder } from "@/hooks/useReorder";
 import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
@@ -166,6 +167,7 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const previewM = usePpvPreview(accountId);
   const postM = usePostPpvToFeed(accountId);
   const previewFeedM = usePreviewPpvToFeed(accountId);
+  const captionKnobs = useCaptionSetKnobs(cfgQ.data?.caption_limits?.boxes_max);
   // A subscription page has no paid-post lane on OF, and a feed PPV is always
   // priced — so every feed control here is dead for it (the relay refuses too).
   const { isPaidPage } = usePaidPage(accountId);
@@ -196,6 +198,12 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const [capMonth, setCapMonth] = useState(0);
   // "send to everyone" broadcast (default ON) + the optional pause
   const [reachAll, setReachAll] = useState(true);
+  // AI caption at send: ppv_send writes ONE line about the media per run and puts
+  // it above the style-pool line. Absent = OFF — a deploy alone never puts model
+  // copy in front of fans.
+  const [aiCaptionAtSend, setAiCaptionAtSend] = useState(false);
+  // the owner second leg — default OFF, enabled per account (see the checkbox)
+  const [ownerSecondLeg, setOwnerSecondLeg] = useState(false);
   // null = "never configured" → the historical fans + following. An EMPTY SET is
   // a real operator choice and must survive as one; see buildConfig below.
   const [bcastInclude, setBcastInclude] = useState<Set<string> | null>(null);
@@ -283,6 +291,10 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     setCapWeek(caps ? caps.per_week ?? 0 : capDef.per_week);
     setCapMonth(caps ? caps.per_month ?? 0 : capDef.per_month);
     setReachAll(c.reach_all ?? true);
+    setAiCaptionAtSend(c.ai_caption_at_send ?? false);
+    // absent = off. Unlike reach_all there is NO opt-out default here: an account
+    // nobody has assessed must not acquire the behaviour by opening this tab.
+    setOwnerSecondLeg(!!c.owner_second_leg);
     // Array vs not — the ONLY distinction that matters here. A stored [] means
     // "reach nobody new" and must hydrate as an empty Set; null/absent means
     // never configured and must hydrate as null so the default still applies.
@@ -424,6 +436,16 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     setPpvs((ps) => ps.map((p, j) =>
       j === i ? { ...p, caption_texts: (p.caption_texts ?? []).filter((_, k) => k !== ci) } : p));
   };
+  // "Caption set": which PPV row has the panel open. The knobs themselves live
+  // in `captionKnobs` at tab level, so tuning the mix once survives moving
+  // between PPVs.
+  const [boxSetIdx, setBoxSetIdx] = useState<number | null>(null);
+  const addCaptions = (i: number, lines: string[]) => {
+    markDirty();
+    setPpvs((ps) => ps.map((q, j) =>
+      j === i ? { ...q, caption_texts: [...(q.caption_texts ?? []), ...lines] } : q));
+  };
+
   // feed-post captions (used ONLY by "Post to feed") — same one-box-per-caption shape
   const setFeedCaption = (i: number, ci: number, val: string) => {
     markDirty();
@@ -476,6 +498,8 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const buildConfig = () => ({
     enabled,
     reach_all: reachAll,
+    ai_caption_at_send: aiCaptionAtSend,
+    owner_second_leg: ownerSecondLeg,
     // ⚠️ buildConfig is a KEY LITERAL and the server validator rebuilds a fresh
     // dict from it — anything absent here is DROPPED on every save from this
     // tab. New config keys must be added in BOTH places or they silently vanish
@@ -576,6 +600,42 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
       <div className="text-[11px] text-fg-dim/80 leading-relaxed rounded-lg border border-border p-3">
         While the AI is selling to a fan 1:1, the mass PPV skips him — so he never gets
         the same clip twice.
+      </div>
+
+      {/* The other half of that skip: what the buyers who were removed get instead. */}
+      <div className="rounded-lg border border-border p-3 space-y-2">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-[var(--accent)]"
+            checked={ownerSecondLeg}
+            onChange={(e) => { markDirty(); setOwnerSecondLeg(e.target.checked); }}
+          />
+          <span className="text-sm font-medium">Send buyers a different PPV instead of nothing</span>
+        </label>
+        <div className="text-[11px] text-fg-dim/80 leading-relaxed">
+          {ownerSecondLeg
+            ? <>Fans who already unlocked this PPV get the <b>next PPV in the library</b> in the same send, priced by their own tier. Anyone who owns that one too is skipped again — nobody is ever re-sold what they hold. Only the per-tier messages; no broadcast, no wall post.</>
+            : <>Off: a fan who already owns this PPV is dropped from the send and gets <b>nothing</b> that round. Because ownership only ever grows, your best buyers slowly receive the fewest offers. Leave this off if the AI chat is already selling to them 1:1.</>}
+        </div>
+      </div>
+
+      {/* AI caption at send — one fresh line per send, shared by every tier. */}
+      <div className="rounded-lg border border-border p-3 space-y-2">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-[var(--accent)]"
+            checked={aiCaptionAtSend}
+            onChange={(e) => { markDirty(); setAiCaptionAtSend(e.target.checked); }}
+          />
+          <span className="text-sm font-medium">Write a fresh caption line at every send</span>
+        </label>
+        <div className="text-[11px] text-fg-dim/80 leading-relaxed">
+          {aiCaptionAtSend
+            ? <>Before each send, one line is written from what the vision model actually saw in that PPV&apos;s media, and placed <b>above</b> the style-pool line. <b>One line per send, shared by every price tier</b> — the pool line under it still carries each tier&apos;s own price. It is fresh again next time this PPV goes out. If the model is capped, down, or the media has no description, the pool line simply goes out alone — a send never waits on it and never fails because of it. Needs <b>Vault AI</b> on for this account.</>
+            : <>Captions come only from this PPV&apos;s style pool or the captions you wrote yourself. Nothing is generated at send time.</>}
+        </div>
       </div>
 
       {/* Send to everyone: also broadcast to fans + following at the default price. */}
@@ -1019,11 +1079,27 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                 <Button size="sm" variant="secondary" onClick={() => addDiscountCaption(i)}>+ Discount caption</Button>
                 <Button
                   size="sm" variant="secondary"
+                  onClick={() => setBoxSetIdx(boxSetIdx === i ? null : i)}
+                  title="A rotating set of caption boxes, each mixing a written hook with this PPV's own style-pool line"
+                >
+                  {boxSetIdx === i ? "Close caption set" : "\u2728 Caption set\u2026"}
+                </Button>
+                <Button
+                  size="sm" variant="secondary"
                   onClick={() => { setImportIdx(importIdx === i ? null : i); setImportText(""); }}
                 >
                   {importIdx === i ? "Close paste box" : "Paste many (1 per line)"}
                 </Button>
               </div>
+              {boxSetIdx === i && (
+                <CaptionSetPanel
+                  accountId={accountId}
+                  mediaIds={p.media_ids ?? []}
+                  captionPoolKey={p.caption_pool_key ?? ""}
+                  knobs={captionKnobs}
+                  onAdd={(lines) => addCaptions(i, lines)}
+                />
+              )}
               {importIdx === i && (
                 <div className="space-y-1">
                   <textarea

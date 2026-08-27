@@ -37,6 +37,7 @@ import {
   type AutomationRule,
 } from "@/hooks/useAutomations";
 import { useAutomationRuns, type AutomationRunRow } from "@/hooks/useStats";
+import { AccountChips } from "@/components/AccountChips";
 import { PremadeForm } from "@/components/compose/PremadeComposer";
 import { MassFunnelsTab } from "@/components/automations/FunnelEditor";
 import NudgeOnlineTab from "@/components/settings/NudgeOnlineTab";
@@ -100,41 +101,6 @@ function StatusBadge({ status }: { status: string }) {
   const color =
     status === "ok" ? "ok" : status === "error" ? "err" : status === "running" ? "warn" : "muted";
   return <Badge color={color}>{status === "running" ? "running…" : status}</Badge>;
-}
-
-/** Reusable account-chip picker (lifted into the panel; Nudge tabs reuse it). */
-export function AccountChips({
-  accountId,
-  onChange,
-}: {
-  accountId: string | null;
-  onChange: (id: string) => void;
-}) {
-  const accounts = useActiveAccounts();
-  if (accounts.length <= 1) return null;
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      <span className="text-[10px] uppercase tracking-wide text-fg-dim mr-1">Account</span>
-      {accounts.map((a) => {
-        const active = accountId === a.id;
-        return (
-          <button
-            key={a.id}
-            type="button"
-            onClick={() => onChange(a.id)}
-            className={cn(
-              "px-2.5 py-1 rounded-full text-xs border transition-colors",
-              active
-                ? "bg-accent text-white border-accent"
-                : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg hover:border-fg-dim",
-            )}
-          >
-            {a.nickname || a.id}
-          </button>
-        );
-      })}
-    </div>
-  );
 }
 
 export default function ReadyMadePanel() {

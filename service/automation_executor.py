@@ -76,11 +76,18 @@ import account_health
 import account_page  # free-vs-paid page (prime the cache off the recovery probe)
 from jsonsafe import dump_capped
 
+import lane_config
+
 log = logging.getLogger("of-relay.automation")
 
 # ── Knobs ────────────────────────────────────────────────────────────
 _TICK_INTERVAL_S = 30          # supervisor cadence (sleep-at-end like tx-ingest)
-_MAX_CONCURRENT_RUNS = 4       # concurrent REAL-TIME / sender runs (own lane)
+# Measured 2026-08-26: at 7 accounts this lane runs 23.5% utilized
+# (115,879 runs/7d, mean 4.9s), so it saturates near 30 accounts — it is the
+# ceiling that binds FIRST as the fleet grows, ahead of the executor and every
+# admission lane. Settable from the Concurrency panel for that reason.
+# Applies at restart: the semaphore below is built once when the supervisor starts.
+_MAX_CONCURRENT_RUNS = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_RUNS", 4)
 # Separate lane for long account-wide BULK sweeps (scrape_chats etc.). Proven
 # live: the W7 startup seed fired 4 scrape_chats at once, they filled all the run
 # slots for ~2 min, and a real-time welcome_chatter_for_info reply was starved ~40s. Bulk kinds
@@ -88,7 +95,7 @@ _MAX_CONCURRENT_RUNS = 4       # concurrent REAL-TIME / sender runs (own lane)
 # real-time replies stay fast even mid-scrape. Senders keep _run_sem; bulk gets
 # _bulk_sem. Independent → at most RUNS+BULK concurrent (fine: per-account OF
 # pacing + different accounts/sessions).
-_MAX_CONCURRENT_BULK = 2
+_MAX_CONCURRENT_BULK = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_BULK", 2)
 _BULK_KINDS: frozenset[str] = frozenset({
     "scrape_chats", "push_to_sheets", "process_old_fans", "describe_media",
 })

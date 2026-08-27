@@ -156,14 +156,20 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
   const rungs = d.ladder_hours && d.rung != null
     ? d.ladder_hours.map((h, i) => (i === d.rung ? `[${hours(h)}]` : hours(h))).join(" · ")
     : null;
+  // A ONE-rung ladder is not a cycle and must not be drawn as one — "Quiet steps: [4h],
+  // then back to the first — after this one comes 4h" is three clauses saying 4h. A
+  // recent buyer walks exactly that shape (quota_backoff_hours_recent_buyer), so this
+  // is the common case, not an edge one.
   const step = rungs && d.ladder_hours && d.rung != null
-    ? ` Quiet steps: ${rungs}, then back to the first — after this one comes ${hours(d.ladder_hours[(d.rung + 1) % d.ladder_hours.length])}.`
+    ? (d.ladder_hours.length === 1
+        ? ` One quiet step, and it does not change: ${hours(d.ladder_hours[0])}.`
+        : ` Quiet steps: ${rungs}, then back to the first — after this one comes ${hours(d.ladder_hours[(d.rung + 1) % d.ladder_hours.length])}.`)
     : "";
   const free = d.held ? whenLabel(d.free_at) : null;
   // "step 4 of 4", never "rung 4/4": both halves of that were jargon — the word, and a
   // fraction that reads like a score. The chip says WHERE on the ladder he is; the
   // badge beside it says how long the step lasts.
-  const where = d.held && d.rung != null && d.ladder_hours
+  const where = d.held && d.rung != null && d.ladder_hours && d.ladder_hours.length > 1
     ? ` · step ${d.rung + 1} of ${d.ladder_hours.length}` : "";
   // The counter and the hold can disagree, and only one way round: the quota day
   // TUMBLES — it opens on a reply of hers and closes after 12h of her silence — so it

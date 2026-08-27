@@ -21,18 +21,22 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import account_page
 import audiences
+import ppv_captions
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import AccountAiConfig, AutomationRule, CatalogItem, Message
 from automations.upsell import derive_band, media_key
 from automations.ppv_send import (
     PPV_CAPTION_POOLS,
+    _REF_RESERVED,
+    PPV_CAPTION_POOLS_BY_LANG,
+    PPV_CAPTION_POOLS_HIM,
     PPV_FEED_CAPTION_POOLS,
     RECENCY_BANDS,
     SPEND_BANDS,
@@ -61,7 +65,9 @@ _VIRTUAL_AUDIENCES = {str(x).lower() for x in audiences.BROADCAST_LISTS}
 _MAX_MEDIA = 50
 _MAX_PREVIEWS = 10
 _MAX_CAPTION_TEXTS = 20
-_CAPTION_MAX = 1500     # long multi-paragraph PPV copy (the "screenshot" look) fits
+# Long multi-paragraph PPV copy (the "screenshot" look) fits. Owned by
+# `ppv_captions` so a composed box and this clamp can never disagree.
+_CAPTION_MAX = ppv_captions.TEXT_MAX
 _NAME_MAX = 60
 _ROTATOR_NAME = "PPV sends"
 # The single rule's tick. The rotator inside ppv_send decides which PPV (if any)
@@ -91,6 +97,13 @@ def _validate_ppv(p: Any) -> dict:
     pid = str(p.get("id") or "").strip()
     if not pid:
         raise HTTPException(422, "each ppv needs a stable id")
+    if _REF_RESERVED in pid:
+        # ppv_send carves `{id}#sub` out of this namespace for the owner leg's
+        # ledger ref and folds the suffix back off when it ranks starvation.
+        # An id carrying the reserved character would alias onto another entry.
+        raise HTTPException(
+            422, f"ppv id must not contain {_REF_RESERVED!r} — it is reserved by "
+                 "the sender's ledger refs")
     name = str(p.get("name") or "").strip()[:_NAME_MAX]
     try:
         base = int(p.get("base_price_cents") or 0)
@@ -171,6 +184,21 @@ def _validate(cfg: dict) -> dict:
     # default price (every known fan excluded so no double-send). UI default ON;
     # the runtime treats an ABSENT key as off, so it never blasts until saved.
     out["reach_all"] = bool(cfg.get("reach_all", True))
+    # The owner leg: when the ownership guard removes the fans who already
+    # unlocked a PPV, send them a DIFFERENT library PPV in the same tick instead
+    # of nothing. Default OFF and, unlike `reach_all` above, OFF on save too —
+    # this is a per-account rollout (the all-lanes count says three of the six
+    # live accounts already over-serve buyers through the 1:1 seller lane), so
+    # an account that has never been assessed must not acquire the behaviour by
+    # opening the tab. Named here because `_validate` rebuilds the blob from
+    # scratch: a key it does not list is DROPPED by the next save, and an
+    # operator-enabled flag that a UI save silently reverts is worse than none.
+    out["owner_second_leg"] = bool(cfg.get("owner_second_leg"))
+    # AI caption at send: ppv_send writes ONE line about the media per run and
+    # composes it above the style-pool line. `_validate` rebuilds this blob from
+    # scratch, so a key it does not name is dropped by the next save from the
+    # tab. Default OFF — a deploy alone never puts model copy in front of fans.
+    out["ai_caption_at_send"] = bool(cfg.get("ai_caption_at_send"))
     # Pause between re-messaging the same fan (the contact guard), in hours.
     # 0 = no pause (send to everyone). Clamp to a sane ceiling.
     try:
@@ -464,6 +492,41 @@ async def suggest_ppvs_from_vault(
     }
 
 
+class _CaptionBoxSetBody(BaseModel):
+    account_id: str
+    # The PPV's media, in ITS order — deliberately NOT a ppv_id, so the button
+    # works on a draft row the operator has not saved yet (the same reason
+    # `_PreviewBody` carries draft price limits instead of reading the store).
+    media_ids: list[int] = []
+    compose: ppv_captions.ComposeSpec = Field(default_factory=ppv_captions.ComposeSpec)
+
+
+@router.post("/admin/ppv-library-config/caption-box-set")
+async def caption_box_set(body: _CaptionBoxSetBody = Body(...)) -> dict[str, Any]:
+    """A rotating SET of caption boxes for one PPV — see `ppv_captions` for what
+    a set is and why the frame is the lane's own line.
+
+    Suggest-only, exactly like `/suggest`: nothing is written to
+    `ppv_library_config_json`. The operator keeps the boxes they want and presses
+    Save, and the send path is untouched — it already picks one box at random,
+    which is what turns the set into a rotation.
+
+    This route is the HTTP boundary and nothing else: auth, the media list, the
+    account's voice lane, delegate.
+    """
+    assert_account_owned(body.account_id)
+    media_ids = _int_list(body.media_ids, _MAX_MEDIA)
+    if not media_ids:
+        raise HTTPException(422, "media_ids is required")
+    async with get_session() as s:
+        cfg_row = await s.get(AccountAiConfig, body.account_id)
+    return await ppv_captions.build_box_set(
+        body.account_id, media_ids, body.compose,
+        voice=getattr(cfg_row, "voice", None) or "",
+        lang=getattr(cfg_row, "language", None) or "en",
+    )
+
+
 @router.get("/admin/ppv-library-config")
 async def get_ppv_library_config(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
@@ -488,6 +551,12 @@ async def get_ppv_library_config(account_id: str = Query(...)) -> dict[str, Any]
         "feed_pools": sorted(PPV_FEED_CAPTION_POOLS),
         "feed_caption_pools": PPV_FEED_CAPTION_POOLS,   # public-voice feed caption styles
         "matrix": _matrix_view(),
+        # The caption-set ceilings, so the panel's "% of sends" readout is
+        # computed against the SAME bound the route clamps to. A client-side
+        # copy of this number drifts silently, and the number it would lie
+        # about is the headline one.
+        "caption_limits": {"boxes_max": ppv_captions.BOXES_MAX,
+                           "styles_max": ppv_captions.CALLS_MAX},
     }
 
 

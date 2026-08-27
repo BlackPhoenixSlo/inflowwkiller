@@ -209,7 +209,7 @@ _DEFAULTS: dict = {
     # to a free one, or `teaser_convo_unbought_reset_h` passes.
     #
     # This is the brake whose absence produced the worst behaviour in the system:
-    # measured 2026-08-01 on Isabelle, fan 374095202 received EIGHTY-FIVE consecutive
+    # measured 2026-08-01 on Dana, fan FAN_ID received EIGHTY-FIVE consecutive
     # $3.00 locked messages across three days and unlocked none of them. Under
     # fluctuate-down (08-19) there is almost always a cheaper ask to send again, so
     # this breaker is the ONLY thing that guarantees a wall of ignored asks ends.

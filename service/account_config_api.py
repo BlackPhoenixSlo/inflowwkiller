@@ -257,7 +257,7 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         # sharp end: BrainPanel's `defaultsWithImages` preserves `voice` across a
         # refill but copies the persona and the six time-of-day lines wholesale,
         # so one click turned a male account into a 22-year-old woman with the
-        # right value still in the voice dropdown. 2024813 was seeded that way
+        # right value still in the voice dropdown. ACCOUNT_ID_2 was seeded that way
         # and ran her yoga/beach/cat lines under a red-pill-dom persona.
         "defaults": brains[cfg["voice"]],
         # Both lanes, because "Reset to defaults" must follow the CREATOR DROPDOWN,

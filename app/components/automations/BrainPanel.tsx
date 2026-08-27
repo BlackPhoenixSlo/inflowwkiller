@@ -18,6 +18,7 @@ import { Button, Card, Input } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { cn } from "@/lib/utils";
 import { giphyUrl } from "@/lib/ofMedia";
+import { AccountChips } from "@/components/AccountChips";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useAccountConfig,
@@ -624,30 +625,7 @@ export default function BrainPanel() {
         </div>
       </header>
 
-      {/* Account picker */}
-      {accounts.length > 1 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[10px] uppercase tracking-wide text-fg-dim mr-1">Account</span>
-          {accounts.map((a) => {
-            const active = accountId === a.id;
-            return (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => setAccountId(a.id)}
-                className={cn(
-                  "px-2.5 py-1 rounded-full text-xs border transition-colors",
-                  active
-                    ? "bg-accent text-white border-accent"
-                    : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg hover:border-fg-dim",
-                )}
-              >
-                {a.nickname || a.id}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      <AccountChips accountId={accountId} onChange={setAccountId} />
 
       {/* Plain wrapper (no space-y of its own) so the phone-only sticky Save bar
        *  below is NOT a `space-y-3` sibling of the Card — appending a hidden
@@ -713,7 +691,7 @@ export default function BrainPanel() {
             {/* HER CLOCK — one control, one stored number, and it is the one every
                 engine reads (rhythm.tz_offset_for). There used to be two: an IANA
                 zone here and a legacy offset behind it, the zone silently won, and
-                Isabelle ran three hours off — her welcome told new subscribers
+                Dana ran three hours off — her welcome told new subscribers
                 "it's Friday night in US" at 07:38 her time. The value of this
                 dropdown IS the stored offset, so what you pick is what a fan gets. */}
             <label className="block space-y-1">

@@ -40,12 +40,39 @@ interface FoldersResp {
   hasMore?: boolean;
 }
 
-/** All pinnable lists (both pinned + not) — used by the picker. */
-export function useAllChatFolders(accountId: string | null) {
+// ONE query key for the folder list, two views of it.
+//
+// The pinned chips (ChatList) and the full picker (ChatActionsMenu,
+// FanListSelect) both mount on the inbox and both want the same upstream
+// `/chats/folders` resource. Under two query keys that was two OF calls on
+// every inbox open — the pinned set is just a filter of the full one, so it is
+// now derived with `select` off the shared key and costs nothing.
+//
+// The one `select` fn is module-level so its identity is stable across
+// renders (an inline fn would re-run it every render and defeat react-query's
+// memoisation). The picker passes none at all — no-`select` already returns
+// the rows untouched, so an identity fn would be pure indirection.
+//
+// The trailing "all" is vestigial now that there is only one key, but it is
+// kept deliberately: it was already the picker's key, so existing browsers
+// re-hydrate their persisted folder list instead of starting cold. All three
+// invalidators (`ChatSurface`, `ChatActionsMenu`, `usePinChatFolder`) match on
+// the ["chat-folders", accountId] PREFIX, so they still reach it.
+const FOLDERS_KEY = (accountId: string | null) =>
+  ["chat-folders", accountId ?? "", "all"] as const;
+
+const selectPinned = (rows: ChatFolder[]): ChatFolder[] =>
+  rows.filter((f) => f.isPinnedToChat);
+
+function useFolders(
+  accountId: string | null,
+  select?: (rows: ChatFolder[]) => ChatFolder[],
+) {
   return useQuery({
-    queryKey: ["chat-folders", accountId ?? "", "all"],
+    queryKey: FOLDERS_KEY(accountId),
     enabled: !!accountId,
     staleTime: 60_000, // #12/#25: was 3 days — refresh folder/VIP membership actively
+    select,
     queryFn: async (): Promise<ChatFolder[]> => {
       if (!accountId) return [];
       const r = await relay.get<FoldersResp>(
@@ -64,21 +91,16 @@ export function useAllChatFolders(accountId: string | null) {
   });
 }
 
-/** Only the lists currently pinned — these render as chips. */
+/** All pinnable lists (both pinned + not) — used by the picker. */
+export function useAllChatFolders(accountId: string | null) {
+  return useFolders(accountId);
+}
+
+/** Only the lists currently pinned — these render as chips. Same fetch as
+ *  `useAllChatFolders`; the chips now inherit that call's alpha ordering
+ *  instead of OF's raw list order. */
 export function useChatFolders(accountId: string | null) {
-  return useQuery({
-    queryKey: ["chat-folders", accountId ?? "", "pinned"],
-    enabled: !!accountId,
-    staleTime: 60_000, // #12/#25: was 3 days — refresh folder/VIP membership actively
-    queryFn: async (): Promise<ChatFolder[]> => {
-      if (!accountId) return [];
-      const r = await relay.get<FoldersResp>(
-        `/api/of/v2/chats/folders?limit=50`,
-        { accountId },
-      );
-      return (r.list ?? []).filter((f) => f.isPinnedToChat);
-    },
-  });
+  return useFolders(accountId, selectPinned);
 }
 
 export function usePinChatFolder(accountId: string | null) {

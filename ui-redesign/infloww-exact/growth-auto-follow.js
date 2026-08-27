@@ -3,7 +3,7 @@
  * What changed and why:
  *  • The table used to render ONE row (the selected account) under a column
  *    headed "Creator name". The roster is 15 and the only creator that HAS
- *    auto-follow data (Jaka, rule 169) was invisible on every other scope, so
+ *    auto-follow data (Ada, rule 169) was invisible on every other scope, so
  *    the page read as "nothing ever ran". Both list endpoints answer unscoped,
  *    so one GET each now backs all 15 rows and the Creator filter is real.
  *  • runFollows() summed only followed+refollowed+pinged. service/automations/

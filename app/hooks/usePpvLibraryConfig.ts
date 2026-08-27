@@ -35,6 +35,12 @@ export interface PpvCaps {
   per_week?: number;
   per_month?: number;
 }
+export interface CaptionLimits {
+  /** Server's ceiling on boxes per set. The panel clamps to THIS, not a literal. */
+  boxes_max: number;
+  styles_max: number;
+}
+
 export interface PpvLibraryConfig {
   enabled?: boolean;
   /** Creator-local quiet window [startHour, endHour] (0-23); null = 24/7. */
@@ -45,6 +51,11 @@ export interface PpvLibraryConfig {
   ppv_caps?: PpvCaps;
   /** Also broadcast each PPV to ALL subscribers at the default price (known fans excluded). */
   reach_all?: boolean;
+  /** Owner second leg: when the ownership guard removes the fans who already
+   *  unlocked a PPV, send them a DIFFERENT library PPV in the same tick instead
+   *  of nothing. Default OFF — this is a per-account rollout, not a house default:
+   *  on some accounts the 1:1 seller lane already over-serves buyers. */
+  owner_second_leg?: boolean;
   /** Don't re-message a fan for N hours (contact guard). 0 = no pause. */
   pause_hours?: number;
   /** Global price limits (cents): every COMPUTED send/post price — tier cells, the
@@ -67,6 +78,8 @@ export interface PpvLibraryConfig {
    *  422s rather than storing an exclusion that cannot work. */
   broadcast_exclude_lists?: number[];
   ppvs?: PpvItem[];
+  /** ppv_send writes ONE caption line per run, above the pool line. Default off. */
+  ai_caption_at_send?: boolean;
 }
 
 export interface PpvPreviewCell {
@@ -100,6 +113,8 @@ interface PpvLibraryConfigResponse {
   feed_pools: string[];
   feed_caption_pools: Record<string, string[]>;
   matrix: PriceMatrix;
+  /** Server-owned ceilings for the caption-set panel. */
+  caption_limits?: CaptionLimits;
   /** Top of the priciest piece of content's DERIVED price band (cents; 0 = no
    *  content / no evidence yet). The Max below it silently caps what the 1:1
    *  seller may ever ask for that clip, so the tab warns once. */
@@ -268,6 +283,60 @@ export function usePreviewPpvToFeed(accountId: string | null) {
       relay.post(`/admin/ppv-library-config/post-now/preview`, {
         account_id: accountId,
         ...(ppvId ? { ppv_id: ppvId } : {}),
+      }),
+  });
+}
+
+export interface CaptionBox {
+  text: string;
+  /** Which hook style wrote it — detail | house | blunt | question. */
+  style: string;
+  /** Where the lane's house line sits, or null for a bare hook. */
+  frame: "top" | "bottom" | null;
+}
+
+export interface CaptionBoxSetResult {
+  account_id: string;
+  /** Ready-to-save box texts, already inside the save-time limits. */
+  captions: string[];
+  boxes: CaptionBox[];
+  skipped: { media_id?: number; style?: string; reason: string }[];
+  generated: number;
+  cost_millicents: number;
+  /** How many house lines this PPV's lane actually has. 0 → bare hooks only. */
+  pool_lines?: number;
+}
+
+export interface CaptionBoxSetArgs {
+  /** The PPV's media, in its own order — DRAFT ids, so this works before Save. */
+  mediaIds: number[];
+  /** The PPV's lane. Its house lines become the frames. */
+  captionPoolKey: string;
+  boxes: number;
+  /** How many boxes carry the lane line. This IS the "X% of sends" number. */
+  framed: number;
+  /** How many of the framed boxes put the line ABOVE the hook. */
+  frameTop: number;
+  styles: string[];
+}
+
+/** A rotating SET of caption boxes: styled hooks written from the media's own
+ *  description, each composed with one of that lane's house lines.
+ *
+ *  Suggest-only. The set is appended to the editor and the operator still
+ *  presses Save. The sender already picks one box at random per send — which is
+ *  what turns the set into a rotation, and what makes "8 framed of 10" mean
+ *  "80% of sends" without a single line of send-path code. */
+export function useCaptionBoxSet(accountId: string | null) {
+  return useMutation<CaptionBoxSetResult, Error, CaptionBoxSetArgs>({
+    mutationFn: ({ mediaIds, captionPoolKey, boxes, framed, frameTop, styles }) =>
+      relay.post(`/admin/ppv-library-config/caption-box-set`, {
+        account_id: accountId,
+        media_ids: mediaIds,
+        compose: {
+          caption_pool_key: captionPoolKey,
+          boxes, framed, frame_top: frameTop, styles,
+        },
       }),
   });
 }

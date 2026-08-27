@@ -40,7 +40,7 @@ the same sync engine, 60s cache):
                      are just them). Ticked ON, any send attaching a vault
                      VIDEO tags even when the describe verdict says solo:
                      video describes are cut from stills and miss the POV
-                     partner — Lucas1/Lucas2 clips shipped untagged exactly
+                     partner — blake/blake clips shipped untagged exactly
                      this way, so the collab accounts turn this on.
   cotag_username     handle to tag on THIS account, no '@'. NULL → the env →
                      the built-in default.
@@ -258,7 +258,7 @@ def needs_cotag(account_id: str, media_files: Any) -> bool:
     five-item bundle still shows a second person — or, on an account whose
     Brain opted IN to the video rule, when any item is a VIDEO at all: video
     describes are cut from stills and miss the POV partner, which is how
-    solo-described Lucas clips went out untagged.
+    solo-described blake clips went out untagged.
     """
     ids = _numeric_ids(media_files)
     if ids is None:

@@ -474,7 +474,7 @@ def tz_offset_for(timezone: str | None, utc_offset: int | None,
 
     ⚠️ The precedence was the OTHER WAY around until 2026-08-08, and that is what
     this reversal is for. Two clocks were stored per account and the silent one won:
-    Isabelle sat on `America/Los_Angeles` next to a stored -4, so her welcome told
+    Dana sat on `America/Los_Angeles` next to a stored -4, so her welcome told
     new subscribers "it's Friday night in US" at 07:38 Eastern and named yesterday's
     weekday after Eastern midnight. Nothing on any screen said which of the two was
     live. A fixed offset does NOT track DST — that is the accepted cost of having

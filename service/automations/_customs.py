@@ -168,7 +168,7 @@ def resolve_floor(min_cents) -> int:
 
     Why the floor is PER ACCOUNT at all: what a $100 DM tip MEANS is an
     account-level fact, not a global one — on the male accounts it demonstrably
-    is an order (fan 14673050 said so in as many words), while the female
+    is an order (fan FAN_ID said so in as many words), while the female
     accounts took 5 of them last month that were almost certainly generosity.
     One constant cannot be right for both, and getting it wrong in the generous
     direction stops the bot selling to a good fan until a human notices."""

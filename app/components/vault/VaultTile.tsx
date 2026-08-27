@@ -19,22 +19,13 @@ import {
   useCaptionOverlay,
   VaultAiCaptionOverlay,
 } from "@/components/chat/VaultPicker";
+import { vaultTileThumb } from "@/hooks/useVaultCache";
 import { proxyImage, proxyScrubFrame, type VaultMedia } from "@/lib/relay";
 import { fmtDuration } from "@/lib/format";
 
 const SCRUB_FRAMES = 12;
 const SCRUB_INTERVAL_MS = 450;
 const HOVER_DELAY_MS = 400;
-
-function rawThumb(m: VaultMedia): string | undefined {
-  return (
-    m.files?.thumb?.url ||
-    m.files?.squarePreview?.url ||
-    m.files?.preview?.url ||
-    m.files?.full?.url ||
-    undefined
-  );
-}
 
 interface AiMeta {
   describe_status?: string | null;
@@ -87,10 +78,8 @@ export default function VaultTile({
   const slideRef = useRef<number | null>(null);
   const hoveringRef = useRef(false);
 
-  // Prefer the relay's cached 300px thumb (permanent, signature-free) over the
-  // expiring OF url — that's what fixes broken tiles on mirror reads.
-  const cachedThumb = (m as unknown as { _thumb?: string })._thumb;
-  const thumb = cachedThumb || proxyImage(rawThumb(m), accountId);
+  // "" for a media with no picture (a voice note) — the placeholder renders.
+  const thumb = vaultTileThumb(m, accountId);
   const dur = fmtDuration(m.duration);
   const isVideo = m.type === "video";
   const rawVideoSrc = isVideo ? progressiveVideoSrc(m) : null;

@@ -507,19 +507,24 @@ _HANDLE_WORD = re.compile(r"[A-Za-z]{3,}")
 
 def _greet_token(sub: dict, voice: str = "her") -> str:
     """What to greet a fan by when `_resolve_welcome_name` found no real name in any
-    source — all that's left is the raw OF handle. Three shapes, resolved in code:
+    source — all that's left is the raw OF handle. Two shapes, resolved in code:
 
-        u4471223     → 'fan #4471223'   (a bare id is an id, not a name)
         xx_rider_92  → 'rider'          (the word inside the handle)
-        (unusable)   → 'cutie'          (letterless handle — vanishingly rare)
+        u4471223     → 'cutie'          (a bare id carries no word at all)
+
+    🚨 A bare id used to mint 'fan #4471223' here, and the caller is
+    `_local_greeting`, which alliterates whatever it is handed AS A NAME. The
+    first thing 59 real subscribers ever read — the most recent on 2026-08-21 —
+    was "Hey F-F-F-Flirty fan #FAN_ID ! !!". The docstring's own rule ("a bare
+    id is an id, not a name") was right and the branch contradicted it: an id is
+    not a word, so it belongs on the nameless path with every other handle we
+    cannot say out loud, not in a template built to say a name.
 
     This used to be an LLM call per nameless fan. It produced exactly this shape
     ('Hey B-B-B-Bold bigdaddy69 ! !!'), so it was paying per fan for a table lookup
     the named path already does for free — and a daily-cap trip cost those fans
     their welcome entirely. Deterministic means no cost, no cap, no variance."""
     target = (sub.get("name") or sub.get("username") or "").strip()
-    if re.fullmatch(r"u?\d+", target):
-        return f"fan #{re.sub(r'\D', '', target)}"
     words = _HANDLE_WORD.findall(target)
     if words:
         return max(words, key=len).lower()
@@ -777,7 +782,7 @@ async def preview_compose(
     # full time_activities/time_images dicts, so a shallow merge is correct. Both
     # sides hold the RAW clock columns and `_clock_hours` resolves whatever wins, so
     # the draft's clock cannot land in a different unit than the brain's — that
-    # mismatch is what previewed Isabelle 3h away from what her welcome sent.
+    # mismatch is what previewed Dana 3h away from what her welcome sent.
     if config:
         cfg = {**cfg, **{k: v for k, v in config.items() if v is not None}}
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip

@@ -112,6 +112,7 @@ from . import _openers  # the gen_info opener pool (the deepen phase)
 # 🚫 no `_pins` import — pins unwired 2026-08-15, ruling in `_pins.py`'s docstring.
 from . import _quotes  # which bubble he quote-replied (resolver + prompt block)
 from . import _prompt_shape  # block grouping / facts ablation / task line
+from . import _ppv_caption  # the PPV caption prompt, over the media AND the man
 from . import sell_lane  # THE gate every priced send passes through (all engines)
 from . import _sell_signal  # the model's own "he asked to buy" line (shadow)
 # ppv_send owns the ONE price authority (`price_bounds`); ownership.py owns
@@ -236,7 +237,7 @@ def skip_reason_blocks(reason: str | None, *, engage_old_fans: bool) -> bool:
     ⚠️ IT EXISTS BECAUSE THE BADGE HAND-ROLLED A SECOND COPY AND DROPPED A CLAUSE.
     `fans.py` filtered `_GRADUATION_SKIPS` but not the engage_old_fans lift, so every
     fan carrying `old_fan_pre_ai` rendered "🚫 Skipped (old_fan_pre_ai)" while the
-    engine was happily engaging him — 96 fans on Lucas2 alone. Worse than the false
+    engine was happily engaging him — 96 fans on blake alone. Worse than the false
     label: the badge returns on its FIRST hit, so that phantom skip also made the true
     state (Human Rhythm's "On a break") unreachable for exactly those fans. An operator
     debugging a silent thread was shown a wrong reason AND denied the right one.
@@ -280,6 +281,92 @@ def seller_owned_fans(candidates: set[int], *,
     if payers_only:
         owned &= content_payers
     return owned | (always & candidates)
+
+
+async def _rescue_gather_close(client, cfg: dict, account_id: str, fan_id: int,
+                               f: Fan | None, skip_reason: str | None,
+                               his_words: str, now: datetime,
+                               *, dry_run: bool = False) -> bool:
+    """The floor's own escape hatch: re-offer the parting PPV to a GRADUATE the
+    payer floor just turned away, with a caption that answers him. True when it
+    went out.
+
+    `seller_owned_fans` above and `skip_reason_blocks` are a partition only while
+    the gatherer is still working the fan. Its graduation rows break that: a
+    `_GRADUATION_SKIPS` row closes welcome_chatter_for_info's side, and a man who
+    has bought nothing fails this side, so both engines are finished with him at
+    once. `spent` graduates never reach here (they are payers, so the floor keeps
+    them); `info` and `too_long` do, and prod ran a thread into exactly that on
+    2026-08-23 — his parting PPV was refused on one soft-deleted vault id and the
+    graduation went through anyway, which is the documented contract
+    (`_close_with_farewell`: "a refusal changes nothing — he graduates either
+    way").
+
+    The gather-close is the one thing that can END this: buy it and he is a
+    content payer, and the floor hands him to the seller on the next tick. So the
+    offer is REPEATED rather than made once — every
+    `pack_farewell.GATHER_CLOSE_RETRY_DAYS`, on a tick where he spoke last (the
+    loop above has already established that; it is what "the first time he
+    answers" means here). The clock lives in `fans.gather_close_at` and
+    `send_gather_close` owns both reading and stamping it, so the graduation's
+    attempt and this one cannot disagree about when he last got one.
+
+    ONE message, not a reply followed by a box. The caption's clause is the
+    audited contract (the count plus what she is doing in the media, off the
+    vault's describe pass) and the voice line under it ANSWERS his message
+    (`content_resolver.answer_line`, which resolves the model and the account's
+    texting block itself). He is below the payer floor, so this is the only LLM
+    call he is worth: one line, once every three days, instead of the full reply
+    pipeline the floor exists to keep him out of.
+
+    Cheap gates first, in real cost order — the switch, then memory, then the
+    row this sweep already loaded, and only then a lease. The switch leads
+    because it is the one that is usually FALSE: most accounts have no
+    gather-close folder, and every fan the floor turns away on every ~30s tick
+    would otherwise take a lease acquire and release for a feature that is off.
+
+    The send itself lives in `pack_farewell` because these two engines already
+    import each other (this module pulls welcome_chatter_for_info's style helpers
+    at line 158; it reaches back for `owns_whole_account` at call time), so the
+    send has to sit BELOW both or one of them owns the other's product. The
+    import is deferred for the same reason welcome_chatter_for_info's is: it
+    drags `pack_sender` in behind it, and most `ai_chatter` imports never send a
+    pack.
+    """
+    from . import pack_farewell
+    if not pack_farewell.gather_close_on(cfg):
+        return False
+    if f is None or skip_reason not in _GRADUATION_SKIPS:
+        return False
+    if not pack_farewell.due_for_gather_close(f, now):
+        return False
+    # A priced send is a send: the same cooldown and mutex the reply path takes,
+    # or this races welcome_chatter_for_info's last tick on the same fan.
+    if await ax.fan_on_cooldown(account_id, fan_id):
+        return False
+    if not await ax.acquire_fan_lease(account_id, fan_id, _PURPOSE):
+        return False
+    try:
+        # His words are the ONE thing the send cannot resolve for itself: pass
+        # them and the caption's voice line answers him instead of saying
+        # goodbye.
+        sent = await pack_farewell.send_gather_close(
+            client, cfg, account_id, fan_id, f,
+            answer_to=his_words, dry_run=dry_run)
+        if sent and not dry_run:
+            # A priced send IS a send, so it owes the same two rows every other
+            # send path writes — `pack_sender` deliberately writes neither.
+            # welcome_chatter_for_info marks the send on its own copy of this
+            # (`_close_with_farewell`); doing only half here is how
+            # `last_message_sent_at` goes stale on a fan we just charged.
+            await _mark_reply_sent(account_id, fan_id, now)
+            await ax.start_fan_cooldown(account_id, fan_id,
+                                        cooldown_s=_REPLY_COOLDOWN_S)
+            log.info("gather-close rescue account=%s fan=%s reason=%s",
+                     account_id, fan_id, skip_reason)
+        return sent
+    finally:
+        await ax.release_fan_lease(account_id, fan_id)
 
 # Built-in defaults — any key the account config omits. DISABLED until a creator
 # enables it. The offer_* knobs are read by the M3 offer engine.
@@ -476,12 +563,40 @@ _DEFAULTS: dict = {
     # A man reaching for his wallet is never the man we ration, and this is what stops
     # the quota from ever costing a sale — it mirrors the buying_signal burst tier.
     "daily_quota_buying_signal": 20,
-    # The backoff ladder, in hours, walked once per quota exhaustion since his last
-    # money event — and CYCLIC: after the last rung it starts again at the first. A
-    # fixed floor would relegate a fan to "once every 3 days" forever; wrapping means
-    # every non-payer is periodically re-warmed at 4h, which is what the 30%-of-buyers
-    # -take-30-days tail needs. Any sale resets him to rung 0.
+    # The backoff ladder, in hours, and CYCLIC: after the last rung it starts again at
+    # the first. A fixed floor would relegate a fan to "once every 3 days" forever;
+    # wrapping means every non-payer is periodically re-warmed at 4h, which is what the
+    # slow-converter tail needs. Any sale resets his anchor to rung 0.
+    #
+    # NOT "walked once per quota exhaustion", which is what this comment claimed for a
+    # month and is the misreading that hid the bug below. The rung is `dry_h % sum` over
+    # bands as wide as their own rungs (see quota_rung), so nobody CLIMBS it — a fan
+    # arrives wherever his dry streak already puts him, and 40h of it is already 72h.
     "quota_backoff_hours": [4, 12, 24, 72],
+    # …but that ladder is a NON-PAYER's leash, and its shape only ever made sense as
+    # one. The bands are as wide as their own rungs, so 40h of dry time already lands a
+    # fan on 72h — which meant a man who paid the day before yesterday hit three days
+    # of silence the moment he used the ration his SPENDING had earned him. Live, on
+    # 2026-08-27: a $10 fan lifted to 25/day by daily_quota_by_spend, 25/25 used, 82.5h
+    # dark, 2.1 days after his purchase. He was not being throttled for going quiet; he
+    # was being throttled for buying.
+    #
+    # So: money on the board inside 8 days and he walks his own short ladder instead.
+    # Eight rather than the 7/30 of daily_quota_by_spend on purpose — those windows
+    # answer "how big is his ration", this one answers "how punishing is running out of
+    # it", and coupling them would move this rule every time a spend tier is retuned.
+    #
+    # ONE rung, flat 4h. A two-rung short ladder would not be WALKED in order — the
+    # rung is `dry_h % cycle` (see quota_rung), so on [1, 4] the 4h band owns 80% of a
+    # 5h cycle and the pair behaves as a weighted coin flip while reading as a
+    # sequence. One rung says what it does. The ±25% jitter still applies, so "4h"
+    # means 3–5h, and past the quota she sends one reply per rung — this is ~6
+    # over-quota replies a day, not a floodgate.
+    #
+    # 0 days retires the split (everyone back on the long ladder — the pre-2026-08-27
+    # behaviour); an empty list means a recent buyer is never held at all.
+    "quota_recent_buyer_days": 8,
+    "quota_backoff_hours_recent_buyer": [4],
     # The other side of the coin: fans who DO spend get a BIGGER daily quota, never a
     # smaller one. Same {days, min_cents} shape as msg_limits_by_spend, same rolling
     # windows, same max-never-min rule — the effective quota is the HIGHEST match, and
@@ -648,6 +763,49 @@ _DEFAULTS: dict = {
     # ⚠️ CUSTOMS ARE NOT CATALOGUE. A custom is recorded to order, has no rows, and is
     # sold by TIP on the male lane — `_manifest_block`'s customs half still renders.
     "prompt_sell_catalog": False,
+    # ✍️ THE PPV CAPTION PROMPT, IN THE 1:1 THREAD — `_ppv_caption`.
+    # ON BY DEFAULT — operator ruling 2026-08-23.
+    #
+    # The two places this engine attaches a priced piece ON ITS OWN INITIATIVE — the
+    # post-buy rung and the discount resend — sent a script-pack line. It is in voice
+    # and it was written before anyone knew what was in the media or who was buying
+    # it, so "unlock it for me 😘" went out over a shower strip and a feet set alike,
+    # to a $600 whale who told us his kink and to a man who has never spoken. The
+    # catalogue pitch had the same problem one layer up: it sold from
+    # `description_for_ai`, a hand-authored blurb, while the vault held a vision
+    # description of the actual media.
+    #
+    # ON ⇒ those two sites spend ONE flash-tier call composing the SAME prompt the PPV
+    # Library writes its captions with (`describe_media.caption_style_prompt`), over
+    # the media's own vision facts PLUS his; and the manifest carries the hero media's
+    # real facts. Any miss — this flag, nothing described in the media he is being
+    # shown, the cap, a dead key, a blank line back — falls back to the canned line,
+    # so every failure path is the behaviour that shipped for months. Three states.
+    #
+    # 🚦 THE GATE IS THE DESCRIPTION (ruling 2026-08-23, which REPLACED the
+    # vault-AI master here). That master runs the SWEEP: it describes items and builds
+    # a monthly send out of them. It was never a claim on whether a description
+    # already on file may be read, and standing it in front of this left 14 of 18
+    # accounts on the canned line no matter how much of their vault was described.
+    # So the arithmetic is now: nothing described in what he is being shown ⇒ no
+    # call and no spend (`_ppv_caption.described_rows` filters on the same predicate
+    # `describe_media._copy_call` refuses on — one indexed query, before any billing);
+    # described media plus this flag ⇒ a written line.
+    #
+    # ⚠️ WHAT THIS TRADES. On those accounts a rung/resend line stops being
+    # human-authored and becomes model-written, at a price, with no human in the loop
+    # — the discipline the MASS lane deliberately keeps (`ppv_captions`: "a caption
+    # reaching a fan has been read by a human first"). It is defensible here and not
+    # there because a 1:1 reply is already model-written and goes to ONE man, not
+    # hundreds at once; the floor under it is `vault_ai_brief.SELLING_BRIEF`'s HARD
+    # RULE plus `_ppv_caption._STEER_RULE`, and every line still passes the word
+    # filter. If a caption ever names something the media does not hold, that is the
+    # rule to tighten — not this flag.
+    #
+    # ⚠️ It does NOT reach the ask lane. `pack_sender`'s caption is an audited
+    # CONTRACT ("11 bare feet pics") and a free-form line has no count to audit — see
+    # `_ppv_caption`'s module docstring for the 2026-07-31 incident that settled it.
+    "ppv_caption_1to1": True,
     # 🔔 THE MODEL'S OWN "he asked to buy" LINE — ARMED 2026-08-15 (operator ruling),
     # in `ai_chatter` and `autoreply`. `_sell_signal.decide` is now an OR: either the
     # regex or the model sees an ask and the vault lane runs.
@@ -1604,20 +1762,28 @@ async def _hero_media_map(account_id: str,
 
 
 async def _drop_owned(account_id: str, fan_id: int,
-                      offerable: dict[int, CatalogItem]) -> None:
+                      offerable: dict[int, CatalogItem]) -> dict[int, list[int]]:
     """Pop every item whose HERO media this fan already owns. Media-keyed —
     a fan who bought a clip in a MASS blast has no content_offers row, so a
     catalog-keyed check would cheerfully re-sell him what he already owns;
     hero-only so a shared free-preview frame never kills a sellable item.
     Same BOUGHT-only ∩ HERO rule `_offerable_for_fan` applies, re-run here
-    for freshness before each rung. Mutates `offerable` in place."""
+    for freshness before each rung. Mutates `offerable` in place.
+
+    RETURNS the hero map it had to build anyway, narrowed to the survivors.
+    `ownership.hero_media_map` opens a session and queries `VaultItem` whenever
+    previews exist, so a caller that wants hero media after this — the caption
+    lane's manifest facts — would otherwise pay for a second round trip to
+    re-derive a value this function was already holding. Callers with no use for
+    it just ignore the return."""
     if not offerable:
-        return
+        return {}
     hero = await _hero_media_map(account_id, list(offerable.values()))
     owned = await _owned_or_seen_media(account_id, fan_id)
     for iid in list(offerable):
         if owned & set(hero[int(iid)]):
             offerable.pop(iid, None)
+    return {int(i): m for i, m in hero.items() if int(i) in offerable}
 
 
 def _sellable(item: CatalogItem) -> bool:
@@ -1825,8 +1991,30 @@ _INTRO_PENDING = ("he's still sitting on an offer you already made — see "
 
 def _manifest_block(offerable: dict[int, CatalogItem],
                     quotes: dict[int, upsell.Quote] | None = None,
-                    sell_customs: bool = False) -> _SellSurface:
+                    sell_customs: bool = False,
+                    vault_facts: dict[int, str] | None = None) -> _SellSurface:
+    """`vault_facts` — item id → what a vision model actually saw in the media this
+    item will attach, from `_ppv_caption.hero_facts`. Empty/None ⇒ the manifest is
+    byte-identical to the one that has always shipped.
+
+    IT IS NOT A SECOND DESCRIPTION, IT IS THE FIRST TRUE ONE. `description_for_ai`
+    is a hand-authored product blurb — `starter_catalog` ships lines like "a set of
+    photos of my bare feet and soles, close up" and every account that never edited
+    them is pitching from that. The block below then says, correctly, "describe a
+    piece using ONLY its description", so the model's ceiling on specificity IS that
+    sentence: it cannot mention the bathroom mirror, the red set or the moment she
+    turns around, because nobody ever told it those were in there. Meanwhile the
+    vault holds a per-media vision description that says exactly that, and the PPV
+    Library has been writing captions off it for the mass lane.
+
+    So the two lanes stop describing the same media from two different sources. What
+    changes here is the GROUND TRUTH, not the voice — the close gets
+    `describe_media.CAPTION_OPEN_RULE` (the one sentence both lanes share verbatim)
+    and nothing else from the caption prompt, because a caption's length cap, emoji
+    budget and JSON contract are caption-shaped and would fight a chat bubble.
+    """
     lines = []
+    grounded = False
     for iid, it in sorted(offerable.items()):
         dur = ""
         if it.duration_sec:
@@ -1835,6 +2023,13 @@ def _manifest_block(offerable: dict[int, CatalogItem],
         lines.append(f"- [id {iid}] {it.kind}{dur} — {it.label or 'untitled'}: "
                      f"{(it.description_for_ai or '').strip()} — "
                      f"{_terms_str(it, q.price_cents if q else None)}")
+        # Indented under its own item so the id→facts binding is unambiguous. With
+        # six pieces on the shelf a flat list is how "the bathroom mirror" gets
+        # attached to the wrong one, which is a false promise at a price.
+        seen = (vault_facts or {}).get(int(iid), "")
+        if seen:
+            grounded = True
+            lines.append(f"    actually in it: {seen}")
     # "never customs" is CONDITIONAL. The ban exists because the catalog is the
     # only thing that provably exists, so a promised custom was a promise with no
     # delivery owner. An account that has opted in (`_common.SELL_CUSTOMS_KEY`)
@@ -1924,8 +2119,17 @@ def _manifest_block(offerable: dict[int, CatalogItem],
             "\"tip\". Otherwise just talk to him."
         ))
 
+    # The shared open-rule rides the close ONLY when the manifest actually carries
+    # facts to open ON. Told to lead with "the most specific visual detail from the
+    # facts" over nothing but a product blurb, the model does the only thing it can
+    # — it invents a detail — which is the failure this whole block's header exists
+    # to prevent. `grounded` is set by the loop above rather than re-derived with a
+    # second pass; `describe_media` still owns the string, re-exported through
+    # `_ppv_caption` so the reply loop needs no import of the vault-AI surface.
+    close = (_CLOSE_BY_ID + " " + _ppv_caption.CAPTION_OPEN_RULE
+             if grounded else _CLOSE_BY_ID)
     return _SellSurface(section=_SECTION_BY_ID, intro=_INTRO_BY_ID,
-                        close=_CLOSE_BY_ID, marker=True, block=(
+                        close=close, marker=True, block=(
         f"{_SECTION_BY_ID} (these are real, already filmed — "
         f"NEVER invent or promise anything not on this list, {_no_customs}and "
         "describe a piece using ONLY its description):\n" + "\n".join(lines) + "\n\n"
@@ -2088,7 +2292,8 @@ async def _last_unpaid_teaser(account_id: str, fan_id: int) -> dict | None:
 def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
                         offerable: dict[int, CatalogItem],
                         quotes: dict[int, upsell.Quote] | None,
-                        sell_customs: bool = False) -> _SellSurface:
+                        sell_customs: bool = False,
+                        vault_facts: dict[int, str] | None = None) -> _SellSurface:
     """He has ONE unpaid PPV on the table and you may send a SECOND (and FINAL) one:
     a DIFFERENT piece, or the SAME piece re-priced lower if he's balking on price.
     After this second one there are two unpaid offers open, so the pitch stops.
@@ -2098,8 +2303,11 @@ def _second_offer_block(pending: ContentOffer, pend_item: CatalogItem | None,
     narrower choice of piece."""
     plabel = (pend_item.label if pend_item else None) or "it"
     pprice = int(pending.price_cents or pending.tip_unlock_cents or 0) // 100
+    # Forwarded, not dropped: this branch re-teases the piece he ALREADY declined
+    # once, which is precisely the pitch that cannot afford to be vaguer than the
+    # first one was.
     base = _manifest_block(offerable, quotes=quotes or None,
-                           sell_customs=sell_customs)
+                           sell_customs=sell_customs, vault_facts=vault_facts)
     return dataclasses.replace(base, block=(
         base.block
         + f"\n\nSECOND OFFER, your last: he hasn't unlocked '{plabel}' (${pprice}). "
@@ -2705,7 +2913,17 @@ async def _maybe_discount_resend(client, account_id: str, cfg: dict,
         line = _pack_line("discount_resend", cfg, fan_id, price_cents=px)
         if not line:
             return False
-        line = apply_word_restriction(line)[:_REPLY_MAX_CHARS]
+        # BOTH prices go in. He has already seen this piece once at `seen_cents` and
+        # said nothing, so the caption's job is not to introduce it — it is to give
+        # him a reason to look again. `was_cents` is what lets the line know that,
+        # and the brief pins the number so the text and the paywall cannot disagree.
+        # `line_for` returns the FINISHED text — word-filtered and clipped.
+        # His spend is two DB queries — only paid for when the lane is on.
+        spend = (await _buyer_facts(account_id, fan_id)
+                 if _ppv_caption.enabled(cfg) else None)
+        line = await _ppv_caption.line_for(
+            line, cfg, account_id, fan_id, media, price_cents=px,
+            was_cents=seen_cents, spend_facts=spend)
         # OF wants dollars and takes cents (see the rung path). `px // 100` charged
         # $41.00 while the line she sent said "$41.23" — the message and the paywall
         # quoting different numbers is exactly the tell this whole feature exists to
@@ -3428,7 +3646,15 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
     px = max(upsell.OF_PRICE_FLOOR_CENTS, min(px, upsell.OF_PRICE_MAX_CENTS))
     line = (_pack_line("rung_escalate", cfg, fan_id)
             or (await load_voice_blocks(account_id)).unlock_prompt)
-    line = apply_word_restriction(line)[:_REPLY_MAX_CHARS]
+    # The rung is the ONE ask on this ladder that nobody asked for — it fires minutes
+    # after he paid, unprompted. A line written about the piece he is being shown is
+    # the difference between a follow-up and a vending machine. `line_for` returns
+    # the FINISHED text — word-filtered and clipped.
+    # His spend is two DB queries — only paid for when the lane is on.
+    spend = (await _buyer_facts(account_id, fan_id)
+             if _ppv_caption.enabled(cfg) else None)
+    line = await _ppv_caption.line_for(
+        line, cfg, account_id, fan_id, media, price_cents=px, spend_facts=spend)
     kwargs = {"price": px / 100, "locked_text": False, "media_files": media}
     previews = _item_previews(item)
     if previews:
@@ -4612,7 +4838,7 @@ def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
         # `CONTENT_ASK_RE` matches the bare substring "wanna see", with no reading of
         # who is offering what, so "You wanna see my cock?" already scored as
         # content_ask — a BUYING signal — and this branch would be dead code below it.
-        # Prod receipt (Isabelle 326419277, 2026-08-08 01:45:50): he offered, and the
+        # Prod receipt (Dana FAN_ID, 2026-08-08 01:45:50): he offered, and the
         # engine answered "u keep askn / dont u / tell me more about that highway life
         # first" with an $8 PPV stapled on. It thought HE was the one asking.
         #
@@ -4780,7 +5006,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # nudge above steers at "his job, a hobby, something going on in his life" —
     # the three fields a kink-forward fan is least likely to have filled.
     #
-    # Prod receipt (Lucas2 7789837 / fan 106046461, 2026-08-09 04:29→04:52). He
+    # Prod receipt (blake ACCOUNT_ID_3 / fan FAN_ID, 2026-08-09 04:29→04:52). He
     # wrote four sentences naming exactly what he wanted; his `hobbies` and
     # `occupation` were both "" and his `fetishes` was fully populated. With every
     # target of the nudge empty, the model reached for the only other thing in its
@@ -4898,7 +5124,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     elif kind == _TURN_RATE_PIC:
         # HE JUST SENT A PICTURE. Rating it is the whole point of the vision layer and
         # it was the one thing never wired: the description reached the prompt, nothing
-        # ever told her to USE it. Prod thread 581112404 is the receipt — he sent one,
+        # ever told her to USE it. Prod thread FAN_ID is the receipt — he sent one,
         # asked "Is it what you thought?", and got "mmm it's deffinetly something" while
         # a paragraph describing exactly what he sent sat in the same row of the DB.
         #
@@ -5891,6 +6117,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_muted_creator = 0  # muted creator we follow — HARD skip (durable)
     skipped_whale = 0       # at/over the spend gate → human territory
     skipped_not_payer = 0   # payer floor: never bought content → welcome_chatter_for_info's
+    gather_close_rescues = 0  # …and the gatherer had already resigned: PPV instead of silence
     skipped_sla_fresh = 0   # backup mode: inbound younger than the SLA
     skipped_manual = 0      # a human chatted too recently (cautious resume)
     skipped_ghost = 0       # ghost cycle: she is dark on this fan for whole days
@@ -5984,6 +6211,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # bought content, so he is welcome_chatter_for_info's to work and profile until he does.
             if fan_id not in seller_fans:
                 skipped_not_payer += 1
+                if await _rescue_gather_close(
+                        client, cfg, account_id, fan_id, f,
+                        skip_reasons.get(fan_id), c.last_body or "", now,
+                        dry_run=dry_run):
+                    gather_close_rescues += 1
                 continue
             # Cautious resume: a HUMAN sent something recently → their convo.
             if (resume_h and c.last_human_out_at is not None
@@ -6405,7 +6637,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # A TIP is money, and this is the ONLY place it reaches rhythm (the
                     # decide() twin below merges it too). `_context_of` must read a man
                     # who just tipped as a live sell — otherwise she walks out seconds
-                    # after he pays. Measured on 2026-08-09 on account 2024813: $5 tip
+                    # after he pays. Measured on 2026-08-09 on account ACCOUNT_ID_2: $5 tip
                     # at 21:37:27, ingested 21:37:31, step-out at 21:37:43. Deliberately
                     # NOT merged into `.paid` itself — see `_human_money_signals`.
                     last_paid_at=_newest(
@@ -6736,6 +6968,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         spend_capped += 1
                         log.info("ai_chatter 7d spend cap → COMPANION account=%s fan=%s",
                                  account_id, fan_id)
+                # The hero map `_drop_owned` builds below, kept so the caption lane's
+                # manifest facts don't pay to re-derive it. Empty means "nobody built
+                # one this turn" (gate off, or the shelf was empty) — `hero_facts`
+                # treats that as "build your own", so no path is left without facts.
+                hero_map: dict[int, list[int]] = {}
                 if gate_on and offerable:
                     # THE GATE. Live conversational signal only — lifetime spend is
                     # not an input. Selling into silence is the actual gap (ppv_send
@@ -6801,7 +7038,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         # never re-sell what he already owns.
                         if explicit_ask and not seller_off and offerable:
                             ask_override = True
-                            await _drop_owned(account_id, fan_id, offerable)
+                            hero_map = await _drop_owned(account_id, fan_id, offerable)
                             log.info("ai_chatter explicit-ask gate override "
                                      "account=%s fan=%s why=%s", account_id, fan_id, why)
                         else:
@@ -6824,7 +7061,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         if parked_id is not None and parked_id in offerable:
                             offerable = {parked_id: offerable[parked_id]}
                         # Re-checked before EVERY rung — see _drop_owned.
-                        await _drop_owned(account_id, fan_id, offerable)
+                        hero_map = await _drop_owned(account_id, fan_id, offerable)
                 if pricing_on and offerable:
                     fstate = await _fan_ladder_state(account_id, fan_id, f, fan_ladder)
                     pfloor = _proven_floor_cents(fstate, cfg)
@@ -6872,15 +7109,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # the pending one" and takes the same catalogue — with an
                     # empty one it has nothing to describe, so the customs-only
                     # manifest owns the bought-out case on both branches.
+                    # Same flag as the two priced attaches, and the same shape of
+                    # win: the pitch stops being written off a hand-authored product
+                    # blurb and starts being written off what is actually in the
+                    # media. Gated because it is prompt WIDTH on the highest-volume
+                    # engine — `{}` renders the manifest that has always shipped.
+                    vfacts = (await _ppv_caption.hero_facts(
+                                  account_id, offerable, hero=hero_map or None)
+                              if _ppv_caption.enabled(cfg) else {})
                     if second_offer and offerable:
                         sell = _second_offer_block(
                             pending, await _get_item(int(pending.item_id)),
                             offerable, quotes or None,
-                            sell_customs=v.sell_customs)
+                            sell_customs=v.sell_customs, vault_facts=vfacts)
                     else:
                         sell = _manifest_block(offerable,
                                                quotes=quotes or None,
-                                               sell_customs=v.sell_customs)
+                                               sell_customs=v.sell_customs,
+                                               vault_facts=vfacts)
 
             # fan_lang resolved above (haggle detection) — drives the reply language
             # AND the bilingual buy-signal detectors below.
@@ -6962,7 +7208,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # answer to a bot accusation — but refusing it AFTER generation turns a
             # sticker-only reply into SILENCE, which answers "You a real person?" with
             # nothing at all. That is a worse answer than the gif was. Seen on a replay
-            # of thread 581112404: the model returned "STICKER: eyeroll", the guard
+            # of thread FAN_ID: the model returned "STICKER: eyeroll", the guard
             # dropped it, `dropped_empty: 1`, and she never spoke.
             #
             # Same reasoning for the picture he just sent: a gif is precisely the
@@ -8286,6 +8532,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "skipped_muted_creator": skipped_muted_creator,
         "skipped_whale": skipped_whale,
         "skipped_not_payer": skipped_not_payer,
+        "gather_close_rescues": gather_close_rescues,
         "skipped_sla_fresh": skipped_sla_fresh,
         "skipped_manual": skipped_manual,
         "skipped_ghost": skipped_ghost,

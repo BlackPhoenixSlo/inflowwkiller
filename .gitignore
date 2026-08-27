@@ -94,12 +94,12 @@ service/_probe_*.py
 service/_verify_*.py
 service/_apply_*.py
 service/_proto_*.py
-service/_dirk*.txt
-service/_dirk*.out
-service/_dirk_full_section.md
+service/_Dana*.txt
+service/_Dana*.out
+service/_Dana_full_section.md
 CONVO_RUNS.md
-DIRK_FULL_CONVO.md
-wholeDIRKCHAT
+DANA_FULL_CONVO.md
+wholeDANACHAT
 
 # Real OF conversation transcripts (creator + fan message bodies). Local only.
 CONVO_RUN*.md
@@ -150,3 +150,20 @@ convo_review.html
 
 # operator scratch note — kept on disk, never tracked
 wwwwwwwww
+
+# Per-machine container limit overrides (and any other local compose tweak).
+# Compose merges this automatically; deploy-fastt.sh excludes it from the rsync
+# and scripts/prod-cpu-limits.sh merges into the VPS's own copy. It is per-machine by
+# definition, so it must never be committed.
+docker-compose.override.yml
+
+# Priority-lane counters. `server.py` flushes these at MODULE SCOPE, so merely
+# importing server writes the file — and service/.env points DATABASE_URL at the
+# repo, so an ad-hoc `python -c "import server"` from service/ (or anything
+# reaching vault_frames' lazy `import server`) drops it here rather than in the
+# docker volume where prod keeps it. Its `accounts` keys are live OF account ids
+# and this tree feeds the PUBLIC inflowwkiller mirror, so an `add -A` sweep —
+# which is exactly how commit 3742eb9 was made — is one command from publishing
+# them.
+service/priority_lane_stats.json
+priority_lane_stats.json

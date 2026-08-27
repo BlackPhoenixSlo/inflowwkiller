@@ -7,7 +7,7 @@
  * sleep window and rule quiet hours (server side: `rhythm.tz_offset_for`).
  *
  * There used to be two — this list of IANA zones was itself a second control, and
- * the zone silently outranked the offset stored beside it. Isabelle ran three
+ * the zone silently outranked the offset stored beside it. Dana ran three
  * hours off and told new subscribers "it's Friday night in US" at 07:38 her time.
  * The zones survive here as PLACE NAMES for the dropdown's labels, never as a
  * stored value: `clockOptions` turns them into offsets, which is what gets saved.

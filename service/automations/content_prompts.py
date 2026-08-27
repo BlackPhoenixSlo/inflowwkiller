@@ -1,16 +1,28 @@
 """service/automations/content_prompts.py — the model calls the content lane makes.
 
-Every LLM call in the ask lane lives here, and nothing else does. Extracted from
-`content_resolver` when that file crossed 1000 lines: tuning a prompt and tuning
-a SQL pool are different jobs, and neither reader should have to scroll through
-the other. The resolver orchestrates; this module is what it says out loud.
+Every LLM call the content lane makes lives here, and nothing else does.
+Extracted from `content_resolver` when that file crossed 1000 lines: tuning a
+prompt and tuning a SQL pool are different jobs, and neither reader should have
+to scroll through the other. The resolver orchestrates; this module is what
+it says out loud.
 
-## The calls, and why there are four
+Two lanes render through here, not one: the ask, and the gather-close farewell
+that shares its claim spine (`pack_sender._ask_claim`). A call added for the
+farewell still belongs here — the alternative is a second module that knows how
+to talk to a model, which is how one lane starts paying for phrasing the other
+already solved.
+
+## The calls, and why there are four in the resolve loop
 
     1. READ     thread tail          -> the CONTRACT (what he asked for)
     2. MATCH    contract + pool      -> candidate media ids
     3. VERIFY   each pick + contract -> keep only what provably satisfies it
     4. NEAREST  contract + pool      -> when nothing IS it, what is CLOSEST
+
+Two more sit outside that loop and write CAPTION halves rather than choosing
+media — 5. ACTION ("what is she doing in it") and 6. ANSWER ("her line back to
+him"). Neither picks anything, both are refusable, and both degrade to wording
+that shipped before they existed.
 
 Calls 1-3 are the shipped budget and the third is the one that matters: two
 calls would be a matcher, and the third makes it a gate. It exists because the
@@ -28,15 +40,21 @@ import logging
 import re
 import time
 from collections import Counter
+from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 import llm_client                       # module import so tests can patch .chat
 import vault_pack_picker
 from db.engine import get_session
-from db.models import Message, VaultItem
+from db.models import Fan, Message, VaultItem, created_at_text, parse_ts
 
-from ._common import load_voice_blocks, resolve_model
+from ._common import (
+    build_facts_note, facts_from_fan, load_voice_blocks, resolve_model,
+)
+# The canonical strip. `_funnel_routing` is a pure leaf (re + datetime), and it
+# is where `reply_mass_funnel` and `_funnel_signals` already get this.
+from ._funnel_routing import strip_html
 from .content_contract import MEDIA_KINDS, Contract, _STOPWORDS
 
 log = logging.getLogger("of-relay.automation.content_prompts")
@@ -65,10 +83,43 @@ async def _thread_lines(account_id: str, fan_id: int, n_msgs: int,
         who = "FAN" if direction == "in" else me
         tag = " [tip]" if is_tip else (
             f" [PPV ${int(price_cents or 0) / 100:.0f}]" if int(price_cents or 0) > 0 else "")
-        body = " ".join(str(body or "").split())[:300]
+        # 🚨 STRIP FIRST. Bodies arrive as `<p>text</p>` and this was the only
+        # history renderer in the tree that skipped it — `autoreply._history`,
+        # `reply_mass_funnel._history_block` and `welcome_chatter_for_info.
+        # _history_text` all strip. Caught 2026-08-24 by rendering `_him_block`
+        # against live threads: every line came out wrapped in tags, on this
+        # call AND on `read_contract`, which reads his words to find the ask.
+        # Stripping before the clip so a tag can never be cut in half.
+        body = " ".join(strip_html(str(body or "")).split())[:300]
         if body or tag:
             lines.append(f"{who}{tag}: {body}")
     return lines
+
+async def _thread_started_at(account_id: str, fan_id: int) -> datetime | None:
+    """When this conversation began — the oldest live message on the thread.
+
+    Sits beside `_thread_lines` because it reads the same table for the same
+    lane; kept a separate call because that one wants the LAST n rows and this
+    wants a MIN over all of them. Both are covered by
+    `ix_messages_account_fan_time`. None when the thread is empty.
+
+    🚨 `created_at_text()`, NOT the mapped column — see the note above it in
+    db/models.py. One row on one account once held '' there, and the DateTime
+    processor raises INSIDE `.execute()`, which no try/except around the caller
+    can catch. MIN is the worst possible aggregate to meet that cell with: ''
+    sorts below every real date, so a single dirty row would be the answer for
+    the whole thread, every time. `parse_ts` turns it into None instead, and an
+    unknown start is already a defined outcome here — the plain call.
+    """
+    async with get_session() as s:
+        raw = (await s.execute(
+            select(func.min(created_at_text())).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.is_unsent.is_(False))
+        )).scalar()
+    return parse_ts(raw)
+
 
 # ── The vault's own vocabulary ──────────────────────────────────────
 #
@@ -132,7 +183,7 @@ async def vault_lexicon(account_id: str) -> list[str]:
     _lexicon_cache[str(account_id)] = (now, words)
     return words
 
-# ── The three calls ─────────────────────────────────────────────────
+# ── The calls ───────────────────────────────────────────────────────
 
 def _contract_system() -> str:
     """CALL 1's system prompt, hoisted out of `read_contract`.
@@ -375,6 +426,152 @@ async def _nearest(account_id: str, fan_id: int, contract: Contract,
         response_format={"type": "json_object"}, temperature=0.2,
     )
     return _ids_from(res.parsed, pool, limit)
+
+_ANSWER_MAX_CHARS = 120        # her reply half of a caption, not a paragraph
+
+
+# ── What CALL 6 is allowed to know about the fan ────────────────────
+#
+# Operator ruling 2026-08-24: a fan younger than two months gets his facts and
+# his thread; past that the call runs plain.
+#
+# 🚨 The window is NOT a token budget and NOT a privacy rule. It is the window
+# in which `_HIM_TAIL` lines are most of what has ever been said. Past it the
+# tail stops being "the conversation" and becomes an arbitrary slice of a long
+# one — and a line written off an arbitrary slice is worse than one written off
+# nothing, because it answers a beat he left weeks ago. Widening this needs a
+# summary, not a bigger tail.
+FRESH_FAN_DAYS = 60
+_HIM_TAIL = 12
+
+_HIM_FACTS_HEAD = "WHAT SHE KNOWS ABOUT HIM:"
+_HIM_THREAD_HEAD = "HOW THE CHAT HAS GONE (oldest first):"
+
+# 🚨 THE LINE THAT KEEPS HIS FACTS FROM BECOMING A CONTENT CLAIM — the same
+# hazard `_ppv_caption._STEER_RULE` exists for, one call over. Handed a kink
+# list with no steer, the model writes the piece he WANTS rather than answering
+# the man, and on a PRICED send that is the 2026-07-31 shape again.
+_HIM_STEER = (
+    "Use this only to pick WHICH true thing to answer and how to say it. "
+    "Nothing in it describes what you are sending, and none of it is a promise."
+)
+
+
+async def _him_block(f: Fan | None, account_id: str, fan_id: int,
+                     speaker: str) -> str:
+    """Who he is and how the chat has gone — or "" for a fan past the window.
+
+    Without it CALL 6 sees ONE message and no idea who sent it, so what comes
+    back generalises ("hey u, been hoping ud come back"): true of every fan and
+    written for none. This is the half that makes the line his.
+
+    Two things, deliberately together. `build_facts_note` is the same projection
+    the fan drawer and the OF note render, so the model re-reads what a human
+    chatter would; `_thread_lines` is the lane's own reader, which is why the
+    PPV and tip markers ride along — what he has already been offered is part of
+    answering him. Facts alone name a hobby from week one and cannot tell it
+    still matters; the thread alone cannot tell it ever did.
+
+    ⚠️ THE AGE IS THE THREAD'S, not the row's. `subscribed_at` is the better
+    answer and is used whenever it is set — but measured on the live stack
+    2026-08-24 it was set on ONE fan in 3,295, `joined_date` on none, and no
+    `raw_json` survives to backfill from, so a gate on it alone is a gate that
+    never opens. The thread's first message is populated (3,306 fans, 2,304 of
+    them inside the window) and it answers this question more directly anyway:
+    the window asks whether `_HIM_TAIL` lines are most of what has been said,
+    and where the talking STARTED is exactly that. A man who subscribed in
+    March and first wrote last week should get the full block.
+
+    🚨 NOT `Fan.created_at`. That is our row-insert time: this database's oldest
+    row is 2026-05-21, so 88% of the roster reads as "new" by it — men
+    subscribed for years included, the long-thread case this window exists to
+    keep out. A fan with no sub date AND no messages gets the plain call.
+
+    A fan with nothing on file and no thread yields "", which the caller turns
+    into no block rather than an empty heading — the same reason
+    `_ppv_caption.him_lines` returns `[]`: a heading with nothing under it reads
+    as "you were given his details and they were blank", and what comes back
+    apologises for not knowing him.
+
+    ⚠️ Everything here is a fact about the FAN, never about the media. It is
+    spliced with `_HIM_STEER` and must not be spliced without it.
+    """
+    started = f.subscribed_at if f is not None else None
+    if started is None:
+        started = await _thread_started_at(account_id, fan_id)
+    if started is None:
+        return ""
+    if started <= datetime.utcnow() - timedelta(days=FRESH_FAN_DAYS):
+        return ""
+    parts: list[str] = []
+    # `f` is legitimately None — `answer_line` documents the row as optional and
+    # a brand-new sub has no Fan row yet. `facts_from_fan` takes a Fan, not an
+    # Optional, and raises AttributeError on None; the outer catch would swallow
+    # that into "" and quietly turn the whole feature off for that fan. We know
+    # the conversation without knowing the man, so render the half we have.
+    facts = build_facts_note(facts_from_fan(f)) if f is not None else ""
+    if facts:
+        parts.append(f"{_HIM_FACTS_HEAD}\n{facts}")
+    lines = await _thread_lines(str(account_id), int(fan_id), _HIM_TAIL, speaker)
+    if lines:
+        parts.append(_HIM_THREAD_HEAD + "\n" + "\n".join(lines))
+    return "\n".join(parts)
+
+
+async def _answer_line(account_id: str, fan_id: int, his_words: str,
+                       voice: str, model: str, *, f: Fan | None = None,
+                       speaker: str = "her") -> str:
+    """CALL 6 — ONE short line answering what he just said, in her voice.
+
+    The voice half of a caption on a send he did not ask for. The gather-close
+    farewell ships a fixed parting line ("made u a lil something"), which reads
+    correctly at a graduation and reads as a fan being talked past when
+    `ai_chatter` re-offers the same pack days later, cold, on a message he just
+    wrote. `pack_claim.compose_caption` already calls the voice line "her reply
+    to the thread" — this is what makes it one.
+
+    🚨 IT MUST NOT DESCRIBE THE MEDIA. The clause above it is the CONTRACT,
+    audited against what is attached (`audit_ask`), and a second claim underneath
+    can only contradict it — the 2026-07-31 shape, two fans who bought and
+    deleted their accounts within hours. The banned words are stated as the
+    prompt's first rule, but a prompt rule is a REQUEST: `pack_claim.
+    voice_line_ok` at the caption is the guarantee, exactly as `clean_action`
+    is for CALL 5 above.
+
+    `f` is his row and `speaker` the account's pronoun for the creator; both go
+    straight to `_him_block`, which is empty for anyone past `FRESH_FAN_DAYS`.
+    They arrive as parameters rather than being read here for the same reason
+    `voice` and `model` do: `content_resolver.answer_line` holds all three, and
+    a second keyed read of a row the caller is already holding is not a seam.
+
+    ⚠️ `_ppv_caption.him_lines` is the sibling brief — the fan half of a caption
+    on a send he ASKED for — and it deliberately drops hobbies and job ("a
+    caption is not small talk"). This one keeps them, and the disagreement is
+    the point: that caption sells the media, and this line answers the man. The
+    hard rule they share is the one below.
+    """
+    him = await _him_block(f, account_id, fan_id, speaker)
+    system = (
+        "You write ONE short line for a creator replying to a fan's message "
+        "in a chat. Answer what he actually said — acknowledge it, and tease "
+        "forward. Rules: at most 18 words, no number, no price, no words "
+        "like pic/photo/video/set, do not describe or promise any media, no "
+        "question mark at the end, no name. Emoji are fine, at most one.\n"
+        + (f"HOW SHE TEXTS:\n{voice}\n" if voice else "")
+        + (f"{him}\n{_HIM_STEER}\n" if him else "")
+        + 'Reply as JSON: {"line": "..."}.'
+    )
+    res = await llm_client.chat(
+        model=model,
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": f"HIS MESSAGE:\n{his_words}"}],
+        purpose="gather_close_answer",
+        account_id=str(account_id), fan_id=int(fan_id),
+        response_format={"type": "json_object"}, temperature=0.7,
+    )
+    parsed = res.parsed if isinstance(res.parsed, dict) else {}
+    return " ".join(str(parsed.get("line") or "").split())[:_ANSWER_MAX_CHARS]
+
 
 async def _action_phrase(account_id: str, fan_id: int,
                          described: list[tuple[int, str]], model: str) -> str:
