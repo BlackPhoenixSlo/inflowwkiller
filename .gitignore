@@ -72,8 +72,14 @@ OF_AUTOMATIONV1/
 # Local Claude Code config (machine-specific settings + skills)
 .claude/
 
-# graphify build cache (regenerable; graph.json + GRAPH_REPORT.md ARE committed)
-service/graphify-out/cache/
+# graphify: the PUBLISHED graph is generated IN THIS repo (public corpus by
+# construction — user ruling 2026-08-28). Commit graph.json/graph.html/
+# GRAPH_REPORT.md; the cache and runtime stubs stay out, and laptop-generated
+# graphs (graphify-deep, private corpus) never come back.
+graphify-out/cache/
+graphify-out/.graphify_*
+graphify-out/cost.json
+graphify-deep/
 
 # Settings export/import backups (local dev preimages — contain account settings; never commit)
 service/data/settings_backups/
@@ -116,7 +122,14 @@ CONVO_RUN*.md
 [Cc][Oo][Nn][Vv][Oo]*.md
 *_CONVO*.md
 *CHAT*.md
-!plans/*.md
+
+# Restored 2026-08-28 — these were added in August and lost when a laptop sync
+# clobbered this file (the laptop filter now excludes .gitignore to stop that).
+# sim/ = prod-data replay harnesses; tools/out/ = generated reports over live
+# data; *_chat*.html = verbatim DM transcript pages (make_right_chat.html class).
+service/sim/
+service/tools/out/
+*_chat*.html
 
 # Probe/report pages. These embed the creator's own media as base64 data URIs —
 # a single file is hundreds of her photographs, inline, in git forever.
