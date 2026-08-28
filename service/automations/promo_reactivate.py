@@ -47,6 +47,19 @@ log = logging.getLogger("of-relay.automation.promo_reactivate")
 _DEFAULT_COOLDOWN_MIN = 10
 
 
+def _kept(value: int | None, default: int) -> int:
+    """The campaign's own number, defaulting ONLY when it was never recorded.
+
+    Both count knobs have a meaningful ZERO, so `int(value or default)` is
+    wrong on each: `subscribe_counts=0` is OF's UNLIMITED claims (promotions_api
+    dropped a max(1,...) floor precisely to make that reachable), and
+    `subscribe_days=0` is what OF itself stores for a percent discount. Reading
+    either 0 as "unset" re-arms an always-on offer as a one-shot — a different
+    campaign than the one the operator ticked "keep running".
+    """
+    return default if value is None else int(value)
+
+
 @register("promo_reactivate")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
@@ -152,8 +165,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             res = await asyncio.to_thread(
                 lambda rr=r: client.create_promo(
                     discount=int(rr.discount_percent),
-                    subscribe_counts=int(rr.subscribe_counts or 1),
-                    subscribe_days=int(rr.subscribe_days or 30),
+                    subscribe_counts=_kept(rr.subscribe_counts, 1),
+                    subscribe_days=_kept(rr.subscribe_days, 30),
                     message=rr.message or "",
                     type=rr.promo_type or "all"),
             )

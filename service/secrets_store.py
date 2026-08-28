@@ -63,6 +63,12 @@ KNOWN: dict[str, dict] = {
         "group": "AI models",
         "help": "Optional second LLM provider (x.ai). Leave blank if unused.",
     },
+    "ZAI_API_KEY": {
+        "label": "Z.ai (GLM) API key",
+        "group": "AI models",
+        "help": "Optional provider for chat replies (z.ai). Only needed if an "
+                "account's Brain is set to a GLM model.",
+    },
     "GOOGLE_SHEETS_TOKEN_JSON": {
         "label": "Google Sheets token JSON",
         "group": "Google Sheets export",

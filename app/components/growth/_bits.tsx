@@ -79,7 +79,25 @@ interface StatChunk {
 export function runStatsChunks(stats?: Record<string, unknown> | null): StatChunk[] {
   if (!stats) return [];
   const n = (k: string) => (typeof stats[k] === "number" ? (stats[k] as number) : null);
+  const len = (k: string) => (Array.isArray(stats[k]) ? (stats[k] as unknown[]).length : null);
   const out: StatChunk[] = [];
+  // A DRY RUN's headline is what it would actually do, not how big the pool
+  // was. `candidates` alone read as "8 ready to go" on a rule whose gate
+  // refused all eight, and it said that for six days.
+  //
+  // Gated on `examined`, which ONLY the gate-running preview emits. An older
+  // relay fills `would_follow` with the raw, un-gated pool, so rendering it as
+  // "8 would notify" would restate the very lie this replaced — with more
+  // confidence than the wording it replaced. Until that relay ships, say
+  // nothing rather than something wrong.
+  const gated = n("examined") !== null;
+  const wouldNotify = gated ? (len("would_follow") ?? len("would_ping")) : null;
+  if (wouldNotify !== null) {
+    out.push({
+      text: `${wouldNotify} would notify`,
+      tone: wouldNotify === 0 ? "warn" : undefined,
+    });
+  }
   const liked = n("liked");
   if (liked !== null) out.push({ text: `liked ${liked}` });
   const pinged = n("pinged");
@@ -90,8 +108,12 @@ export function runStatsChunks(stats?: Record<string, unknown> | null): StatChun
   if (followed !== null) out.push({ text: `followed ${followed}` });
   const refollowed = n("refollowed");
   if (refollowed) out.push({ text: `re-followed ${refollowed}` });
+  const already = n("already_following");
+  if (already) out.push({ text: `${already} already followed`, tone: "warn" });
   const paid = n("paid_profile_skipped");
   if (paid) out.push({ text: `${paid} paid profiles skipped` });
+  const noPrice = n("no_price_skipped");
+  if (noPrice) out.push({ text: `${noPrice} price unreadable, skipped` });
   const reactivated = n("reactivated");
   if (reactivated !== null) out.push({ text: `re-created ${reactivated}` });
   const due = n("due");
@@ -100,7 +122,16 @@ export function runStatsChunks(stats?: Record<string, unknown> | null): StatChun
     out.push({ text: "OnlyFans unreachable, stood down", tone: "warn" });
   }
   const candidates = n("candidates");
-  if (candidates !== null) out.push({ text: `${candidates} candidates` });
+  const examined = n("examined");
+  if (candidates !== null) {
+    // Say when only part of the pool was checked, so a partial look is never
+    // read as a full one.
+    out.push({
+      text: examined !== null && examined < candidates
+        ? `${examined} of ${candidates} candidates checked`
+        : `${candidates} candidates`,
+    });
+  }
   return out;
 }
 

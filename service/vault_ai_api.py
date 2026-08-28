@@ -1555,6 +1555,29 @@ async def _vision_budget(account_id: str) -> dict[str, Any]:
     return {**state, "blocked_reason": reason}
 
 
+def _assert_vision_model(model: str) -> None:
+    """Refuse a model that is not cleared to be handed an image.
+
+    These routes take a model id straight off the request body, and the model
+    list an operator picks from is derived server-side from `llm_client.MODELS`
+    — so every model registered for ANY purpose is offerable the moment it
+    lands, including the text-only ones. The old check here tested membership,
+    which answers "is this a model" and not "is this a model for this job".
+
+    `vision_ok` is that second question. Answering it up front also keeps the
+    failure cheap: a text model reaching `_describe_one` would first pull frames
+    off OF and cut a clip with ffmpeg, then spend the LLM call, and only then
+    find out.
+    """
+    mdl = llm_client.MODELS.get(model)
+    if mdl is None:
+        raise HTTPException(status_code=400,
+                            detail={"error": "unknown_model", "model": model})
+    if not mdl.vision_ok:
+        raise HTTPException(status_code=400,
+                            detail={"error": "model_not_vision", "model": model})
+
+
 async def _flags_one(account_id: str, media_id: int,
                      model: str = "qwen3-vl-30b") -> dict[str, Any]:
     """Ask the three booleans for one item and MERGE them into its existing
@@ -2798,6 +2821,7 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
         return {"media_id": media_id, "ok": False, "status": "capped",
                 "detail": budget["blocked_reason"]}
     model = str(payload.get("model") or "qwen3-vl-30b")
+    _assert_vision_model(model)  # this route validated NOTHING before
     res = await _describe_one(
         account_id, media_id, model=model,
         prompt_version=str(payload.get("prompt_version") or "v2"),
@@ -3016,9 +3040,7 @@ async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     restage = bool(payload.get("restage"))
     prompt_version = "v1" if str(payload.get("prompt_version")) == "v1" else "v2"
     model = str(payload.get("model") or "qwen3-vl-30b")
-    if model not in llm_client.MODELS:
-        raise HTTPException(status_code=400, detail={"error": "unknown_model",
-                                                    "model": model})
+    _assert_vision_model(model)
     _describe_running.add(account_id)
     asyncio.create_task(_run_describe_all(account_id, force,
                                           prompt_version=prompt_version,

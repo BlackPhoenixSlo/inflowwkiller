@@ -16,6 +16,7 @@ export const LABELS: Record<string, string> = {
   deepseek: "DeepSeek API key",
   deepinfra: "DeepInfra API key",
   grok: "Grok (x.ai) API key",
+  zai: "Z.ai (GLM) API key",
 };
 
 /** A DeepSeek key is `sk-` + 32 hex and nothing else on this list looks like
@@ -41,4 +42,5 @@ export const HELP: Record<string, string> = {
   deepseek: "Powers chat replies and most automations. platform.deepseek.com.",
   deepinfra: "Vision — vault image describes and inbound-photo replies. deepinfra.com.",
   grok: "Optional second provider (x.ai). Only needed if a model of yours uses it.",
+  zai: "Chat replies only — GLM models. Not used for vault or photo describes. z.ai.",
 };

@@ -1,7 +1,8 @@
 Fastt.ready(async () => {
-  // Section-header persona chip: cosmetic chrome with no handler that shipped
-  // hardcoded "Aria". Name the creator the page is actually reading/writing and
-  // badge it so nobody mistakes it for a second (working) creator switcher.
+  // Section-header persona chip: cosmetic chrome with no handler, which shipped
+  // with one creator's name baked into it. Name the creator the page is actually
+  // reading/writing and badge it so nobody mistakes it for a second (working)
+  // creator switcher.
   (function fixPersonaChip() {
     const lbl = document.getElementById('hdr-persona');
     const drop = document.getElementById('hdr-persona-drop');
@@ -36,6 +37,8 @@ Fastt.ready(async () => {
     'deepseek-v4-flash': 'DeepSeek V4 Flash', 'deepseek-v4-pro': 'DeepSeek V4 Pro',
     'grok-4-1-fast-non-reasoning': 'Grok 4.1 Fast',
     'qwen3-vl-30b': 'Qwen3-VL 30B', 'qwen3-vl-235b': 'Qwen3-VL 235B',
+    'glm-5.3-flash': 'GLM 5.3 Flash',
+    'glm-4.5-air': 'GLM 4.5 Air',
   };
   const modelLabel = (m) => MODEL_LABELS[m] || m || '—';
 
@@ -133,8 +136,9 @@ Fastt.ready(async () => {
     const preset = 'aggressive';   // the only preset with a backend behind it
     $$('#presets .fx-preset').forEach(p =>
       p.classList.toggle('sel', p.dataset.preset === preset));
-    // The card shipped "your current setup (the graded vault · Ava)" — a hardcoded
-    // cross-account claim. Name the creator actually on screen, or say nothing.
+    // The card shipped a hardcoded "your current setup (<creator> · <creator>)"
+    // — a cross-account claim about two accounts that were not the one on
+    // screen. Name the creator actually on screen, or say nothing.
     const row = Fastt.accountRow();
     setTxt('preset-aggr-t', 'Creates the intent itself.'
       + (preset === 'aggressive'

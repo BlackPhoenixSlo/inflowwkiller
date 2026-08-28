@@ -320,11 +320,25 @@ async def _load_effective_config(account_id: str) -> dict:
     return vault_ai_config.effective(stored)
 
 
-def _resolve_model(name: Any, *, fallback: str) -> str:
+def _resolve_model(name: Any, *, fallback: str, require_vision: bool = False) -> str:
     """Coerce a config-declared model to a valid `llm_client.MODELS` key. The
     contract speaks internal ids, so this is only a typo guard — a mistyped
-    bake-off row must NEVER wedge the whole sweep with an LLMConfigError."""
-    return str(name) if str(name or "") in llm_client.MODELS else fallback
+    bake-off row must NEVER wedge the whole sweep with an LLMConfigError.
+
+    `require_vision` widens "mistyped" to include the model that exists but is
+    not cleared for images (`llm_client.LLMModel.vision_ok`). Membership alone
+    was never the question this guard was asking: a config naming a TEXT model
+    in the describe slot is as wrong as a typo, and it used to sail through —
+    with the same consequence the guard exists to prevent, one sweep down. Only
+    the describe slot passes it; caption and script are text jobs and must keep
+    taking text models."""
+    mid = str(name or "")
+    mdl = llm_client.MODELS.get(mid)
+    if mdl is None:
+        return fallback
+    if require_vision and not mdl.vision_ok:
+        return fallback
+    return mid
 
 
 async def _budget_millicents(account_id: str, cap_percent: int) -> int:
@@ -603,7 +617,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     d = cfg.get("describe") or {}
     models = cfg.get("models") or {}
-    describe_model = _resolve_model(models.get("describe"), fallback="qwen3-vl-30b")
+    describe_model = _resolve_model(models.get("describe"), fallback="qwen3-vl-30b",
+                                    require_vision=True)
     caption_model = _resolve_model(models.get("caption"), fallback="deepseek-v4-flash")
     script_model = _resolve_model(models.get("script"), fallback="deepseek-v4-flash")
 

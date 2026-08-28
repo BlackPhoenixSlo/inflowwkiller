@@ -1478,6 +1478,17 @@ class AccountAiConfig(Base):
     # Optional per-purpose override, JSON e.g. {"gen_info":"deepseek-v4-flash",
     # "welcome_chatter_for_info":"grok-4-1-fast-non-reasoning"}. NULL → use `model` for all.
     model_by_purpose: Mapped[str | None] = mapped_column(Text)
+    # How hard a REASONING model may think, for the account's picked model
+    # ("low"/"medium"/"high"/"max" — the legal set is per provider, so the Brain
+    # editor offers only what the current model accepts). NULL → use the
+    # model's own pin, which is the right answer for almost every account.
+    #
+    # Deliberately NOT per purpose. The value is a property of the model an
+    # operator picked, and `model_by_purpose` can name models on two different
+    # providers whose legal sets do not overlap; a per-purpose effort would let
+    # one be saved against the other. A value that no longer fits the resolved
+    # model is dropped in llm_client._resolve_effort rather than raised on.
+    reasoning_effort: Mapped[str | None] = mapped_column(String)
     # nudge_online (P4): per-account config for the "message a fan when they come
     # online" automation — JSON {enabled, content_mode, repeat_mode, delay_minutes,
     # jitter_minutes, gap_minutes, min_hours_between_nudges, max_per_tick,
