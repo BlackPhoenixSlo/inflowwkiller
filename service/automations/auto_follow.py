@@ -38,6 +38,13 @@ Both follow and ping run through ONE shared loop (_follow_batch → _gated_follo
 so the money gate, the cap-on-notifications rule, and the cooldown stamping can
 never drift apart between the two actions.
 
+DRY RUN runs the gate too. It reads each candidate's profile and classifies it
+with the same `_classify` the live run uses, so `would_follow`/`would_ping` list
+only fans who would actually be notified. Previewing the raw candidate pool
+instead is not a smaller lie — a rule aimed at fans we already follow reported
+"8 candidates" for six days and fired nothing. The preview mutates nothing; it
+examines at most `daily_cap` fans and says how many of the pool it checked.
+
 Self-registers via @register("auto_follow"); schedule with an automation_rules
 row (kind="auto_follow", trigger_json={"every_seconds": N}, steps_json=knobs).
 Defaults to OFF + dry_run — nothing acts until an operator enables a rule.
@@ -216,9 +223,15 @@ class _StrandedError(RuntimeError):
     blend into the generic `errors` bucket."""
 
 
-async def _gated_follow(client, fan_id: int, *, unfollow_first: bool = False) -> str:
-    """Price-gate + follow one fan; the single decision path shared by the
-    follow and ping actions. Returns the outcome:
+def _classify(u: dict, *, unfollow_first: bool) -> str:
+    """What the gate decides about one fan, from their profile payload alone.
+
+    Pure and side-effect free, so the DRY RUN and the live run can never
+    disagree about the outcome — they call this same function. That mattered:
+    the preview used to report the raw candidate pool as `would_follow`, and a
+    rule pointed at fans we already follow previewed as "8 ready" while the
+    live run fired zero notifications. Six days of clean dry runs said nothing
+    was wrong.
 
       "followed"           fresh follow → notification
       "refollowed"         lapsed relationship re-armed via /resubscribe → notification
@@ -226,12 +239,7 @@ async def _gated_follow(client, fan_id: int, *, unfollow_first: bool = False) ->
       "already_following"  active follow left alone (unfollow_first=False)
       "paid_profile"       skipped — profile has a price (subscribe would PAY)
       "no_price"           skipped — price unreadable (never assume free)
-
-    Raises _StrandedError when an unfollow can't be undone; any other OF error
-    propagates for the caller to count.
     """
-    u = await asyncio.to_thread(client.get_user, fan_id)
-    u = u if isinstance(u, dict) else {}
     # MONEY GATE — subscribe PAYS unless the profile is free. Only an explicit
     # 0 passes; a missing/unreadable price is a SKIP, not a benefit of the doubt.
     price = u.get("subscribePrice")
@@ -239,12 +247,32 @@ async def _gated_follow(client, fan_id: int, *, unfollow_first: bool = False) ->
         return "no_price"
     if float(price) != 0:
         return "paid_profile"
-    # subscribedBy = I already follow them (viewer→target edge). If OF ever
-    # flips this semantics the failure mode is a skip or a benign "already
-    # subscribed" error — never a payment (gated above).
+    # subscribedBy = I already follow them (viewer→target edge). VERIFIED
+    # against live payloads: subscribedByData.price carries the FAN's own
+    # price and subscribedOnData.regularPrice carries OURS, so `By` is the
+    # edge we pay for — us→them. If OF ever flips this the failure mode is a
+    # skip or a benign "already subscribed" error, never a payment (gated
+    # above).
     if u.get("subscribedBy"):
-        if not unfollow_first:
-            return "already_following"
+        return "pinged" if unfollow_first else "already_following"
+    if u.get("subscribedByExpireDate"):
+        return "refollowed"
+    return "followed"
+
+
+async def _gated_follow(client, fan_id: int, *, unfollow_first: bool = False) -> str:
+    """Price-gate + follow one fan; the single decision path shared by the
+    follow and ping actions. Returns the `_classify` outcome it carried out.
+
+    Raises _StrandedError when an unfollow can't be undone; any other OF error
+    propagates for the caller to count.
+    """
+    u = await asyncio.to_thread(client.get_user, fan_id)
+    u = u if isinstance(u, dict) else {}
+    outcome = _classify(u, unfollow_first=unfollow_first)
+    if outcome in ("no_price", "paid_profile", "already_following"):
+        return outcome
+    if outcome == "pinged":
         await asyncio.to_thread(client.unfollow_user, fan_id)
         # VERIFIED LIVE 2026-07-23 (Ava→jaka): a just-unfollowed free follow
         # re-arms via POST /subscribe — /resubscribe 400s there ("Resubscribe
@@ -259,7 +287,7 @@ async def _gated_follow(client, fan_id: int, *, unfollow_first: bool = False) ->
             except Exception as e:
                 raise _StrandedError(str(e)) from e
         return "pinged"
-    if u.get("subscribedByExpireDate"):
+    if outcome == "refollowed":
         # Lapsed/expired relationship: /resubscribe is the canonical re-arm;
         # fall back to a plain follow (the price gate above already passed).
         try:
@@ -298,6 +326,68 @@ async def _follow_batch(
             log.warning("auto_follow %s failed account=%s fan=%s",
                         label, account_id, fid, exc_info=True)
     return counts, stranded, errors
+
+
+async def _client_or_none(account_id: str):
+    """The OF client, or None when this account has no usable session.
+
+    Only the DRY-RUN previews use this. A preview must reach OF to run the
+    gate, but "no session" is an ordinary, recurring state here — and a plan
+    that hard-errors is worse than one that says it could not look. The live
+    paths keep raising, so a real run still surfaces a dead session loudly.
+    """
+    try:
+        return await asyncio.to_thread(ax._make_client, account_id)
+    except Exception:
+        log.warning("auto_follow preview: no OF client for account=%s", account_id,
+                    exc_info=True)
+        return None
+
+
+async def _preview_batch(
+    client, pool: list[int], cap: int, *, unfollow_first: bool,
+) -> tuple[Counter, list[int], int]:
+    """What `_follow_batch` WOULD do, without doing it. Returns (outcome
+    counts, the ids that would actually be notified, errors).
+
+    Reads only — one get_user per examined fan, the same call the live run
+    makes, then `_classify`. It examines at most `cap` fans rather than the
+    whole ×5 headroom pool: the live run stops at `cap` NOTIFICATIONS, so a
+    preview can never need more than `cap` verdicts to report a full budget,
+    and a pool where nobody qualifies would otherwise cost 5× the reads for a
+    plan that does nothing. `examined` is returned alongside `candidates` so a
+    partial look is never mistaken for a full one.
+    """
+    counts: Counter = Counter()
+    would: list[int] = []
+    errors = 0
+    for fid in pool[:max(cap, 0)]:
+        try:
+            u = await asyncio.to_thread(client.get_user, fid)
+        except Exception:
+            errors += 1
+            log.warning("auto_follow preview get_user failed fan=%s", fid, exc_info=True)
+            continue
+        outcome = _classify(u if isinstance(u, dict) else {},
+                            unfollow_first=unfollow_first)
+        counts[outcome] += 1
+        if outcome in _NOTIFY_OUTCOMES:
+            would.append(fid)
+    return counts, would, errors
+
+
+def _preview_result(pool: list[int], cap: int, counts: Counter,
+                    errors: int) -> dict:
+    """The shared shape of both dry-run reports."""
+    return {
+        "candidates": len(pool),
+        "examined": min(len(pool), max(cap, 0)),
+        "already_following": counts["already_following"],
+        "paid_profile_skipped": counts["paid_profile"],
+        "no_price_skipped": counts["no_price"],
+        "errors": errors,
+        "cap": cap,
+    }
 
 
 # ── Ping cooldown state ───────────────────────────────────────────────
@@ -364,7 +454,11 @@ async def _latest_inbound_message_id(account_id: str, fan_id: int) -> int | None
 
 async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool,
                       targets: dict, hard_skip: set) -> dict:
-    client = await asyncio.to_thread(ax._make_client, account_id)
+    client = (await _client_or_none(account_id) if dry_run
+              else await asyncio.to_thread(ax._make_client, account_id))
+    if client is None:
+        return {"action": "follow", "dry_run": True, "candidates": 0,
+                "skipped": "of_unreachable"}
     source = str(targets.get("source") or "expired")
     headroom = _headroom(cap)
     if source == "expired":
@@ -374,11 +468,15 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
     pool = [f for f in pool if f not in hard_skip][:headroom]
 
     if dry_run:
-        # Plan only — the expired pool above is a read; no mutation happens.
-        # The per-fan price gate runs at send time, so the plan may shrink.
+        # Plan only, and the plan RUNS THE GATE — every id in `would_follow` has
+        # been price-checked and confirmed not-yet-followed. Listing the raw
+        # pool instead is what let a rule aimed at fans we already follow
+        # preview as "8 ready" for six days while doing nothing.
+        counts, would, errors = await _preview_batch(client, pool, cap,
+                                                     unfollow_first=False)
         return {"action": "follow", "dry_run": True, "source": source,
-                "candidates": len(pool), "would_follow": pool[:cap],
-                "note": "paid profiles are skipped at send time (price gate)"}
+                "would_follow": would,
+                **_preview_result(pool, cap, counts, errors)}
 
     counts, _, errors = await _follow_batch(account_id, client, pool, cap,
                                             unfollow_first=False)
@@ -399,13 +497,19 @@ async def _run_ping(account_id: str, payload: dict, *, cap: int, dry_run: bool,
     recently = await _recently_pinged_ids(account_id, gap_days)
     pool = [f for f in pool if f not in hard_skip and f not in recently]
 
+    client = (await _client_or_none(account_id) if dry_run
+              else await asyncio.to_thread(ax._make_client, account_id))
     if dry_run:
+        if client is None:
+            return {"action": "ping", "dry_run": True, "quiet_days": quiet_days,
+                    "min_days_between_pings": gap_days, "candidates": len(pool),
+                    "skipped": "of_unreachable"}
+        counts, would, errors = await _preview_batch(client, pool, cap,
+                                                     unfollow_first=True)
         return {"action": "ping", "dry_run": True, "quiet_days": quiet_days,
-                "min_days_between_pings": gap_days,
-                "candidates": len(pool), "would_ping": pool[:cap],
-                "note": "paid profiles are skipped at send time (price gate)"}
+                "min_days_between_pings": gap_days, "would_ping": would,
+                **_preview_result(pool, cap, counts, errors)}
 
-    client = await asyncio.to_thread(ax._make_client, account_id)
     counts, stranded, errors = await _follow_batch(account_id, client, pool, cap,
                                                    unfollow_first=True)
     return {"action": "ping", "dry_run": False, "quiet_days": quiet_days,

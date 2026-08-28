@@ -307,6 +307,9 @@ export default function BrainPanel() {
 
   const slots = cfgQ.data?.slots ?? [];
   const modelOptions = cfgQ.data?.model_options ?? [];
+  const effortOptions = cfgQ.data?.effort_options ?? {};
+  // Weakest first, so [0] is the cheapest setting this model has.
+  const effortsFor = (m: string | null) => effortOptions[m ?? ""] ?? [];
   const purposes = cfgQ.data?.purposes ?? [];
   const languages = cfgQ.data?.languages ?? [{ code: "en", label: "English" }];
   // What an empty "Username to tag" box resolves to — served by the API so the
@@ -830,7 +833,17 @@ export default function BrainPanel() {
               <span className="text-[11px] text-fg-dim">Default (all purposes)</span>
               <select
                 value={form.model ?? ""}
-                onChange={(e) => set("model", e.target.value || null)}
+                onChange={(e) => {
+                  const next = e.target.value || null;
+                  // Land on the CHEAPEST effort the new model has rather than
+                  // carrying over one that suited the last one — the legal sets
+                  // differ per provider, so a carried value can be one this
+                  // model's API answers 400 to.
+                  setForm((f) => f && ({
+                    ...f, model: next,
+                    reasoning_effort: (effortOptions[next ?? ""] ?? [])[0] ?? null,
+                  }));
+                }}
                 className={selectCls}
               >
                 <option value="">— system default —</option>
@@ -839,6 +852,31 @@ export default function BrainPanel() {
                 ))}
               </select>
             </label>
+
+            {/* Only for a model that HAS a reasoning control — most have none,
+                and a box that cannot change anything reads as one that was
+                ignored. */}
+            {effortsFor(form.model).length > 0 && (
+              <label className="block space-y-1 max-w-xs">
+                <span className="text-[11px] text-fg-dim">Thinking effort</span>
+                {/* `value` is the form state ALONE — deliberately not
+                    `?? effortsFor(...)[0]`. That fallback made an invalid state
+                    look fine: an effort carried across a model change renders as
+                    the first option while the form still holds the old one, so
+                    the box says "low" and Save sends "max". The state has to BE
+                    right, not look right; the model-change handler above is what
+                    keeps it so. */}
+                <select
+                  value={form.reasoning_effort ?? ""}
+                  onChange={(e) => set("reasoning_effort", e.target.value || null)}
+                  className={selectCls}
+                >
+                  {effortsFor(form.model).map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+              </label>
+            )}
 
             {/* Per-purpose overrides — optional; each job uses a different model
                 only if set, else it inherits the default above. */}

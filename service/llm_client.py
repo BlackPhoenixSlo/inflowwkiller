@@ -1,12 +1,15 @@
 """
-service/llm_client.py — pluggable LLM client (Grok + DeepSeek).
+service/llm_client.py — pluggable LLM client (Grok + DeepSeek + Z.ai).
 
 ONE async entry point — `chat()` — that every automation runner will eventually
 call instead of POSTing x.ai directly (see library/db_data/19_llm_providers.md §2,
 library/db_data/05_grok_extraction.md §1+§7). Greenfield: nothing imports this yet.
 
-Both x.ai (Grok) and DeepSeek speak the OpenAI `/chat/completions` shape, so the
-client is one code path; only `base_url` + `api_key` + `model` differ.
+Every provider here speaks the OpenAI `/chat/completions` shape, so the client is
+one code path; `base_url` + `api_key` + `model` differ, and so — per MODEL, not
+per provider — does the field that states the reasoning mode. That field is
+carried verbatim by the registry (`llm_models.LLMModel.reasoning_body`) rather
+than derived here; getting it wrong is silent on some models.
 
 Audit + cost live in the Grok tables, generalized for multi-provider use by
 migration 0026 (provider / status / cache_hit_tokens columns + a provider-keyed
@@ -63,97 +66,17 @@ from llm_providers import LLMProvider, PROVIDERS, house_key
 log = logging.getLogger("of-relay.llm_client")
 
 # ── Model registry ──────────────────────────────────────────────────────
-# Which models exist, what they cost, and which provider (llm_providers) serves
-# each. DB-backed model_pricing is a later migration (19 §3); this is the seed.
+# Moved to `llm_models` — WHAT there is to call, next to WHO serves it
+# (`llm_providers`), leaving this module as HOW a call is made. Re-exported so
+# the ~70 modules that read `llm_client.MODELS` keep working; this is still the
+# canonical import site for them.
+from llm_models import LLMModel, MODELS  # noqa: E402,F401
 
-@dataclass(frozen=True)
-class LLMModel:
-    id: str                           # OUR internal id (audit + config key)
-    provider: str                     # -> LLMProvider.name
-    # The name the PROVIDER expects on the wire, when it differs from our id
-    # (DeepInfra publishes vendor-prefixed paths like "Qwen/Qwen3-VL-30B-…").
-    # Empty → send `id` verbatim, which is the case for every model whose
-    # provider names it the way we do. NEVER encode a MODE here: the thinking
-    # flag below is the single source of truth for reasoning on/off — see the
-    # comment above MODELS for the outage that rule was written from.
-    api_model: str = ""
-    # Pricing is cents per 1k tokens; the cost path multiplies by 100 and counts
-    # in MILLICENTS so sub-cent DeepSeek calls don't floor to 0 (model_pricing
-    # table later supersedes these seeds — 19 §3). `input_per_1k_cents` is the
-    # CACHE-MISS rate; `input_cache_hit_per_1k_cents` is the (far cheaper) rate
-    # DeepSeek bills for `prompt_cache_hit_tokens`. With long stable system
-    # prompts most input tokens are cache hits, so ignoring this over-estimates
-    # cost by ~50× on the cached portion (real dashboard spend confirmed this).
-    input_per_1k_cents: float = 0.0
-    input_cache_hit_per_1k_cents: float = 0.0
-    output_per_1k_cents: float = 0.0
-    # Reasoning on/off. The ONE representation of that mode — the request
-    # builder turns it into an explicit `thinking` body flag (both ways).
-    thinking: bool = False
-
-    def wire_model(self) -> str:
-        """The model name to put on the request body (provider's real name)."""
-        return self.api_model or self.id
-
-
-# Prices are cents per 1k tokens (small, real-as-of-2026-06 seeds — enough to
-# stop a runaway loop via the cap; model_pricing later overrides). DeepSeek
-# official pricing (per 1M tokens → cents per 1k = /10):
-#   v4-flash: $0.14 miss / $0.0028 hit in · $0.28 out → 0.014 / 0.00028 / 0.028
-#   v4-pro:   $0.435 miss / $0.003625 hit in · $0.87 out → 0.0435 / 0.0003625 / 0.087
-# Cache hits are ~50× cheaper than misses; with long stable system prompts the
-# bulk of input is cache hits, so the cost path now bills the hit portion at the
-# hit rate (verified against the DeepSeek dashboard, where blended spend is far
-# below the cache-miss rate). Grok-4.1-fast: ~$0.20/1M in, ~$0.50/1M out.
-#
-# DeepSeek model names: our ids ARE the wire names, so no api_model remap. They
-# once weren't — until 2026-07-24 the mode was picked by NAME ("deepseek-chat" =
-# thinking off, "deepseek-reasoner" = thinking on). DeepSeek retired both
-# aliases with no notice and every call started 400-ing ("supported API model
-# names are deepseek-v4-pro or deepseek-v4-flash"), which killed every LLM
-# automation on every account for 35 minutes. Encoding a MODE as a model name
-# gave us two sources of truth for one bit; `thinking` is now the only one, and
-# the request builder always states it explicitly (see the body build below).
-MODELS: dict[str, LLMModel] = {
-    "grok-4-1-fast-non-reasoning": LLMModel(
-        "grok-4-1-fast-non-reasoning", "grok",
-        input_per_1k_cents=0.02, output_per_1k_cents=0.05,
-    ),
-    "deepseek-v4-flash": LLMModel(
-        "deepseek-v4-flash", "deepseek",
-        input_per_1k_cents=0.014, input_cache_hit_per_1k_cents=0.00028,
-        output_per_1k_cents=0.028,
-    ),
-    "deepseek-v4-pro": LLMModel(
-        "deepseek-v4-pro", "deepseek",
-        input_per_1k_cents=0.0435, input_cache_hit_per_1k_cents=0.0003625,
-        output_per_1k_cents=0.087, thinking=True,
-    ),
-    # Qwen3-VL vision (DeepInfra). Cheap MoE primary + big escalation.
-    #
-    # Prices READ FROM `https://api.deepinfra.com/models/list` on 2026-08-05
-    # (`pricing.cents_per_input_token` x1000 = cents per 1k), not estimated. The
-    # seeds they replace were wrong in BOTH directions and had been since the
-    # models were added: 30b was billed at 0.01/0.04 against a real 0.015/0.06,
-    # so every describe and every flags call — the entire vision spend — was
-    # metered ~35% LOW against the daily cap, and 235b at 0.03/0.12 against a
-    # real 0.02/0.088 made the escalation look pricier than it is. A cap that
-    # under-counts is the failure mode that matters: it is the only thing
-    # standing between a sweep and an unbounded bill.
-    "qwen3-vl-30b": LLMModel(
-        "qwen3-vl-30b", "deepinfra", api_model="Qwen/Qwen3-VL-30B-A3B-Instruct",
-        input_per_1k_cents=0.015, output_per_1k_cents=0.06,
-    ),
-    "qwen3-vl-235b": LLMModel(
-        "qwen3-vl-235b", "deepinfra", api_model="Qwen/Qwen3-VL-235B-A22B-Instruct",
-        input_per_1k_cents=0.02, output_per_1k_cents=0.088,
-    ),
-}
 
 # Cost-estimate knobs for the pre-flight cap reservation. The reserve assumes a
 # full output so a single runaway loop can't slip many calls under the cap
 # before the rollup catches up. Costs are counted in MILLICENTS (cents x100) so
-# the seed prices above don't floor to 0 per call (the bug this wave fixes).
+# the seed prices in `llm_models` don't floor to 0 per call.
 _CHARS_PER_TOKEN = 4
 _ASSUMED_OUTPUT_TOKENS = 1024
 _MILLICENTS_PER_CENT = 100  # internal cost unit: 1 cent = 100 millicents
@@ -250,6 +173,87 @@ def _resolve(model: str) -> tuple[LLMModel, LLMProvider]:
             f"model {model!r} maps to unknown provider {mdl.provider!r}"
         )
     return mdl, prov
+
+
+def _resolve_effort(mdl: LLMModel, requested: str, stored: str = "") -> str:
+    """The `reasoning_effort` to put on the wire ("" = send no such field).
+
+    Precedence: an explicit caller value, then the account\'s saved pick, then
+    the model\'s own pin.
+
+    ONE failure policy lives here — an effort this model cannot honour raises,
+    before the cap reservation and the audit row, in the same place a missing
+    credential is caught. A request that cannot be legal must cost neither a cap
+    slot nor a `grok_calls` row.
+
+    The other policy — that a SAVED value which no longer fits is dropped rather
+    than raised on — deliberately does not live here. It belongs where config
+    enters the process (`_account_effort`), because it is a statement about
+    config outliving the choice that made it, not about this call. Keeping the
+    two apart is what lets this function have a single rule.
+    """
+    effort = (requested or stored or mdl.reasoning_effort or "").strip()
+    if not effort:
+        return ""
+    if effort not in mdl.effort_choices:
+        raise LLMConfigError(
+            f"reasoning_effort {effort!r} is not valid for model {mdl.id!r}; "
+            f"it accepts {list(mdl.effort_choices) or 'no effort at all'}"
+        )
+    return effort
+
+
+def effort_options(model: str) -> list[str]:
+    """The reasoning-effort values an operator may pick for one model, weakest
+    first; empty when the model has no such control.
+
+    The one source the Brain editor\'s dropdown and its save-time validation
+    both read, so an option that can be offered is exactly an option that can be
+    stored.
+    """
+    mdl = MODELS.get(model)
+    return list(mdl.effort_choices) if mdl else []
+
+
+def effort_options_by_model() -> dict[str, list[str]]:
+    """Every model\'s effort choices, keyed by model id — the whole-registry
+    view an editor needs to repopulate its dropdown when the model changes.
+
+    Here rather than composed in the API layer because it is a fact about the
+    registry, and a caller that rebuilds it from `MODELS` is a second place that
+    has to know an unlisted model means "no control" rather than "not a model".
+    """
+    return {mid: list(m.effort_choices) for mid, m in MODELS.items()}
+
+
+async def _account_effort(account_id: str, mdl: LLMModel) -> str:
+    """The reasoning effort an operator saved for this account, or "" — and ""
+    is also the answer when what they saved no longer fits this model.
+
+    Dropping rather than raising is the point. Config outlives the choice that
+    made it: moving an account from DeepSeek to z.ai strands a "medium" that is
+    legal on neither the new provider nor any future one, and a value saved
+    months ago must never be able to take a reply lane down today. `resolve_model`
+    treats a stale model id exactly this way for exactly this reason.
+
+    Read only when the model can use one, so the models carrying the traffic pay
+    no query for a feature they cannot express.
+    """
+    if not account_id or not mdl.effort_choices:
+        return ""
+    async with get_session() as s:
+        val = await s.scalar(
+            select(AccountAiConfig.reasoning_effort).where(
+                AccountAiConfig.account_id == account_id
+            )
+        )
+    saved = (val or "").strip()
+    if saved and saved not in mdl.effort_choices:
+        log.warning("stored reasoning_effort %r does not fit model %s %s — "
+                    "using the model default %r",
+                    saved, mdl.id, list(mdl.effort_choices), mdl.reasoning_effort)
+        return ""
+    return saved
 
 
 async def _tenant_api_key(account_id: str, prov: LLMProvider) -> str:
@@ -367,6 +371,40 @@ def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
         + tokens_out / 1000.0 * mdl.output_per_1k_cents
     )
     return int(round(cents * _MILLICENTS_PER_CENT))
+
+
+def _cache_hit_tokens(usage: dict) -> int | None:
+    """Cached-input tokens, from whichever field the provider reports them in.
+
+    DeepSeek puts the count at the top level as `prompt_cache_hit_tokens`; the
+    OpenAI-shaped providers nest it at `prompt_tokens_details.cached_tokens`.
+    This is the count the cost path bills at the (far cheaper) hit rate, so
+    reading the wrong one is not a cosmetic miss — it prices the entire input.
+
+    Test for ABSENCE, not truthiness. DeepSeek legitimately reports 0 on a cold
+    prompt, and `top or nested` would throw that real zero away and go looking
+    in the other provider's field; where a provider populates both shapes, that
+    silently bills a cache MISS at the hit rate. The nested object is read
+    defensively because a provider is free to send it as null, or as something
+    that isn't a mapping at all.
+    """
+    top = usage.get("prompt_cache_hit_tokens")
+    if top is not None:
+        return top
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        return details.get("cached_tokens")
+    return None
+
+
+def _reasoning_tokens(usage: dict) -> int | None:
+    """Tokens the model spent thinking, when the provider says. Diagnostic only
+    — it is already counted inside `completion_tokens`, so it is logged and not
+    billed separately (double-counting it would inflate every reasoning call)."""
+    details = usage.get("completion_tokens_details")
+    if isinstance(details, dict):
+        return details.get("reasoning_tokens")
+    return None
 
 
 def _clean_content(text: str) -> str:
@@ -692,9 +730,9 @@ async def chat(
     fan_id: int | None = None,
     response_format: dict | None = None,
     temperature: float = 0.7,
-    reasoning_effort: str = "high",
+    reasoning_effort: str = "",
 ) -> LLMResult:
-    """Call an OpenAI-compatible LLM (Grok or DeepSeek) with full cost + audit.
+    """Call an OpenAI-compatible LLM (Grok, DeepSeek or Z.ai) with full cost + audit.
 
     Flow (19 §2):
       1. Resolve model -> provider -> base_url, then the KEY of the agency that
@@ -714,7 +752,16 @@ async def chat(
         fan_id:          optional fan attribution.
         response_format: e.g. {"type": "json_object"} for structured output.
         temperature:     sampling temperature.
-        reasoning_effort: DeepSeek v4-pro thinking effort ("low"/"medium"/"high").
+        reasoning_effort: OPTIONAL override of how hard a reasoning model may
+                         think. Leave it empty and the model's own pin is used
+                         — the right answer almost everywhere, and why this no
+                         longer defaults to a value. The accepted strings are
+                         PER PROVIDER and not interchangeable: DeepSeek takes
+                         "low"/"medium"/"high", Z.ai takes "low"/"high"/"max"
+                         and 400s on "medium" — so the legal set is per MODEL
+                         (`effort_choices`), not per provider. Passing one to a
+                         model that has none is an error, not a no-op. See
+                         `effort_options` / `_resolve_effort`.
 
     Raises:
         LLMConfigError, LLMCapExceeded, LLMHTTPError.
@@ -722,7 +769,10 @@ async def chat(
     mdl, prov = _resolve(model)
     # Before the cap reservation and the audit row, exactly where the old
     # combined _resolve raised: a call with no usable credential must cost
-    # neither a cap slot nor a grok_calls row.
+    # neither a cap slot nor a grok_calls row. Same for an effort string the
+    # provider would reject.
+    stored_effort = "" if reasoning_effort else await _account_effort(account_id, mdl)
+    effort = _resolve_effort(mdl, reasoning_effort, stored=stored_effort)
     api_key = await _tenant_api_key(account_id, prov)
 
     url = prov.base_url.rstrip("/") + "/chat/completions"
@@ -746,19 +796,22 @@ async def chat(
     }
     if response_format is not None:
         body["response_format"] = response_format
-    if prov.name == "deepseek":
-        # State the mode BOTH ways, always. DeepSeek V4 reasons by default, so
-        # an absent `thinking` field means "whatever the provider defaults to
-        # today" — and that default is exactly what moved under us (see MODELS).
-        # Omitting it on the flash model burns the whole output budget on
-        # reasoning and returns content="" — a silent empty reply, worse than a
-        # 400. `enable_thinking: false` is the obvious-looking alternative and
-        # is SILENTLY IGNORED; only this shape works (verified live 2026-07-24).
-        # reasoning_content comes back in its own field; we strip it before any
-        # JSON parse.
-        body["thinking"] = {"type": "enabled" if mdl.thinking else "disabled"}
-        if mdl.thinking:
-            body["reasoning_effort"] = reasoning_effort
+    # The reasoning mode, stated explicitly and never by omission — the model
+    # registry holds the exact body keys, so there is nothing to branch on here.
+    #
+    # Omission is the failure this rule was written from. DeepSeek V4 reasons by
+    # default, so an absent `thinking` field means "whatever the provider
+    # defaults to today", and that default moved under us (see llm_models); on
+    # the flash model it burns the whole output budget reasoning and returns
+    # content="" — a silent empty reply, worse than a 400. Omitting the field on
+    # glm-4.5-air leaves it reasoning too. `enable_thinking: false` is the
+    # obvious-looking alternative on both and is SILENTLY IGNORED by both.
+    #
+    # reasoning_content comes back in its own field; we strip it before any JSON
+    # parse.
+    body.update(mdl.reasoning_keys())
+    if effort:
+        body["reasoning_effort"] = effort
 
     # ── 3. Pending audit row ────────────────────────────────────────────
     call_id = await _insert_pending_call(
@@ -838,7 +891,8 @@ async def chat(
     usage = data.get("usage") or {}
     tokens_in = usage.get("prompt_tokens")
     tokens_out = usage.get("completion_tokens")
-    cache_hit_tokens = usage.get("prompt_cache_hit_tokens")  # DeepSeek-specific
+    cache_hit_tokens = _cache_hit_tokens(usage)
+    reasoning_tokens = _reasoning_tokens(usage)
 
     actual_mc = _cost_millicents(model, tokens_in or 0, tokens_out or 0,
                                  cache_hit_tokens or 0)
@@ -872,9 +926,15 @@ async def chat(
     # Reconcile the rollup with the real cost (delta vs. the estimate reserved).
     await _adjust_daily(day, account_id, actual_mc - reserve_mc, 0, now, prov.name)
 
-    log.info("llm_client: %s %s purpose=%s latency=%dms in=%s out=%s cache_hit=%s cost=%dmc",
+    # reasoning= is DIAGNOSTIC ONLY and is deliberately not a column. Providers
+    # that report it count it INSIDE completion_tokens (confirmed on both), so
+    # cost and the cap are already right without it; a prod migration for a
+    # counter that only ever answers "is this model thinking more than we think"
+    # is not proportionate. Absent (None) on providers that don't report it.
+    log.info("llm_client: %s %s purpose=%s latency=%dms in=%s out=%s cache_hit=%s "
+             "reasoning=%s cost=%dmc",
              prov.name, model, purpose, latency_ms, tokens_in, tokens_out,
-             cache_hit_tokens, actual_mc)
+             cache_hit_tokens, reasoning_tokens, actual_mc)
 
     return LLMResult(
         call_id=call_id,

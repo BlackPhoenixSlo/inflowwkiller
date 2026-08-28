@@ -40,6 +40,10 @@ export interface BrainConfig {
   utc_offset: number;
   daily_cost_cap_cents: number;
   model: string | null;
+  /** How hard the picked model may think. "" / null = use the model's own pin.
+   *  The legal values are per PROVIDER, so the editor reads them from
+   *  `effort_options[model]` rather than from a hardcoded list. */
+  reasoning_effort: string | null;
   model_by_purpose: Record<string, string>;
   time_activities: Record<string, string>;
   time_images: Record<string, number>;
@@ -124,6 +128,10 @@ export interface AccountConfigResp {
   persona_fact_fields_by_voice: Record<string, PersonaFactField[]>;
   slots: string[];          // the 6 time-of-day slot keys, ordered
   model_options: string[];  // LLM model ids the account may pick
+  // Per model, the reasoning-effort values it accepts (weakest first).
+  // Empty for a model with no reasoning control — the legal set is per
+  // provider, so this cannot be a single shared list.
+  effort_options: Record<string, string[]>;
   purposes: string[];       // per-purpose override targets
   languages: LanguageOption[]; // language codes + labels for the dropdown
   /** Creator-canon fields, ordered by how often fans ask. Single source of truth. */

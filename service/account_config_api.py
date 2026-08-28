@@ -34,6 +34,7 @@ import llm_client
 import media_cotag
 from auth import assert_account_owned
 from automations import rhythm  # tz_offset_for — the ONE clock resolver
+from automations._common import DEFAULT_MODEL  # what a NULL `model` really runs
 from automations._persona import PERSONA_FACT_FIELDS, PERSONA_FACTS_OPERATOR_ONLY
 from brain_defaults import brain_defaults
 from db.engine import get_session
@@ -145,6 +146,68 @@ def _validate_model(v: Any, field: str, allowed: set[str]) -> str | None:
     return s
 
 
+def _effective_effort(row: AccountAiConfig | None) -> str:
+    """What the effort box should SHOW — the saved pick if there is one, else
+    the effort this account is ACTUALLY running (its model\'s own pin).
+
+    Not blank. An account on a model pinned to "high" that renders an empty box
+    invites an operator to save a downgrade they never chose, and the save
+    button does not know the difference between "left alone" and "set to the
+    first thing in the list". The dropdown falls back to the CHEAPEST option
+    only when a NEW model is picked, where there is no current behaviour to
+    misreport.
+    """
+    if row is None:
+        return ""
+    saved = (getattr(row, "reasoning_effort", None) or "").strip()
+    if saved:
+        return saved
+    mdl = MODELS.get(row.model or DEFAULT_MODEL)
+    return mdl.reasoning_effort if mdl else ""
+
+
+def _validate_effort(v: Any, model: str | None) -> str | None:
+    """Coerce the saved reasoning effort. NULL/"" = use the model's own default.
+
+    Validated against THE MODEL BEING SAVED, not against a union of every
+    provider\'s values: the point of the dropdown is that it cannot offer an
+    account a string its provider answers 400 to, and a union would put that
+    string back. Refusing here is right even though llm_client drops a
+    mis-fitting stored value at call time — that drop exists for config which
+    was valid when written and was outlived by a model change, not as a licence
+    for the editor to write nonsense in the first place.
+    """
+    s = _clean_text(v, "reasoning_effort")
+    if s is None:
+        return None
+    allowed = llm_client.effort_options(model or "")
+    if not allowed:
+        raise HTTPException(
+            422, f"model {model or '(none)'!r} takes no reasoning effort — "
+                 f"leave reasoning_effort empty")
+    if s not in allowed:
+        raise HTTPException(
+            422, f"reasoning_effort {s!r} is not valid for model "
+                 f"{model or '(none)'!r} ({', '.join(allowed)})")
+    # Store NULL when the pick simply IS the model's default. Sparse-means-
+    # default is already how this table treats empty maps, and here it fixes a
+    # real leak: GET reports the pin for an unset account, every client re-sends
+    # the whole config blob on save (they must — this endpoint replaces the
+    # columns it reads), so an unrelated save from the chatter or settings tab
+    # would otherwise MATERIALIZE the pin into the column. That freezes the
+    # account at whatever the default was that afternoon, and a later change to
+    # the model's pin silently stops reaching it.
+    #
+    # The trade-off, stated plainly: an operator who deliberately picks the
+    # value that happens to be the default is recorded as "unset", so they will
+    # follow the pin if it ever moves. That is the better failure — it keeps
+    # every untouched account on one number we can change in one place.
+    mdl = MODELS.get(model or "")
+    if mdl is not None and s == mdl.reasoning_effort:
+        return None
+    return s
+
+
 def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
     """The stored brain → a flat editor-friendly dict (scalar caps defaulted)."""
     return {
@@ -158,6 +221,7 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         "daily_cost_cap_cents": row.daily_cost_cap_cents if row else 100,
         "model": row.model if row else None,
         "model_by_purpose": _parse_obj(row.model_by_purpose) if row else {},
+        "reasoning_effort": _effective_effort(row),
         "time_activities": _parse_obj(row.time_activities_json) if row else {},
         "time_images": _parse_obj(row.time_images_json) if row else {},
         # Include-only automation audience. audience_of_list_id is resolved by
@@ -271,6 +335,7 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         "defaults_by_voice": brains,
         "slots": list(TIME_SLOTS),
         "model_options": _model_options(),
+        "effort_options": llm_client.effort_options_by_model(),
         "purposes": list(PURPOSES),
         "languages": list(LANGUAGES),
         # The creator-canon field contract, served the same way as slots /
@@ -394,6 +459,7 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     persona = _clean_text(cfg.get("persona"), "persona")
     location = _clean_text(cfg.get("location"), "location")
     model = _validate_model(cfg.get("model"), "model", allowed)
+    effort = _validate_effort(cfg.get("reasoning_effort"), model)
 
     # persona_facts — the structured creator canon pinned into every chat prompt.
     # An ALLOWLIST, not a passthrough: unknown keys are dropped rather than stored,
@@ -549,6 +615,7 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         "utc_offset": utc_offset,
         "daily_cost_cap_cents": cap,
         "model": model,
+        "reasoning_effort": effort,
         "model_by_purpose": json.dumps(mbp) if mbp else None,
         "time_activities_json": json.dumps(acts) if acts else None,
         "time_images_json": json.dumps(imgs) if imgs else None,

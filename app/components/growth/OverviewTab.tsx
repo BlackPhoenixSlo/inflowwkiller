@@ -18,7 +18,9 @@ import { Badge, Button, Card } from "@/components/ui/primitives";
 import {
   useAutomationRules, type AutomationRule,
 } from "@/hooks/useAutomations";
-import { usePromotions, useTrackingLinks, useTrialLinks } from "@/hooks/useGrowth";
+import {
+  useOfTrackingLinks, usePromotions, useTrackingLinks, useTrialLinks,
+} from "@/hooks/useGrowth";
 import { useSmartLists } from "@/hooks/useSmartLists";
 
 /** The five feature tabs the overview can jump to (page.tsx adds "overview"). */
@@ -125,6 +127,7 @@ export default function OverviewTab({
   const promosQ = usePromotions(accountId);
   const trialQ = useTrialLinks(accountId);
   const trackingQ = useTrackingLinks(accountId);
+  const ofTrackingQ = useOfTrackingLinks(accountId);
   const smartQ = useSmartLists(accountId);
 
   const rules = rulesQ.data ?? [];
@@ -142,14 +145,24 @@ export default function OverviewTab({
   const trialLive = trialLinks.filter((l) => l.status === "active").length;
   const trialClaims = trialLinks.reduce((n, l) => n + (l.claim_counts || 0), 0);
 
+  // The Tracking tab leads with OnlyFans-native links (/campaigns) and lists the
+  // internal /t/ redirects second, so counting only the internal table reported
+  // "0 links · 0 clicks" for accounts whose OF links had thousands of clicks and
+  // real subscriber attribution — the one Growth surface with proven results,
+  // shown as empty.
   const trackingLinks = trackingQ.data ?? [];
-  const trackingClicks = trackingLinks.reduce((n, l) => n + (l.click_count || 0), 0);
+  const ofTrackingLinks = ofTrackingQ.data?.links ?? [];
+  const trackingCount = trackingLinks.length + ofTrackingLinks.length;
+  const trackingClicks =
+    trackingLinks.reduce((n, l) => n + (l.click_count || 0), 0) +
+    ofTrackingLinks.reduce((n, l) => n + (l.clicks || 0), 0);
+  const trackingSubs = ofTrackingLinks.reduce((n, l) => n + (l.subscribers || 0), 0);
 
   const smartLists = smartQ.data ?? [];
 
   const loading =
     rulesQ.isLoading || promosQ.isLoading || trialQ.isLoading ||
-    trackingQ.isLoading || smartQ.isLoading;
+    trackingQ.isLoading || ofTrackingQ.isLoading || smartQ.isLoading;
 
   return (
     <div className="space-y-5">
@@ -204,8 +217,13 @@ export default function OverviewTab({
           />
           <StatTile
             label="🔗 Tracking links"
-            value={String(trackingLinks.length)}
-            sub={`${trackingClicks} click${trackingClicks === 1 ? "" : "s"} total`}
+            value={String(trackingCount)}
+            sub={
+              `${trackingClicks} click${trackingClicks === 1 ? "" : "s"}` +
+              (trackingSubs > 0
+                ? ` · ${trackingSubs} subscriber${trackingSubs === 1 ? "" : "s"}`
+                : " total")
+            }
             onOpen={() => onOpenTab("tracking")}
           />
           <StatTile

@@ -182,3 +182,80 @@ describe("saving the lane refreshes what the lane derives", () => {
     expect(brain.result.current).toBeTruthy();
   });
 });
+
+describe("the thinking-effort picker follows the MODEL", () => {
+  /** Real registry shapes: two models on ONE provider that disagree about
+   *  whether an effort is read at all, and a DeepSeek model whose legal set
+   *  contains "medium" — which z.ai answers 400 to. A single shared list of
+   *  efforts cannot serve these three, which is why the server sends a map. */
+  const CFG = (model: string | null, reasoning_effort: string | null = null) => ({
+    account_id: ACC,
+    config: { voice: "her", persona: "", persona_facts: {}, time_activities: {},
+              time_images: {}, model_by_purpose: {}, language: "en", location: null,
+              timezone: null, utc_offset: 0, daily_cost_cap_cents: 100,
+              model, reasoning_effort },
+    defaults: { persona: "" },
+    defaults_by_voice: { her: { persona: "" }, him: { persona: "" } },
+    persona_fact_fields: [], persona_fact_fields_by_voice: { her: [], him: [] },
+    slots: [], purposes: [], languages: [{ code: "en", label: "English" }],
+    model_options: ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.3-flash", "glm-4.5-air"],
+    effort_options: {
+      "deepseek-v4-flash": [],
+      "deepseek-v4-pro": ["low", "medium", "high"],
+      "glm-5.3-flash": ["low", "high", "max"],
+      "glm-4.5-air": [],
+    },
+  });
+
+  const mount = async (body: unknown) => {
+    relayGet.mockImplementation((path: string) =>
+      Promise.resolve(String(path).startsWith("/admin/account-config") ? body : {}));
+    render(<QueryClientProvider client={client}><BrainPanel /></QueryClientProvider>);
+    await waitFor(() => expect(screen.getByText("Default (all purposes)")).toBeTruthy());
+  };
+  const selectUnder = (label: string) => {
+    const span = screen.queryByText(label);
+    return span ? (span.parentElement!.querySelector("select") as HTMLSelectElement) : null;
+  };
+
+  it("is absent for a model that has no reasoning control", async () => {
+    await mount(CFG("deepseek-v4-flash"));
+    expect(selectUnder("Thinking effort")).toBeNull();
+  });
+
+  it("shows the account's saved pick, not the first option", async () => {
+    await mount(CFG("glm-5.3-flash", "max"));
+    // Safe to read .value here ONLY because "max" IS an option for this model.
+    expect(selectUnder("Thinking effort")!.value).toBe("max");
+  });
+
+  it("SAVES the cheapest effort after a model change, not the carried-over one", async () => {
+    // Asserted through the PUT body, not the select's .value, and that is not
+    // fussiness. A controlled <select> whose value matches no option silently
+    // displays option[0] — verified in this jsdom — so `.value` reads "low"
+    // whether the panel reset the state or merely left "max" sitting in it.
+    // Every DOM-level assertion here passes with the reset deleted. What the
+    // operator would actually get is a box reading "low" and a save that sends
+    // "max", which the server rejects for a model that never offered it.
+    await mount(CFG("glm-5.3-flash", "max"));
+    await act(async () => {
+      fireEvent.change(selectUnder("Default (all purposes)")!,
+                       { target: { value: "deepseek-v4-pro" } });
+    });
+    await act(async () => { fireEvent.click(screen.getAllByText("Save brain")[0]); });
+
+    await waitFor(() => expect(relayPut).toHaveBeenCalled());
+    const sent = relayPut.mock.calls.at(-1)![1] as { config: Record<string, unknown> };
+    expect(sent.config.model).toBe("deepseek-v4-pro");
+    expect(sent.config.reasoning_effort).toBe("low");
+  });
+
+  it("disappears when the model changes to one with no control", async () => {
+    await mount(CFG("glm-5.3-flash", "max"));
+    await act(async () => {
+      fireEvent.change(selectUnder("Default (all purposes)")!,
+                       { target: { value: "glm-4.5-air" } });
+    });
+    expect(selectUnder("Thinking effort")).toBeNull();
+  });
+});

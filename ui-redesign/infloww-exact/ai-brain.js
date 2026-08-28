@@ -10,6 +10,8 @@ Fastt.ready(async () => {
     'grok-4-1-fast-non-reasoning': 'Grok 4.1 Fast',
     'qwen3-vl-30b': 'Qwen3-VL 30B',
     'qwen3-vl-235b': 'Qwen3-VL 235B',
+    'glm-5.3-flash': 'GLM 5.3 Flash — cheapest GLM, ~1.9s',
+    'glm-4.5-air': 'GLM 4.5 Air — fastest (~0.6s), no thinking, ~18% dearer',
   };
   const label = (id) => MODEL_LABEL[id] || id;
   const shortLabel = (id) => (MODEL_LABEL[id] || id).split(' — ')[0];
@@ -122,6 +124,28 @@ Fastt.ready(async () => {
   sModel.innerHTML = '<option value="">— no model set —</option>' +
     (out.model_options || []).map((m) =>
       '<option value="' + Fastt.esc(m) + '">' + Fastt.esc(label(m)) + '</option>').join('');
+  // ---- thinking effort: options follow the MODEL, not the provider ------
+  // The legal values differ between providers ("medium" is good DeepSeek and a
+  // hard 400 on z.ai), and most models have no reasoning control at all — so
+  // the row HIDES rather than offering a box that cannot do anything.
+  //
+  // The list is weakest-first and the fallback is opts[0], so picking a new
+  // model lands on the CHEAPEST setting it has rather than inheriting whatever
+  // suited the last one. There is no blank "use the default" entry on purpose:
+  // an effort that travels is always a real value, and this editor is where it
+  // gets chosen. The saved value still wins on load, so the box shows what the
+  // account is actually running rather than resetting it on sight.
+  const sEffort = $('#s-effort'), effortRow = $('#fx-effort');
+  const EFFORTS = out.effort_options || {};
+  function syncEffort(preferred) {
+    const opts = EFFORTS[sModel.value] || [];
+    effortRow.style.display = opts.length ? '' : 'none';
+    sEffort.innerHTML = opts.map(
+      (v) => '<option value="' + Fastt.esc(v) + '">' + Fastt.esc(v) + '</option>').join('');
+    sEffort.value = opts.indexOf(preferred) >= 0 ? preferred : (opts[0] || '');
+  }
+  sModel.addEventListener('change', () => syncEffort(''));
+
   const pSelects = $$('select[data-purpose]');
   pSelects.forEach((sel) => {
     sel.innerHTML = '<option value="">Inherit default</option>' +
@@ -135,6 +159,7 @@ Fastt.ready(async () => {
     $('#t-welcome').value = cfg.welcome_rules || '';
     $('#f-location').value = cfg.location || '';
     sModel.value = cfg.model || '';
+    syncEffort(cfg.reasoning_effort || '');
     const tz = $('#s-tz');
     if (cfg.timezone && !Array.from(tz.options).some((o) => o.value === cfg.timezone)) {
       const o = document.createElement('option');
@@ -196,6 +221,9 @@ Fastt.ready(async () => {
       utc_offset: stored.utc_offset,                               // preserved; IANA timezone wins server-side
       daily_cost_cap_cents: Math.round(Number($('#r-cap').value) * 100),
       model: sModel.value || null,
+      // Empty for a model with no reasoning control — the server refuses an
+      // effort on one of those, and the row is hidden in that case anyway.
+      reasoning_effort: sEffort.value || null,
       model_by_purpose: mbp,
       time_activities: acts,
       time_images: Object.assign({}, imgs),                        // slot picker + ✕ remove write here

@@ -39,6 +39,12 @@ PROVIDERS: dict[str, LLMProvider] = {
     "deepseek": LLMProvider("deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
     # DeepInfra hosts the Qwen3-VL vision models (OpenAI-compatible, NSFW-permissive).
     "deepinfra": LLMProvider("deepinfra", "https://api.deepinfra.com/v1/openai", "DEEPINFRA_API_KEY"),
+    # Z.ai (GLM). The base URL is the one the API actually answers on, NOT the
+    # one its OpenAI-compatibility docs give: `https://api.z.ai/api/openai/v1`
+    # returns `{"code":500,"msg":"404 NOT_FOUND"}` — under an HTTP **200**, so a
+    # caller that trusts the status code sees a successful request with no
+    # choices rather than a routing error. Probed 2026-08-27.
+    "zai": LLMProvider("zai", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY"),
 }
 
 

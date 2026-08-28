@@ -585,6 +585,15 @@
               <option value="" selected>Loading…</option>
             </select>
           </div>
+          <!-- Hidden unless the picked model actually has a reasoning control.
+               Most models have none, and an always-visible box that does
+               nothing for them reads as a setting that was ignored. -->
+          <div class="fx-field" id="fx-effort" style="display:none">
+            <label>Thinking effort</label>
+            <select class="fx-select" id="s-effort">
+              <option value="" selected>Model default</option>
+            </select>
+          </div>
           <div class="fx-field">
             <label>Where she lives</label>
             <input class="fx-input" id="f-location" value="">
