@@ -193,10 +193,13 @@ export default function TopNav() {
          *  front. A PLAIN <a>, never next/link: /infloww is not a Next route,
          *  it is a rewrite onto the relay's second StaticFiles mount, so a
          *  client-side navigation would look for an RSC payload that does not
-         *  exist and dead-end. The full page load is the point. */}
+         *  exist and dead-end. The full page load is the point.
+         *  Hidden below sm: this and the blur toggle were exactly the two
+         *  squares that pushed a phone-width bar into sideways scroll, so
+         *  on phones both live in the hamburger sheet instead. */}
         <a
           href="/infloww/dashboard.html"
-          className={cn(ICON_BTN, ICON_BTN_DIM)}
+          className={cn(ICON_BTN, ICON_BTN_DIM, "hidden sm:grid")}
           title="Switch to the Infloww view"
           aria-label="Switch to the Infloww view"
         >
@@ -212,6 +215,7 @@ export default function TopNav() {
           onClick={() => setBlurMode(blurOn ? "off" : readLastOnBlurMode())}
           className={cn(
             ICON_BTN,
+            "hidden sm:grid",
             blurOn ? "text-warn" : ICON_BTN_DIM,
           )}
           title={blurOn ? "Images blurred — click to unblur" : "Blur images"}
@@ -386,8 +390,8 @@ export default function TopNav() {
 
       {/* Slide-down nav for everything below lg (1024px). Mirrors the
        *  desktop link row but stacks vertically so it stays readable on
-       *  phones and small tablets. Also shows the theme toggle here
-       *  since it's hidden in the bar at < sm. */}
+       *  phones and small tablets. Also hosts the controls the bar
+       *  drops below sm: blur toggle, Infloww switch, theme toggle. */}
       {mobileNavOpen && (
         <div ref={mobileNavRef} className="lg:hidden border-t border-border bg-panel">
           <nav className="grid grid-cols-2 gap-1.5 px-3 py-2">
@@ -406,10 +410,33 @@ export default function TopNav() {
                 <NavLabel label={l.label} />
               </Link>
             ))}
+            {/* Below sm the blur toggle + Infloww switch leave the bar (see
+             *  the bar comments) and live here, styled like the theme row. */}
+            <button
+              type="button"
+              onClick={() => setBlurMode(blurOn ? "off" : readLastOnBlurMode())}
+              className={cn(
+                "sm:hidden col-span-2 mt-1 px-3 min-h-11 flex items-center gap-2 rounded-lg text-sm text-left hover:bg-bg-elev-1/50",
+                blurOn ? "text-warn" : "text-fg-dim hover:text-fg",
+              )}
+              aria-pressed={blurOn}
+            >
+              <span aria-hidden>{blurOn ? "◐" : "○"}</span>
+              <span>{blurOn ? "Images blurred — tap to unblur" : "Blur images"}</span>
+            </button>
+            {/* Plain <a>, same reason as the bar icon: /infloww is a relay
+             *  static mount, not a Next route. */}
+            <a
+              href="/infloww/dashboard.html"
+              className="sm:hidden col-span-2 px-3 min-h-11 flex items-center gap-2 rounded-lg text-sm text-fg-dim hover:text-fg hover:bg-bg-elev-1/50"
+            >
+              <span aria-hidden>⧉</span>
+              <span>Switch to the Infloww view</span>
+            </a>
             <button
               type="button"
               onClick={toggle}
-              className="sm:hidden col-span-2 mt-1 px-3 min-h-11 flex items-center rounded-lg text-sm text-left text-fg-dim hover:text-fg hover:bg-bg-elev-1/50"
+              className="sm:hidden col-span-2 px-3 min-h-11 flex items-center rounded-lg text-sm text-left text-fg-dim hover:text-fg hover:bg-bg-elev-1/50"
             >
               {theme === "dark" ? "☀ Switch to light mode" : "☾ Switch to dark mode"}
             </button>
