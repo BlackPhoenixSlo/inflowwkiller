@@ -1098,6 +1098,10 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
                   captionPoolKey={p.caption_pool_key ?? ""}
                   knobs={captionKnobs}
                   onAdd={(lines) => addCaptions(i, lines)}
+                  /* The editor's live value, not the saved one: the panel warns
+                     that a second hook gets stacked on these boxes at send time,
+                     and an operator who just ticked the switch has not saved yet. */
+                  aiCaptionAtSend={aiCaptionAtSend}
                 />
               )}
               {importIdx === i && (

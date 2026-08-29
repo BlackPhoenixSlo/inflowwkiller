@@ -1,15 +1,39 @@
 // ==== LIVE WIRING (relay data via _shared/fastt.js) ====
 //
-// TWO money bases live on this page and every tile names the one it used:
-//   • "Net earnings"   → GET /api/of/v2/payouts/stats — OF's own post-cut view.
-//     list.total.{all,tips,subscribes,chat_messages,stream}.{total_net,total_gross}
-//     and list.months[<monthEpoch>].{tips,subscribes,chat_messages,stream}[] whose
-//     entries are PER-DAY {time,net,gross} — so any segment window is summable.
-//     Values are DOLLAR floats (OF payments API), never cents.
-//   • "Gross earnings" → GET /admin/stats/revenue?group_by=kind — the relay ledger
-//     in CENTS, i.e. what the fan actually paid.
-// The two will NOT agree (OF takes ~20%), so the basis is printed under every
-// number rather than silently mixed.
+// EVERY money number on this page is described by THREE axes, and every tile
+// prints all three. The old header documented only the first two, and that
+// omission WAS the bug: the KPI card was per-creator while the chart directly
+// under it was roster-wide, both labelled only "relay ledger · gross", so
+// nothing on screen revealed that they counted different creators.
+//
+//   1. BASIS — gross or net.  BOTH now come from the relay ledger:
+//        gross = SUM(transactions.amount_cents) — what the fan paid.
+//        net   = SUM(transactions.net_cents)    — OF's OWN post-fee figure,
+//                read verbatim from its payload (net = gross − fee; VAT is
+//                tracked separately and NOT deducted).
+//      Net used to come from GET /api/of/v2/payouts/stats, which is structurally
+//      ONE OF session and therefore cannot answer an agency question. Verified
+//      2026-08-29 on a closed month: ledger and OF payouts agree to the cent
+//      ($1795.36 gross / $1436.25 net), and OF reports no `stream` bucket at
+//      all — so nothing is lost by leaving that API behind.
+//      ⚠️ Do NOT "simplify" net to gross × 0.8. It is arithmetically identical
+//      today, which is exactly the trap: it silently diverges the moment OF
+//      applies a referral split or changes its cut.
+//
+//   2. POPULATION — which creators.  "agency" = every creator the SIGNED-IN
+//      PRINCIPAL owns (Fastt.get(..., {scope:"agency"}), WIRING_GUIDE rule 4b);
+//      "creator" = the one picked in the topbar. The roster VARIES by viewer —
+//      no principal owns every account — so agency tiles say "N creators", never
+//      a bare "Total".
+//
+//   3. STATUS — /admin/stats/revenue and /admin/stats/per-model both restrict to
+//      ("cleared","pending"). `pending` IS revenue: the ledger writes rows
+//      pending and clears them ~7 days later, so a cleared-only view renders the
+//      current week $0.00.
+//
+// Cards that are deliberately CREATOR-scoped (Fans & subscriptions, the ops
+// pill, the bell) say so on their face — they read OF per-session and cannot be
+// aggregated without an N-account fan-out this page will not do.
 Fastt.ready(async function () {
   var $ = Fastt.$;
   var $$ = Fastt.$$;
@@ -48,16 +72,22 @@ Fastt.ready(async function () {
   // GET /api/of/v2/users/notifications/count → per-type UNREAD ints; `all` is
   // the number the bell should wear. On failure the bell stays bare rather
   // than showing an invented indicator.
-  try {
-    var _nc = await Fastt.get('/api/of/v2/users/notifications/count');
-    var _bell = Fastt.$('#bell-count');
-    var _unread = Number(_nc && _nc.all) || 0;
-    if (_bell) {
-      _bell.textContent = _unread > 99 ? '99+' : String(_unread);
-      _bell.style.display = _unread ? '' : 'none';
-      _bell.title = _unread + ' unread OnlyFans notification' + (_unread === 1 ? '' : 's');
-    }
-  } catch (e) { /* OF unreachable — leave the bell bare */ }
+  // Gated on a selected creator: with no X-Account-Id the OF proxy falls back to
+  // whichever account is "active" server-side, so this used to show a real
+  // unread count belonging to a creator the viewer never picked.
+  if (Fastt.account()) {
+    try {
+      var _nc = await Fastt.get('/api/of/v2/users/notifications/count');
+      var _bell = Fastt.$('#bell-count');
+      var _unread = Number(_nc && _nc.all) || 0;
+      if (_bell) {
+        _bell.textContent = _unread > 99 ? '99+' : String(_unread);
+        _bell.style.display = _unread ? '' : 'none';
+        _bell.title = _unread + ' unread OnlyFans notification' + (_unread === 1 ? '' : 's')
+          + ' for the selected creator';
+      }
+    } catch (e) { /* OF unreachable — leave the bell bare */ }
+  }
   // ── segment → UTC date window (bare dates; server makes `to` inclusive) ──
   function segWindow() {
     var onBtn = $('#seg button.on');
@@ -82,6 +112,29 @@ Fastt.ready(async function () {
 
   // ── basis switch (the "Net earnings ▾" control is a real Gross/Net toggle) ──
   var BASIS = 'net';
+  // How many creators the SIGNED-IN PRINCIPAL owns. Not a constant and not 7:
+  // on the live box no principal owns the whole roster and three accounts are
+  // co-owned, so four operators see four different legitimate agency totals.
+  // Filled in by loadCreators()/loadIngestCaveat(); until then the label stays
+  // vague rather than asserting a count we have not counted.
+  var ROSTER_N = 0;
+  function rosterLabel() {
+    return ROSTER_N ? (ROSTER_N === 1 ? '1 creator' : ROSTER_N + ' creators') : 'your creators';
+  }
+  // The section heading sits above the earnings card AND the channel chart, and
+  // BOTH are agency-wide now; only the Creators overview table further down is
+  // per-creator. It used to read "Creator earnings overview", which described
+  // the old single-creator card and would now be a label over the wrong
+  // population — the exact failure this whole change exists to remove. Driven
+  // off ROSTER_N so the heading counts the same creators the money does.
+  function syncEarnHead() {
+    var el = $('#earn-head-tx');
+    if (!el) return;
+    el.textContent =
+      ROSTER_N > 1 ? 'Agency earnings · all ' + ROSTER_N + ' creators'
+      : ROSTER_N === 1 ? 'Agency earnings · your 1 creator'
+      : 'Agency earnings · all creators';
+  }
   var dd = $('#dd-net'), ddLabel = $('#dd-net-label');
   if (dd) {
     dd.addEventListener('click', function (e) {
@@ -101,115 +154,107 @@ Fastt.ready(async function () {
     document.addEventListener('click', function () { dd.classList.remove('open'); });
   }
 
-  // ── OF payouts (cached once per page: it is an all-history payload) ──
-  var _payouts;   // undefined = not fetched, null = fetch failed
-  async function payoutsStats() {
-    if (_payouts !== undefined) return _payouts;
-    try {
-      var out = await Fastt.get('/api/of/v2/payouts/stats');
-      _payouts = (out && out.list) ? out.list : null;
-    } catch (e) { _payouts = null; }
-    return _payouts;
-  }
-  var PAY_CATS = ['tips', 'subscribes', 'chat_messages', 'stream'];
-  /** Sum every per-day payouts entry whose `time` falls inside [from, to]. */
-  function payoutsWindow(list, from, to) {
-    var fs = Date.parse(from + 'T00:00:00Z') / 1000;
-    var ts = Date.parse(to + 'T00:00:00Z') / 1000 + 86400;
-    var acc = {};
-    PAY_CATS.forEach(function (c) { acc[c] = { net: 0, gross: 0 }; });
-    var months = (list && list.months) || {};
-    Object.keys(months).forEach(function (mk) {
-      PAY_CATS.forEach(function (c) {
-        (months[mk][c] || []).forEach(function (e) {
-          if (e.time >= fs && e.time < ts) {
-            acc[c].net += Number(e.net) || 0;
-            acc[c].gross += Number(e.gross) || 0;
-          }
-        });
-      });
-    });
-    return acc;
+  // ── the window's ledger, fetched ONCE and shared ─────────────────
+  // group_by=day&by_kind=true returns each day with its kinds nested inside, so
+  // ONE request feeds both the KPI card and the channel chart. That is not just
+  // fewer round-trips: summing the nested kinds across days IS the kind total,
+  // so the card and the chart are now incapable of disagreeing. Previously they
+  // were two separate requests at two different SCOPES, which is how a
+  // per-creator headline ended up sitting above a roster-wide chart.
+  var _win = {};                    // cache key -> promise, one per (from,to)
+  function loadWindow(from, to) {
+    var key = from + '|' + to;
+    if (!_win[key]) {
+      _win[key] = Fastt.get('/admin/stats/revenue',
+        { group_by: 'day', by_kind: true, include_net: true, from: from, to: to },
+        { scope: 'agency' });
+    }
+    return _win[key];
   }
 
-  // ── earnings KPI card ────────────────────────────────────────────
-  // Ledger kinds → tiles. The complete live kind set is ppv_message,
-  // ppv_post, tip, rebill, subscription (verified against
-  // /admin/ingest/transactions/unknown-kinds, which is empty), so there is
-  // no ledger kind for Streams or Referrals — those two read OF directly.
-  function kpiBucket(kind) {
+  // Ledger kind -> tile. ONE mapper for the KPI card and the channel chart;
+  // they used to carry byte-identical private copies (kpiBucket / chanBucket)
+  // that could drift apart silently.
+  //
+  // Covers the writer's FULL catalogue (service/transaction_ingest.py
+  // KIND_CATALOG), not just the five kinds this DB happens to contain. The old
+  // comment here claimed "there is no ledger kind for Streams" and cited
+  // /admin/ingest/transactions/unknown-kinds as proof — that endpoint filters
+  // kind == 'unknown', so it is empty BY CONSTRUCTION for every catalogued kind
+  // and proved nothing. `tip_stream`/`ppv_stream` are real ledger kinds; this
+  // account set has simply never produced one.
+  function tileBucket(kind) {
     if (!kind) return null;
-    if (kind === 'ppv_post') return 'posts';
+    if (kind === 'ppv_post' || kind === 'tip_post') return 'posts';
+    if (kind === 'ppv_stream' || kind === 'tip_stream') return 'streams';
     if (kind === 'ppv' || kind === 'ppv_message') return 'messages';
     if (kind === 'tip') return 'tips';
     if (kind === 'subscription' || kind === 'rebill') return 'subscriptions';
-    return null;
+    return null;                    // custom / unknown -> disclosed as "other"
   }
+
+  /** Fold the shared window payload into per-tile totals for the active basis. */
+  function foldWindow(rows) {
+    var B = { subscriptions: 0, posts: 0, messages: 0, tips: 0, streams: 0 };
+    var total = 0, other = 0, missingNet = 0;
+    var field = BASIS === 'net' ? 'net_cents' : 'total_cents';
+    (rows || []).forEach(function (day) {
+      (day.by_kind || []).forEach(function (k) {
+        var c = k[field] || 0;
+        total += c;
+        missingNet += k.net_missing_count || 0;
+        var b = tileBucket(k.kind);
+        if (b) B[b] += c; else other += c;
+      });
+    });
+    return { buckets: B, total: total, other: other, missingNet: missingNet };
+  }
+
+  function basisLabel() {
+    return 'relay ledger \u00b7 ' + (BASIS === 'net' ? 'net' : 'gross') + ' \u00b7 ' + rosterLabel();
+  }
+
+  // ── earnings KPI card (agency-wide, both bases from the ledger) ───
   async function loadEarnings() {
     var w = segWindow();
-    var out = await Fastt.get('/admin/stats/revenue',
-      { group_by: 'kind', from: w.from, to: w.to });
-    var rows = out.rows || [];
-    var L = { subscriptions: 0, posts: 0, messages: 0, tips: 0 };
-    var lTotal = 0, lOther = 0;
-    rows.forEach(function (r) {
-      var c = r.total_cents || 0;
-      lTotal += c;
-      var b = kpiBucket(r.kind);
-      if (b) L[b] += c; else lOther += c;
-    });
+    var out = await loadWindow(w.from, w.to);
+    var f = foldWindow(out.rows);
+    var src = basisLabel();
 
-    var list = await payoutsStats();
-    var P = list ? payoutsWindow(list, w.from, w.to) : null;
-    var K = BASIS === 'net' ? 'net' : 'gross';
-    var payLbl = 'OF payouts · ' + K;
-    var ledLbl = 'relay ledger · gross';
+    setTile('subscriptions', Fastt.fmtCents(f.buckets.subscriptions), src);
+    setTile('messages', Fastt.fmtCents(f.buckets.messages), src);
+    setTile('tips', Fastt.fmtCents(f.buckets.tips), src);
+    setTile('posts', Fastt.fmtCents(f.buckets.posts), src);
 
-    if (BASIS === 'net' && P) {
-      setTile('subscriptions', Fastt.fmtMoney(P.subscribes.net), payLbl);
-      setTile('messages', Fastt.fmtMoney(P.chat_messages.net), payLbl);
-      setTile('tips', Fastt.fmtMoney(P.tips.net), payLbl);
-      setTile('streams', Fastt.fmtMoney(P.stream.net), payLbl);
-      // OF payouts has no "posts" category at all — keep the tile on the
-      // ledger and SAY so instead of inventing a net figure for it.
-      setTile('posts', Fastt.fmtCents(L.posts), 'ledger gross · not in OF payouts',
-        'OF payouts/stats has no posts bucket; this is the ledger gross figure.');
-      var netTotal = P.subscribes.net + P.chat_messages.net + P.tips.net + P.stream.net;
-      $('#kpi-total').textContent = Fastt.fmtMoney(netTotal);
-      $('#kpi-total-src').textContent = 'OF payouts · net' + (L.posts ? ' (posts excluded)' : '');
-    } else {
-      setTile('subscriptions', Fastt.fmtCents(L.subscriptions), ledLbl);
-      setTile('messages', Fastt.fmtCents(L.messages), ledLbl);
-      setTile('tips', Fastt.fmtCents(L.tips), ledLbl);
-      setTile('posts', Fastt.fmtCents(L.posts), ledLbl);
-      if (P) setTile('streams', Fastt.fmtMoney(P.stream.gross), 'OF payouts · gross',
-        'The relay ledger has no stream kind; live-stream money only exists in OF payouts.');
-      else setTile('streams', 'n/a', 'OF payouts unavailable');
-      $('#kpi-total').textContent = Fastt.fmtCents(lTotal);
-      $('#kpi-total-src').textContent = 'relay ledger · gross' + (lOther ? ' (incl. other kinds)' : '');
-    }
-    if (BASIS === 'net' && !P) {
-      // Never let a "Net" label sit over ledger gross numbers.
-      setTile('subscriptions', Fastt.fmtCents(L.subscriptions), ledLbl + ' — payouts unavailable');
-      setTile('messages', Fastt.fmtCents(L.messages), ledLbl + ' — payouts unavailable');
-      setTile('tips', Fastt.fmtCents(L.tips), ledLbl + ' — payouts unavailable');
-      setTile('posts', Fastt.fmtCents(L.posts), ledLbl);
-      setTile('streams', 'n/a', 'OF payouts unavailable');
-      $('#kpi-total').textContent = Fastt.fmtCents(lTotal);
-      $('#kpi-total-src').textContent = 'relay ledger · gross — OF payouts unavailable';
+    // Streams: a REAL agency-wide ledger figure. $0.00 here is a measured zero
+    // (this roster has never produced a stream sale), not an absent source, and
+    // it will populate itself the day one lands.
+    setTile('streams', Fastt.fmtCents(f.buckets.streams), src,
+      f.buckets.streams
+        ? 'Live-stream sales from ledger kinds ppv_stream + tip_stream.'
+        : 'No stream transactions in this window. ppv_stream/tip_stream ARE ledger kinds — this roster has never produced one.');
+
+    // Referrals: no ledger kind exists, and OF's balance is LIFETIME and
+    // single-creator — it does not move when the segment changes, so it was
+    // already wrong at one creator, never mind the roster. Show the page's
+    // "real absence" dash rather than a number that cannot mean what it says.
+    var refEl = tile('referrals');
+    if (refEl) {
+      var rv = refEl.querySelector('.mv');
+      if (rv) rv.textContent = '\u2014';
+      var rs = refEl.querySelector('.msrc');
+      if (rs) rs.textContent = 'no agency-wide source';
+      refEl.title = 'OF reports referral earnings only as a LIFETIME, single-creator balance '
+        + '(/api/of/v2/payments/referrals/balance). There is no referral kind in the ledger, so '
+        + 'there is no windowed, agency-wide figure to show. A dash means "not measurable here", not zero.';
     }
 
-    // Referrals: OF's own referral balance. It is a LIFETIME balance, not a
-    // windowed figure, and OF's payments API reports DOLLARS (a float) — do
-    // not run it through fmtCents.
-    try {
-      var ref = await Fastt.get('/api/of/v2/payments/referrals/balance');
-      var v = Number(ref && ref.referralEarnings);
-      setTile('referrals', Fastt.fmtMoney(isFinite(v) ? v : 0), 'OF balance · all-time',
-        'GET /api/of/v2/payments/referrals/balance → referralEarnings (dollars, lifetime — not scoped to the period above).');
-    } catch (e) {
-      setTile('referrals', 'n/a', 'OF referrals API unavailable');
-    }
+    $('#kpi-total').textContent = Fastt.fmtCents(f.total);
+    var note = src
+      + (f.other ? ' (incl. other kinds)' : '')
+      + (f.missingNet && BASIS === 'net' ? ' \u00b7 ' + f.missingNet + ' row(s) awaiting net backfill' : '')
+      + ' \u00b7 cleared + pending';
+    $('#kpi-total-src').textContent = note;
   }
 
   // ── fans & subscriptions strip ───────────────────────────────────
@@ -254,8 +299,20 @@ Fastt.ready(async function () {
     } else {
       setFan('new', 'n/a', 'OF subscribers chart unavailable');
     }
+    var fh = $('#fans-head');
+    if (fh && !fh.querySelector('.fscope')) {
+      var sc = document.createElement('span');
+      sc.className = 'fscope';
+      sc.style.cssText = 'margin-left:8px;font-size:11px;color:#8a8a8a;font-weight:500';
+      sc.textContent = 'selected creator only';
+      fh.appendChild(sc);
+    }
     if (note) {
-      note.innerHTML = '<b>Source:</b> OF <code>subscriptions/count/all</code> → <code>subscribers.*</code> '
+      note.innerHTML = '<b>Scope:</b> the SELECTED creator, not the agency \u2014 OF exposes fan counts '
+        + 'per session, and an agency figure would need one OF request per creator (unthrottled, no 429 '
+        + 'handling) and would double-count fans subscribed to several creators. Every other card on this '
+        + 'page is agency-wide; this one is not, and says so. '
+        + '<b>Source:</b> OF <code>subscriptions/count/all</code> → <code>subscribers.*</code> '
         + '(the fans subscribed to this creator). The sibling <code>subscriptions.*</code> block counts '
         + 'creators <i>this account follows</i> and is deliberately not shown here. New fans come from '
         + 'OF <code>subscriptions/subscribers/chart</code>, <code>subscribes</code> series (free-inclusive).';
@@ -286,10 +343,15 @@ Fastt.ready(async function () {
     var today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     var start = new Date(today.getTime() - (TREND_DAYS - 1) * DAY);
     var iso = function (d) { return d.toISOString().slice(0, 10); };
+    // AGENCY scope + basis-aware. This call used to omit the scope entirely,
+    // so fastt.js injected the selected creator and the "daily earnings" chart
+    // silently plotted ONE creator underneath a roster-wide headline.
     var out = await Fastt.get('/admin/stats/revenue',
-      { group_by: 'day', from: iso(start), to: iso(today) });
+      { group_by: 'day', include_net: true, from: iso(start), to: iso(today) },
+      { scope: 'agency' });
+    var _f = BASIS === 'net' ? 'net_cents' : 'total_cents';
     var byDay = {};
-    (out.rows || []).forEach(function (r) { if (r.day) byDay[r.day] = r.total_cents || 0; });
+    (out.rows || []).forEach(function (r) { if (r.day) byDay[r.day] = r[_f] || 0; });
 
     // Fill every calendar day so gaps read as real zero-revenue days.
     var days = [];
@@ -304,10 +366,10 @@ Fastt.ready(async function () {
     if (!peak) {
       var empty = document.createElement('div');
       empty.className = 'es-empty';
-      empty.textContent = 'No ledger revenue for this creator in the last ' + TREND_DAYS + ' days';
+      empty.textContent = 'No ledger revenue across ' + rosterLabel() + ' in the last ' + TREND_DAYS + ' days';
       plot.appendChild(empty);
       if (yax) yax.querySelectorAll('span').forEach(function (s) { s.textContent = ''; });
-      if (note) note.textContent = 'Relay ledger, gross cents, bucketed by UTC day (GET /admin/stats/revenue?group_by=day).';
+      if (note) note.textContent = basisLabel() + ' \u00b7 bucketed by UTC day \u00b7 cleared + pending.';
       return;
     }
     var max = niceCeil(peak);
@@ -341,7 +403,7 @@ Fastt.ready(async function () {
     if (note) {
       note.innerHTML = '<b>' + Fastt.fmtCents(total) + '</b> over ' + TREND_DAYS + ' days · peak '
         + Fastt.fmtCents(peak) + ' on ' + Fastt.esc(days.reduce(function (a, b) { return b.cents > a.cents ? b : a; }).day)
-        + ' — relay ledger, gross cents, bucketed by UTC day.';
+        + ' \u2014 ' + basisLabel() + ', bucketed by UTC day.';
     }
   }
   $$('#trend-chips .chip').forEach(function (b) {
@@ -385,11 +447,14 @@ Fastt.ready(async function () {
 
   async function loadCreators() {
     var w = segWindow();
-    // NO account_id — with one the endpoint returns a single row. noAccount
-    // also drops the X-Account-Id header, which this route ignores anyway.
+    // Agency scope: with an account_id this endpoint returns a single row.
+    // Migrated from bare `noAccount:true` to the named option (WIRING_GUIDE 4b)
+    // so the page states the POPULATION it wants rather than the mechanism.
     var out = await Fastt.get('/admin/stats/per-model',
-      { from: w.from, to: w.to }, { noAccount: true });
+      { from: w.from, to: w.to }, { scope: 'agency' });
     CRE_ROWS = (out.per_model || []).slice();
+    ROSTER_N = CRE_ROWS.length;      // the principal's roster, not a hardcoded 7
+    syncEarnHead();
     CRE_META = {
       from: out.from || w.from, to: out.to || w.to,
       active_subs_source: out.active_subs_source || 'unknown',
@@ -666,39 +731,39 @@ Fastt.ready(async function () {
     else { txt.textContent = 'Ingest stale'; dot.style.background = '#ff5f57'; }
   }
 
-  // ── sidebar unread badge: /admin/chats/recent (unread chats) ─────
-  async function loadUnread() {
-    var badge = $('#msg-badge');
-    if (!badge) return;
-    var out = await Fastt.get('/admin/chats/recent', { limit: 25 });
-    var n = (out.list || []).filter(function (c) { return c.hasUnread; }).length;
-    badge.textContent = String(n);
-    badge.style.display = n ? '' : 'none';
-  }
+  // ── sidebar unread badge: REMOVED, deliberately ──────────────────
+  // This page had its own `loadUnread()` writing #msg-badge from
+  // /admin/chats/recent?limit=25, while _shared/fastt.js's mountMsgBadge()
+  // writes the SAME element from the same endpoint with limit=100. The limit is
+  // applied BEFORE the unread filter, so the two produced different numbers by
+  // construction and whichever resolved last won — a nondeterministic badge.
+  // fastt.js owns #msg-badge for all 55 pages; the page-local copy is gone
+  // rather than reconciled, because two writers was the bug.
 
   // ── boot + segment refresh ───────────────────────────────────────
   // NOTE: the #modelswap topbar switcher is mounted centrally by fastt.js —
   // do not re-bind it here.
-  // ── earnings by channel (multi-line, ALL models — no account_id) ──
-  // Same approach as the reference dashboard: the ledger groups by day OR kind,
-  // not both, so each channel line = the day total split by that channel's share
-  // of the window. Referrals/Streams aren't ledger kinds → they read $0.
+  // ── earnings by channel (REAL per-day-per-kind, agency-wide) ─────
+  // Each line is now the actual money booked to that channel on that day, read
+  // from group_by=day&by_kind=true.
+  //
+  // It used to be `day_total x that_channel's share of the WHOLE window`, i.e.
+  // six scaled copies of one curve. That was not an approximation, it was
+  // invention: on 2026-08-24 and 2026-08-29 real tip revenue was exactly $0 and
+  // the chart still drew a tips line, because tips were 3.3% of the window.
+  //
+  // Drawn as STACKED AREAS, not six independent lines. Real ledger data is
+  // sparse — in a typical week ~43% of (day x channel) cells are empty and three
+  // of the five channels are flat at zero most days — so overlapping lines at
+  // the baseline read as breakage. Stacked, the same sparsity reads as
+  // composition, and the silhouette is the day total.
   var CHAN_DEF = [
     { key: 'subscriptions', label: 'Subscriptions', color: '#3b82f6' },
     { key: 'tips',          label: 'Tips',          color: '#10b981' },
     { key: 'posts',         label: 'Posts',         color: '#ef4444' },
     { key: 'messages',      label: 'Messages',      color: '#f59e0b' },
-    { key: 'referrals',     label: 'Referrals',     color: '#6366f1' },
     { key: 'streams',       label: 'Streams',       color: '#a855f7' },
   ];
-  function chanBucket(kind) {
-    if (!kind) return null;
-    if (kind === 'ppv_post') return 'posts';
-    if (kind === 'ppv' || kind === 'ppv_message') return 'messages';
-    if (kind === 'tip') return 'tips';
-    if (kind === 'subscription' || kind === 'rebill') return 'subscriptions';
-    return null;
-  }
   function chanNiceMax(v) { if (v <= 0) return 400; var p = Math.pow(10, Math.floor(Math.log10(v))); var n = v / p; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p; }
   function chanMoney(c) { var d = c / 100; return d >= 1000 ? '$' + (d / 1000).toFixed(1) + 'k' : '$' + Math.round(d); }
   function blankChannel(msg) {
@@ -710,29 +775,34 @@ Fastt.ready(async function () {
     if (legend) legend.innerHTML = '';
     if (note) note.textContent = '';
   }
-  function drawChannel(pts, shares) {
+  function drawChannel(pts, totals) {
     var svg = $('#chan-chart'), legend = $('#chan-legend'), note = $('#chan-note');
     if (!svg) return;
-    var grand = CHAN_DEF.reduce(function (a, c) { return a + (shares[c.key] || 0); }, 0) || 0;
+    var grand = CHAN_DEF.reduce(function (a, c) { return a + (totals[c.key] || 0); }, 0) || 0;
     if (legend) legend.innerHTML = CHAN_DEF.map(function (c) {
-      var v = shares[c.key] || 0, pc = grand > 0 ? (100 * v / grand).toFixed(2) : '0.00';
+      var v = totals[c.key] || 0, pc = grand > 0 ? (100 * v / grand).toFixed(2) : '0.00';
       return '<div class="lg"><span class="dot" style="background:' + c.color + '"></span>' +
         '<span class="nm">' + c.label + '</span><span class="pc">' + pc + '%</span>' +
         '<span class="am">' + Fastt.fmtCents(v) + '</span></div>';
     }).join('');
+
     var L = 46, R = 996, T = 20, B = 254;
-    var series = CHAN_DEF.map(function (c) { return { c: c, share: grand > 0 ? shares[c.key] / grand : 0 }; }).filter(function (s) { return s.share > 0; });
-    var vals = pts.map(function (p) { return p.v; });
-    var maxLine = series.length ? Math.max.apply(null, series.map(function (s) { return Math.max.apply(null, vals.map(function (v) { return v * s.share; })); }).concat([0])) : 0;
-    var maxV = chanNiceMax(maxLine);
+    // Only stack channels that actually earned in this window; a channel that is
+    // zero everywhere adds an invisible band and a dead legend entry.
+    var series = CHAN_DEF.filter(function (c) { return (totals[c.key] || 0) > 0; });
+    var maxV = chanNiceMax(pts.reduce(function (m, p) {
+      return Math.max(m, series.reduce(function (a, c) { return a + (p.v[c.key] || 0); }, 0));
+    }, 0));
     var X = function (i) { return pts.length === 1 ? (L + R) / 2 : L + i * (R - L) / (pts.length - 1); };
     var Y = function (v) { return B - (v / maxV) * (B - T); };
+
     var fr = [1, .75, .5, .25, 0], labY = [25, 83, 141, 199, 258];
     var h = '<g font-family="Inter, sans-serif" font-size="14" fill="#6a6a6a">';
     fr.forEach(function (f, i) { h += '<text x="8" y="' + labY[i] + '">' + chanMoney(maxV * f) + '</text>'; });
     h += '</g><g stroke="#2c2c2c" stroke-dasharray="3 5">';
     [20, 78, 137, 195].forEach(function (y) { h += '<line x1="46" y1="' + y + '" x2="996" y2="' + y + '"/>'; });
     h += '</g><line x1="46" y1="254" x2="996" y2="254" stroke="#3a3a3a"/>';
+
     var step = Math.max(1, Math.ceil(pts.length / 8));
     h += '<g font-family="Inter, sans-serif" font-size="14" fill="#8a8a8a">';
     pts.forEach(function (p, i) {
@@ -741,85 +811,165 @@ Fastt.ready(async function () {
       h += '<text x="' + X(i).toFixed(1) + '" y="284" text-anchor="' + anchor + '">' + Fastt.esc(p.label) + '</text>';
     });
     h += '</g>';
-    series.forEach(function (s) {
-      h += '<polyline points="' + pts.map(function (p, i) { return X(i).toFixed(1) + ',' + Y(p.v * s.share).toFixed(1); }).join(' ') +
-        '" fill="none" stroke="' + s.c.color + '" stroke-width="2.5" stroke-linejoin="round"/>';
+
+    // Cumulative baselines: band k is drawn between running totals k-1 and k.
+    var below = pts.map(function () { return 0; });
+    series.forEach(function (c) {
+      var upper = pts.map(function (p, i) { return below[i] + (p.v[c.key] || 0); });
+      var top = pts.map(function (p, i) { return X(i).toFixed(1) + ',' + Y(upper[i]).toFixed(1); });
+      var bot = [];
+      for (var i = pts.length - 1; i >= 0; i--) bot.push(X(i).toFixed(1) + ',' + Y(below[i]).toFixed(1));
+      h += '<polygon points="' + top.concat(bot).join(' ') + '" fill="' + c.color + '" fill-opacity="0.55"/>';
+      h += '<polyline points="' + top.join(' ') + '" fill="none" stroke="' + c.color +
+           '" stroke-width="2" stroke-linejoin="round"/>';
+      below = upper;
     });
+    if (!series.length) {
+      h += '<text x="520" y="140" text-anchor="middle" fill="#8a8a8a" font-family="Inter, sans-serif" font-size="14">'
+        + 'No revenue in this window</text>';
+    }
     svg.innerHTML = h;
-    if (note) note.textContent = 'All models combined · each channel line = the day total split by that channel’s share of the window (ledger groups by day OR kind). Gross cents.';
+    if (note) note.textContent = basisLabel()
+      + ' \u00b7 real per-day-per-kind from the ledger (group_by=day&by_kind=true), stacked \u00b7 cleared + pending.';
   }
+
   async function loadChannel() {
     var w = segWindow(), svg = $('#chan-chart');
     if (!svg) return;
-    var dayRes, kindRes;
+    var out;
     try {
-      dayRes = await Fastt.get('/admin/stats/revenue', { group_by: 'day', from: w.from, to: w.to }, { noAccount: true });
-      kindRes = await Fastt.get('/admin/stats/revenue', { group_by: 'kind', from: w.from, to: w.to }, { noAccount: true });
-    } catch (e) { blankChannel('Earnings by channel unavailable'); Fastt.staticBadge($('#chan-head'), 'NO LIVE DATA'); Fastt.oops(e); return; }
-    var shares = { subscriptions: 0, tips: 0, posts: 0, messages: 0, referrals: 0, streams: 0 };
-    (kindRes.rows || []).forEach(function (r) { var b = chanBucket(r.kind); if (b) shares[b] += (r.total_cents || 0); });
+      // Same promise the KPI card awaits — one request, so the legend amounts
+      // and the tiles above are literally the same numbers.
+      out = await loadWindow(w.from, w.to);
+    } catch (e) {
+      blankChannel('Earnings by channel unavailable');
+      Fastt.setBadge($('#chan-head'), 'static', 'NO LIVE DATA');
+      Fastt.oops(e); return;
+    }
+    var field = BASIS === 'net' ? 'net_cents' : 'total_cents';
+    var byDay = {}, totals = { subscriptions: 0, tips: 0, posts: 0, messages: 0, streams: 0 };
+    (out.rows || []).forEach(function (r) {
+      var per = {};
+      (r.by_kind || []).forEach(function (k) {
+        var b = tileBucket(k.kind);
+        if (!b || !(b in totals)) return;
+        per[b] = (per[b] || 0) + (k[field] || 0);
+        totals[b] += k[field] || 0;
+      });
+      byDay[r.day] = per;
+    });
+    // Fill every calendar day so a gap reads as a real zero, not a missing point.
     var DAY = 86400000, isoD = function (d) { return d.toISOString().slice(0, 10); };
     var start = new Date(w.from + 'T00:00:00Z'), end = new Date(w.to + 'T00:00:00Z');
-    var byDay = {}; (dayRes.rows || []).forEach(function (r) { if (r.day) byDay[r.day] = (byDay[r.day] || 0) + (r.total_cents || 0); });
-    var pts = []; for (var t = start.getTime(); t <= end.getTime(); t += DAY) { var d = isoD(new Date(t)); pts.push({ label: d.slice(5), v: byDay[d] || 0 }); }
-    if (!pts.length) { blankChannel('No days in the selected window'); Fastt.staticBadge($('#chan-head'), 'EMPTY WINDOW'); return; }
-    drawChannel(pts, shares);
-    Fastt.liveBadge($('#chan-head'));
+    var pts = [];
+    for (var t = start.getTime(); t <= end.getTime(); t += DAY) {
+      var d = isoD(new Date(t));
+      pts.push({ label: d.slice(5), v: byDay[d] || {} });
+    }
+    drawChannel(pts, totals);
+    Fastt.setBadge($('#chan-head'), 'live');
+  }
+
+  // ── ingest health: what EARNS the word "total" ───────────────────
+  // A roster sum is only honest if every creator in it is actually being
+  // scanned. On the live box account ACCOUNT_ID is `paused` with 24 consecutive
+  // 401s — it contributes $0.00 to every window, and before this line existed a
+  // roster-wide headline would have absorbed that silently and looked
+  // authoritative. Now the card says how many creators are reporting, and names
+  // the ones that are not.
+  async function loadIngestCaveat() {
+    var srcEl = $('#kpi-total-src');
+    if (!srcEl) return;
+    var health;
+    try { health = await Fastt.get('/admin/ingest/transactions/health', null, { scope: 'agency' }); }
+    catch (e) { return; }                      // never let a caveat break the card
+    var accts = (health && health.accounts) || [];
+    if (!accts.length) return;
+    var dark = accts.filter(function (a) {
+      return a.tier === 'red' || a.current_status === 'paused'
+        || a.current_status === 'never_scanned' || a.fully_backfilled === false;
+    });
+    ROSTER_N = accts.length;
+    syncEarnHead();                            // before the early return below
+    if (!dark.length) return;
+    var names = dark.map(function (a) { return a.display_name || a.account_id; });
+    srcEl.textContent += ' \u00b7 \u26a0 ' + (accts.length - dark.length) + ' of ' + accts.length + ' creators reporting';
+    var card = $('.card.earn');
+    if (card) {
+      card.title = 'Not every creator is being ingested, so this total is a floor, not a complete figure.\n'
+        + 'Not reporting: ' + names.join(', ') + '.\n'
+        + 'A paused account is usually a dead OF session (401) — it needs re-authenticating, not a code fix.';
+    }
   }
 
   async function refresh() {
+    _win = {};                       // one shared fetch per refresh, never stale
     try { await loadEarnings(); } catch (e) { Fastt.oops(e); }
     try { await loadChannel(); } catch (e) { Fastt.oops(e); }
     try { await loadEmployeeSales(); } catch (e) { Fastt.oops(e); }
     try { await loadFans(); } catch (e) { Fastt.oops(e); }
     try { await loadCreators(); } catch (e) { Fastt.oops(e); }
+    try { await loadTrend(); } catch (e) { Fastt.oops(e); }
+    try { await loadIngestCaveat(); } catch (e) { /* caveat is best-effort */ }
   }
 
-  // No creator selected → without an account_id the /admin stats queries
-  // go global (all accounts). Leave the placeholders rather than show
-  // numbers that belong to nobody; fastt.js already banners the fix.
-  // The segment buttons stay unbound below this guard on purpose: one
-  // click would otherwise pull cross-account totals into these tiles.
+  // ── fail LOUD if the shared client is too old for agency scope ────
+  // A fastt.js predating WIRING_GUIDE rule 4b would drop `{scope:"agency"}` on
+  // the floor, inject the selected creator's account_id, and render a
+  // PER-CREATOR number under an all-creators label — no console error, no 4xx,
+  // no visual tell. That is indistinguishable from "the deploy worked", and it
+  // is exactly how a stale artifact turns a fix into a week of confusion.
+  // Blank the money rather than show a number that might be one creator's.
+  if (!Fastt.supportsScope || !Fastt.supportsScope('agency')) {
+    ['#chan-card', '#trend-card', '#es-card'].forEach(function (sel) {
+      var c = $(sel);
+      if (c) Fastt.setBadge(c.querySelector('.card-h'), 'static', 'CLIENT TOO OLD');
+    });
+    $$('.metric .mv').forEach(function (v) { v.textContent = '\u2014'; });
+    $$('.metric .msrc').forEach(function (v) { v.textContent = 'stale client'; });
+    var kt = $('#kpi-total'), kts = $('#kpi-total-src');
+    if (kt) kt.textContent = '\u2014';
+    if (kts) kts.textContent = '_shared/fastt.js is too old for agency scope \u2014 these numbers would be one creator\u2019s. Hard-reload; if it persists the deploy shipped dashboard.js without fastt.js.';
+    Fastt.oops('Dashboard needs a newer _shared/fastt.js (agency scope missing)');
+    return;
+  }
+
+  // Segment buttons drive every agency card, so they bind unconditionally now.
+  // They used to sit below the no-creator guard on the reasoning that a click
+  // "would otherwise pull cross-account totals into these tiles" — cross-account
+  // totals are now the POINT of these tiles, so that reasoning inverted.
+  document.querySelectorAll('#seg button').forEach(function (b) {
+    b.addEventListener('click', function () { refresh(); });
+  });
+
+  // Cards that need a creator, and only those, degrade when none is selected.
+  // Earnings / channel / trend / employee-sales / creators are agency-wide and
+  // render fine without one.
   if (!Fastt.account()) {
-    // …and don't leave the baked mock numbers reading as this creator's.
     var badge0 = $('#msg-badge');
     if (badge0) { badge0.textContent = '0'; badge0.style.display = 'none'; }
     var opsTxt0 = $('#ops-status'), opsDot0 = $('#ops-dot');
     if (opsTxt0) opsTxt0.textContent = 'No creator selected';
     if (opsDot0) opsDot0.style.background = '#8a8a8a';
-    Fastt.staticBadge($('#ops-pill'), 'NO DATA');
-    // The roster table + its own chart are agency-wide, so they are still
-    // real without a creator scope — render them and honestly blank the rest.
-    ['#fans-card', '#trend-card'].forEach(function (sel) {
-      var c = $(sel);
-      if (!c) return;
-      Fastt.staticBadge(c.querySelector('.card-h'), 'NO CREATOR SELECTED');
-    });
+    Fastt.setBadge($('#ops-pill'), 'static', 'NO DATA');
+    var fc = $('#fans-card');
+    if (fc) Fastt.setBadge(fc.querySelector('.card-h'), 'static', 'NO CREATOR SELECTED');
     $$('.fanstile .fv').forEach(function (v) { v.textContent = 'n/a'; });
-    var tplot = $('#trend-plot');
-    if (tplot) {
-      var te = document.createElement('div');
-      te.className = 'es-empty';
-      te.textContent = 'Pick a creator to load their daily ledger';
-      tplot.appendChild(te);
-    }
-    Fastt.liveBadge($('#cre-head'));
-    try { await loadCreators(); } catch (e) { Fastt.oops(e); }
-    try { await loadChannel(); } catch (e) { Fastt.oops(e); }   // agency-wide, needs no creator scope
-    return;
   }
 
-  document.querySelectorAll('#seg button').forEach(function (b) {
-    b.addEventListener('click', function () { refresh(); });
-  });
-  Fastt.liveBadge($('.sec-title'));
-  Fastt.liveBadge($('#es-head'));
-  Fastt.liveBadge($('#fans-head'));
-  Fastt.liveBadge($('#trend-head'));
-  Fastt.liveBadge($('#cre-head'));
-  Fastt.liveBadge($('#ops-pill'));
   await refresh();
-  try { await loadTrend(); } catch (e) { Fastt.oops(e); }
-  try { await loadOps(); } catch (e) { Fastt.oops(e); }
-  try { await loadUnread(); } catch (e) { Fastt.oops(e); }
+
+  // Badge AFTER the fetch, never before: these calls used to run ahead of
+  // refresh(), and since refresh() swallows each failure into a toast, a card
+  // whose loader threw kept a green LIVE pill over stale content.
+  Fastt.setBadge($('.sec-title'), 'live');
+  Fastt.setBadge($('#es-head'), 'live');
+  Fastt.setBadge($('#trend-head'), 'live');
+  Fastt.setBadge($('#cre-head'), 'live');
+  if (Fastt.account()) {
+    Fastt.setBadge($('#fans-head'), 'live');
+    Fastt.setBadge($('#ops-pill'), 'live');
+    try { await loadOps(); } catch (e) { Fastt.oops(e); }
+  }
 });
+

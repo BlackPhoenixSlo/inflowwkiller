@@ -8,7 +8,7 @@
  * says off — leave nothing of that kind enabled.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -165,6 +165,95 @@ describe("AutomationSwitchCard", () => {
 
     release({ rules: [] });
     await screen.findByText("not set up yet");
+  });
+
+  /** The catalog feeds only the label and the new-rule cadence, and the client
+   *  no longer sends a cadence at all — the switch route reads its own catalog —
+   *  so a catalog that has not answered must not hold a write against rules that
+   *  HAVE been read.
+   *
+   *  Held open rather than rejected, deliberately: a rejected query leaves
+   *  `isLoading` false immediately, so a test that rejects stays green against
+   *  the old `|| kindsQ.isLoading` term and discriminates nothing. Pending is
+   *  the state that tells the two predicates apart. */
+  it("does not hold the switch while the kind catalog is still unanswered", async () => {
+    relayGet.mockImplementation((path: string) =>
+      path.startsWith("/admin/automation-kinds")
+        ? new Promise(() => {})
+        : Promise.resolve({ rules: [rule({ is_enabled: true })] }));
+    mount();
+
+    const box = await screen.findByRole("checkbox");
+    await waitFor(() => expect((box as HTMLInputElement).disabled).toBe(false));
+  });
+
+  /** Ungating the write on the catalog opened a window the copy has to survive:
+   *  rules loaded, catalog still pending, no rule of this kind. `kindLabel` and
+   *  `newRuleCadence` are fallbacks there — the raw slug and 300s — so naming
+   *  them describes a rule the server will not create (it uses this kind's own
+   *  label and 60s). The sentence stays quiet until the catalog answers. */
+  it("does not name a cadence the catalog has not confirmed", async () => {
+    relayGet.mockImplementation((path: string) =>
+      path.startsWith("/admin/automation-kinds")
+        ? new Promise(() => {})
+        : Promise.resolve({ rules: [] }));
+    mount();
+
+    await screen.findByText(/Ticking the box creates/);
+    expect(screen.queryByText(/every 5 min/)).toBeNull();
+    expect(screen.queryByText(new RegExp(KIND))).toBeNull();
+  });
+
+  /** A poll failing after a GOOD read is not the same as never having read. The
+   *  rows are still cached and still true, so the card must keep saying what it
+   *  knows; deriving the displayed STATE from the write gate blanked a healthy
+   *  card — badge gone, "Checking this account's automation rules…" — on one bad
+   *  request out of a 30s poll. */
+  it("keeps the rule's state on screen when a later poll fails", async () => {
+    serve([rule({ is_enabled: true })]);
+    mount();
+    await screen.findByText(/^on ·/);
+
+    relayGet.mockImplementation((path: string) =>
+      path.startsWith("/admin/automation-kinds")
+        ? Promise.resolve({ kinds: KINDS })
+        : Promise.reject(new Error("poll failed")));
+    // Wait for the error to actually land before asserting negatives: the
+    // observer notifies through a setTimeout(0), so reading straight after `act`
+    // can observe the pre-error render and pass for the wrong reason.
+    await act(async () => { await client.refetchQueries().catch(() => {}); });
+    await waitFor(() => expect(
+      client.getQueryState(["automation-rules", ACCT])?.status).toBe("error"));
+
+    expect(screen.getByText(/^on ·/)).toBeTruthy();
+    expect(screen.queryByText(/Checking this account/i)).toBeNull();
+  });
+
+  /** A read that FAILED is not a read that came back empty. Keyed on isLoading
+   *  alone this card settled with no rows and reported the kind "not set up yet"
+   *  over a list it never managed to read — offering a live checkbox whose click
+   *  would create a second rule beside whatever is actually there. */
+  it("does not report a kind as absent when the rules read failed", async () => {
+    relayGet.mockImplementation((path: string) =>
+      path.startsWith("/admin/automation-kinds")
+        ? Promise.resolve({ kinds: KINDS })
+        : Promise.reject(new Error("relay down")));
+    mount();
+
+    // Wait for the FAILURE, not just for a disabled box: on first render the box
+    // is disabled because the read is still in flight, so `waitFor` would pass
+    // immediately and prove nothing about the failed state.
+    await waitFor(() => expect(
+      client.getQueryState(["automation-rules", ACCT])?.status).toBe("error"));
+    const box = await screen.findByRole("checkbox");
+    expect((box as HTMLInputElement).disabled).toBe(true);
+    // Not "not set up yet" — and not "still checking" either, which is the other
+    // untrue thing to say once the read has come back failed.
+    expect(screen.queryByText("not set up yet")).toBeNull();
+    expect(screen.queryByText(/Checking this account/i)).toBeNull();
+    expect(screen.getByText(/Couldn.t read this account.s automation rules/i)).toBeTruthy();
+    expect(relayPost).not.toHaveBeenCalled();
+    expect(relayPatch).not.toHaveBeenCalled();
   });
 
   it("surfaces a failed write instead of drawing the box as flipped", async () => {

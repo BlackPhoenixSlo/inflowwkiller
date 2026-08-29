@@ -90,6 +90,10 @@ _BACKUP_KEEP = 20
 # "17" had drifted to 21 unnoticed, which is exactly the rot the test prevents.)
 CONFIG_SCALAR_COLS = ("persona", "welcome_rules", "utc_offset", "timezone", "location",
                       "language", "voice", "daily_cost_cap_cents", "model",
+                      # Rides with `model` — it is that model's setting, and a
+                      # value the destination's model cannot honour is DROPPED
+                      # at read time (llm_client), never wedged into a lane.
+                      "reasoning_effort",
                       # Include-only audience. Exported for a same-account
                       # restore; a CLONE strips the list id and forces the mode
                       # off (_sanitize_config_clone) — a local lists.id on

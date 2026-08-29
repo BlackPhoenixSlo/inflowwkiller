@@ -38,6 +38,7 @@ import { WelcomeGifField } from "@/components/automations/WelcomeGifField";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { proxyImage, type VaultMedia } from "@/lib/relay";
 import AudienceSection from "@/components/automations/AudienceSection";
+import FanProfilesSection from "@/components/automations/FanProfilesSection";
 import { clockOptions, localTimeAtOffset, localTimeIn, utcLabel, zoneOffsetNow }
   from "@/lib/creatorClock";
 import { useEnrichPersona } from "@/hooks/useAccountConfig";
@@ -76,9 +77,13 @@ const SLOT_LABEL: Record<string, string> = {
 const PURPOSE_LABEL: Record<string, string> = {
   gen_info: "Fan profiles",
   welcome_chatter_for_info: "Get to know fans (info-gather)",
-  send_welcome: "Welcomes",
-  send_followup: "Follow-ups",
+  // The KEYS are the strings the lanes pass to resolve_model, not the
+  // automation kinds — "send_welcome"/"send_followup" here wrote a key nothing
+  // read. See the PURPOSES note in service/account_config_api.py.
+  welcome: "Welcomes",
+  followup: "Follow-ups",
   reply_mass_funnel: "Mass-funnel replies",
+  help_assistant: "Help chatbot",
 };
 
 // A brain is "blank" (never filled in) when it has no voice at all — so we seed
@@ -311,6 +316,14 @@ export default function BrainPanel() {
   // Weakest first, so [0] is the cheapest setting this model has.
   const effortsFor = (m: string | null) => effortOptions[m ?? ""] ?? [];
   const purposes = cfgQ.data?.purposes ?? [];
+  // What a purpose runs when nothing is pinned. Most inherit the brain above;
+  // a purpose listed here does NOT — the server holds it on one model whatever
+  // the brain says (today: the help chatbot, held on DeepSeek because ~28k
+  // cached tokens ride on every one of its calls). Saying "inherit default"
+  // over a route that does not inherit is how an operator ends up debugging a
+  // model they never chose.
+  const purposeDefaults: Record<string, string> =
+    cfgQ.data?.purpose_defaults ?? {};
   const languages = cfgQ.data?.languages ?? [{ code: "en", label: "English" }];
   // What an empty "Username to tag" box resolves to — served by the API so the
   // placeholder shown is the default that actually runs.
@@ -884,7 +897,7 @@ export default function BrainPanel() {
               <div className="space-y-1.5 pt-1">
                 <span className="text-[11px] text-fg-dim">
                   Per-purpose overrides{" "}
-                  <span className="text-fg-dim/70">— optional, each job inherits the default unless set</span>
+                  <span className="text-fg-dim/70">— optional; a job left unset uses whatever its row says</span>
                 </span>
                 <div className="grid gap-3 sm:grid-cols-3">
                   {purposes.map((p) => (
@@ -895,7 +908,11 @@ export default function BrainPanel() {
                         onChange={(e) => setPurposeModel(p, e.target.value)}
                         className={selectCls}
                       >
-                        <option value="">inherit default</option>
+                        <option value="">
+                          {purposeDefaults[p]
+                            ? `always ${purposeDefaults[p]}`
+                            : "inherit default"}
+                        </option>
                         {modelOptions.map((m) => (
                           <option key={m} value={m}>{m}</option>
                         ))}
@@ -1424,6 +1441,13 @@ export default function BrainPanel() {
           )}
         </div>
       )}
+
+      {/* Fan profiles — the gen_info + apply_profiles pair, on one button, in
+       *  its own file. Deliberately OUTSIDE the branch above: it reads the
+       *  automation rules, never the brain config, so gating it on that query
+       *  would hide the button — and its own error line — whenever an unrelated
+       *  fetch is slow or failed. */}
+      <FanProfilesSection accountId={accountId} />
 
       {/* Phone-only Save bar. The real Save lives in this Card's header, which
        *  is ~2500px above the last control at 390px. `md:hidden` removes the

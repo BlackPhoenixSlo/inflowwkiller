@@ -31,7 +31,7 @@ import { relay, type OFMessage, type OFMessagesResp } from "@/lib/relay";
 import type { SendFailure } from "@/lib/sendFailure";
 import { eventBus } from "@/lib/events";
 import { toUtcIso } from "@/hooks/useInboxRealtime";
-import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
+import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 
 // 30 matches OF's own chat-list page size — enough that most chats need
 // at most one or two scroll-up fetches before reaching the start.
@@ -75,6 +75,12 @@ export interface UseChatMessagesOpts {
   enabled?: boolean;
 }
 
+/** Paint-attribution key for a thread. Exported so the rendering side and
+ *  the fetching side can't drift apart on the format. */
+export function messagesPaintKey(accountId: string, fanId: number | null): string {
+  return `chat.messages:${accountId}:${fanId ?? ""}`;
+}
+
 export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMessagesOpts) {
   const qc = useQueryClient();
 
@@ -116,6 +122,19 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
       perfLog(opId, "chat.messages", "requested", {
         accountId, fanId, phase: "initial", limit: PAGE_SIZE,
       });
+      // A COLD open registers for a `painted` stamp; ChatSurface closes the
+      // loop when bubbles actually hit the DOM — which, thanks to the
+      // local-DB seed, is usually well before the `delivered` below. The
+      // empty-cache gate is what keeps the stamp honest: this same queryFn
+      // re-runs as the 30/120s poll and on focus, where the pane is already
+      // painted and a fresh registration could only mis-attribute some later
+      // commit (an SSE append, minutes on) to this op. An empty cache at
+      // fetch time is the definition of the paint this op can own. (The seed
+      // hydration effect runs after the hook's own effects, so it cannot fill
+      // the cache before a genuinely cold fetch reaches this line.)
+      if ((qc.getQueryData<OFMessage[]>(queryKey) || []).length === 0) {
+        perfPaintPending(messagesPaintKey(accountId, fanId), opId);
+      }
       try {
         // Forward the abort signal so switching chats fast cancels the
         // previous fetch in flight (frees the relay slot, drops the
@@ -179,14 +198,25 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
   /** Load one older page using cursor pagination. Idempotent — overlapping
    *  calls are dropped via inflightRef so the scroll observer can fire
    *  freely without producing duplicate requests. */
+  /** The `before_id` the next older page would use, or null when there is
+   *  nothing to page from. Fetch-derived cursor first (see the header
+   *  comment: the cache minimum can sit below an unfetched gap); cache is
+   *  only the bootstrap fallback for a restored cache whose first head
+   *  fetch hasn't resolved yet.
+   *
+   *  Exported through the hook so the local-mirror seed pages from the SAME
+   *  cursor OF is about to use. Two independent derivations of "oldest"
+   *  would eventually disagree, and the seed would paint across a gap. */
+  const olderCursor = useCallback((): number | null => {
+    const current = qc.getQueryData<OFMessage[]>(queryKey) || [];
+    const oldest = oldestCursorRef.current ?? current.find((m) => Number(m.id) > 0)?.id;
+    return oldest == null ? null : Number(oldest);
+  }, [qc, queryKey]);
+
   const loadOlder = useCallback(async (): Promise<{ added: number; hasMore: boolean }> => {
     if (!accountId || fanId == null) return { added: 0, hasMore: false };
     if (inflightRef.current) return { added: 0, hasMore };
-    // Fetch-derived cursor first (see the header comment: the cache minimum
-    // can sit below an unfetched gap). Cache is only the bootstrap fallback
-    // for a restored cache whose first head fetch hasn't resolved yet.
-    const current = qc.getQueryData<OFMessage[]>(queryKey) || [];
-    const oldest = oldestCursorRef.current ?? current.find((m) => Number(m.id) > 0)?.id;
+    const oldest = olderCursor();
     if (oldest == null) return { added: 0, hasMore: false };
 
     inflightRef.current = true;
@@ -219,7 +249,7 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
       inflightRef.current = false;
       setIsLoadingOlder(false);
     }
-  }, [accountId, fanId, qc, queryKey, hasMore, lowerCursor]);
+  }, [accountId, fanId, qc, queryKey, hasMore, lowerCursor, olderCursor]);
 
   /** Force-refresh the top page. Mutates in place — Query handles the
    *  setQueryData internally via refetch. */
@@ -305,6 +335,7 @@ export function useChatMessages({ accountId, fanId, enabled = true }: UseChatMes
   return {
     ...query,
     loadOlder,
+    olderCursor,
     hasOlder: hasMore,
     isLoadingOlder,
     refresh,
@@ -473,17 +504,31 @@ export function mergeTopPage(
  *  The old blind-prepend assumed every fetched-older row predated the whole
  *  cache, which scrambled order the moment the cursor walked a gap.
  *
+ *  FRESH WINS on an id overlap — the same doctrine as mergeTopPage, and it
+ *  is load-bearing: the mirror seed pre-paints older pages as media-less
+ *  rows (fetchOlderSeed → mergeSeedIntoMessages, which only ever ADDS), and
+ *  this merge is the one place a seeded row gets upgraded to OF's copy —
+ *  media, isOpened, the lot. Cache-wins here would freeze scrolled-up
+ *  history in its seed form forever, since no later path rewrites below the
+ *  head page. The only other overlap source is OF repeating a
+ *  pagination-boundary row, where both copies are OF rows and the winner is
+ *  irrelevant. Rows OF can never return (optimistic ids ≤ 0, the 5e15
+ *  placeholder band, 6e15 ledger tips) cannot collide with an OF page, so
+ *  nothing synthetic is ever clobbered.
+ *
  *  Ordering is delegated to orderThread: real rows + ledger tips (6e15 band)
  *  sort by created_at (with an id tie-break that reproduces id-ordering for
  *  same-timestamp real rows), while optimistic sends (id ≤ 0) and mass
  *  placeholders (5e15 band) keep their tail position. For the common no-gap
- *  case the sort is a no-op reorder-wise. Returns `prev` unchanged when the
- *  page brings nothing new. */
+ *  case the sort is a no-op reorder-wise. Returns `prev` unchanged for an
+ *  empty page. */
 export function mergeOlderPage(prev: OFMessage[], older: OFMessage[]): OFMessage[] {
+  if (older.length === 0) return prev;
+  const fresh = new Map(older.map((m) => [String(m.id), m]));
+  const upgraded = prev.map((m) => fresh.get(String(m.id)) ?? m);
   const have = new Set(prev.map((m) => String(m.id)));
-  const dedup = older.filter((m) => !have.has(String(m.id)));
-  if (dedup.length === 0) return prev;
-  return orderThread([...prev, ...dedup]);
+  const added = older.filter((m) => !have.has(String(m.id)));
+  return orderThread([...upgraded, ...added]);
 }
 
 /** Merge optimistic media's `files` into a server response — OF's CDN

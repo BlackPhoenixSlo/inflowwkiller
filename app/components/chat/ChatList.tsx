@@ -15,9 +15,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 
-import { useChatList } from "@/hooks/useChatList";
+import { useChatList, listPaintKey } from "@/hooks/useChatList";
 import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { useRecentChatsLocal } from "@/hooks/useRecentChatsLocal";
+import { perfPaintOnce } from "@/lib/perfLog";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useFanSpend } from "@/hooks/useFanSpend";
@@ -108,6 +109,15 @@ export function ChatList({
   // by the time the click lands. loadOlder reads its cursor from the
   // cached data ([useChatMessages.ts:88-89]) so prefetched warm-cache
   // chats still paginate correctly on scroll-up.
+  //
+  // Background priority is required, not cosmetic: an untagged relay.get
+  // defaults to 'user' ([relay.ts:78]), so sweeping the pointer down the
+  // list would spend the per-account lane's reserved user slots on rows
+  // nobody opened — and the click that follows would queue behind the
+  // hovers that preceded it. Only a click waits on 'user'
+  // ([useChatList.ts:260-264]). The dedupe above means a click landing
+  // mid-prefetch does inherit the background lane; that is the accepted
+  // trade — it is the same request either way, already in flight.
   const prefetchTimerRef = useRef<number | null>(null);
   const PREFETCH_DWELL_MS = 120;
   const PREFETCH_PAGE_SIZE = 30;
@@ -119,7 +129,7 @@ export function ChatList({
       queryFn: async () => {
         const resp = await relay.get<OFMessagesResp>(
           `/api/of/v2/chats/${fid}/messages?limit=${PREFETCH_PAGE_SIZE}&order=desc`,
-          { accountId: aid },
+          { accountId: aid, priority: "background" },
         );
         // Same shape useChatMessages.queryFn returns: reversed so the UI
         // can render oldest-first top-to-bottom without re-reversing.
@@ -302,6 +312,18 @@ export function ChatList({
     if (!isFromSeed) return rows;
     return oweReplyActive ? seedQ.rows.filter(isUnresponded) : seedQ.rows;
   }, [isFromSeed, rows, oweReplyActive, seedQ.rows, isUnresponded]);
+
+  // `painted` — the first commit with clickable rows in the rail, seed or
+  // real. Pairs with the `requested` that fetchPage logged for page 0, so
+  // the log finally carries the number the user experiences instead of only
+  // OF's round-trip. `fromSeed` keeps the two populations separable.
+  useEffect(() => {
+    if (displayRows.length === 0) return;
+    perfPaintOnce(listPaintKey(scope, serverFilter, serverListId, query || null), "chat.list", {
+      count: displayRows.length,
+      fromSeed: isFromSeed,
+    });
+  }, [displayRows, isFromSeed, scope, serverFilter, serverListId, query]);
 
   // Chip counts — derived from already-cached data, zero new fetches.
   // useChatList re-renders ChatList whenever SSE patches the chats cache

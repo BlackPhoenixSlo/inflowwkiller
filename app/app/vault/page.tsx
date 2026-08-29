@@ -16,7 +16,7 @@ import VaultReviewTab from "@/components/vault/VaultReviewTab";
 
 export default function VaultPage() {
   return (
-    <div className="max-w-7xl mx-auto p-3 sm:p-6 space-y-3 sm:space-y-5">
+    <div className="max-w-shell mx-auto p-3 sm:p-6 space-y-3 sm:space-y-5">
       <header>
         <h1 className="text-2xl font-semibold mb-1">Vault</h1>
         <p className="hidden sm:block text-sm text-fg-dim">

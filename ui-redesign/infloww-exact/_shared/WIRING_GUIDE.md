@@ -21,6 +21,26 @@ means: load real data on open, save real config on change, through `_shared/fast
    globally selected one: pass `{acct: id}` — `Fastt.get(path, params, {acct: id})`. Never
    hand-roll `noAccount:true` plus your own `X-Account-Id` header; that is this same rule
    copied into the page, and it drifts.
+4b. **Agency-wide reads** (added 2026-08-29): for a card that is about EVERY creator rather
+   than one — an agency total, a roster table — pass `{scope: "agency"}`:
+   `Fastt.get(path, params, {scope: "agency"})`. It suppresses both the `account_id` param
+   and the `X-Account-Id` header so the server's `clamp_account_filter(None)` resolves the
+   roster from the SESSION. Rule 4's escape hatch (`{acct: id}`) only ever names a *different
+   single creator*; before 4b existed there was no vocabulary for "all of them", and pages
+   hand-rolled bare `noAccount:true` — the drift rule 4 warns about. Keep `noAccount:true`
+   for routes with no account dimension at all.
+   - ⚠️ **`scope` is a NAME, not a security boundary.** The gate is the relay's
+     `_account_isolation_middleware`, which 401s anonymous `/admin/*`. Under
+     `ALLOW_ANONYMOUS_ADMIN=1`, `clamp_account_filter` returns `None` — no WHERE clause,
+     every tenant in the DB. Never exercise agency reads under that flag on multi-tenant data.
+   - ⚠️ **"Agency" is the signed-in principal's roster, and it VARIES.** On the live box no
+     principal owns all seven accounts, and three are co-owned, so four different operators
+     see four different legitimate totals. Label such a tile for the viewer ("your 6
+     creators"), never a bare "Total".
+   - ⚠️ **Check the capability before you rely on it**: `Fastt.supportsScope("agency")`. A
+     client that predates 4b silently ignores `scope` and renders a per-creator number under
+     an all-creators label. A page whose numbers depend on agency scope must blank those
+     cards rather than show the wrong ones — see `dashboard.js`'s boot guard.
 5. **Writes**: `await Fastt.put("/admin/ai-chatter-config", body)` then `Fastt.saved()`;
    wrap in `try { … } catch (e) { Fastt.oops(e); }`.
 6. **Automation-rule pages** (toggle cards): use `Fastt.rule(kind)` / `Fastt.upsertRule(kind,

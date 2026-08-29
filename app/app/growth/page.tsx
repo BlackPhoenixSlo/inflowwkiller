@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useTabParam } from "@/hooks/useTabParam";
 import SmartListsTab from "@/components/growth/SmartListsTab";
 import TrialLinksTab from "@/components/growth/TrialLinksTab";
 import TrackingLinksTab from "@/components/growth/TrackingLinksTab";
@@ -31,17 +32,21 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: "overview", label: "📊 Overview" },
 ];
 
+const isTab = (v: string): v is Tab => TABS.some((t) => t.key === v);
+
 export default function GrowthPage() {
   const accounts = useActiveAccounts();
   const [accountId, setAccountId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("smart");
+  // Deep link from the help assistant: /growth?tab=auto_follow.
+  useTabParam("tab", isTab, setTab);
 
   useEffect(() => {
     if (!accountId && accounts.length > 0) setAccountId(accounts[0].id);
   }, [accounts, accountId]);
 
   return (
-    <div className="max-w-7xl mx-auto p-3 sm:p-6 space-y-5">
+    <div className="max-w-shell mx-auto p-3 sm:p-6 space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold mb-1">Growth</h1>

@@ -77,6 +77,42 @@ def _api_key(env_name: str) -> str:
         return ""
 
 
+# ── Purpose-scoped fallback credentials ───────────────────────────────
+# ONE ROW PER HOLE IN THE FAIL-CLOSED KEY GATE, and today there is one. The key
+# is `(purpose, provider)` and the value is the env id of a credential THIS
+# DEPLOYMENT pays for; `llm_client._tenant_api_key` consults it only after an
+# agency turns out to have no key of its own.
+#
+# Why the hole exists: the gate makes "where do I paste my API key?"
+# unanswerable exactly when it is asked. The in-product help assistant sends no
+# fan anything, so it is the one purpose that may fall back.
+#
+# Why a MAP and not three constants: "which purposes may spend the deployment's
+# money" is policy, and policy belongs in one readable place rather than spread
+# across a caller's `if`. The call site then carries no feature name at all, and
+# adding or removing a hole is a line here — reviewable on its own.
+#
+# 🚨 The env id is DELIBERATELY NOT `DEEPSEEK_API_KEY`. The house key is already
+# reachable on the un-owned-account path for this deployment's own maintenance
+# calls; widening THAT to every keyless agency would bill us for their sending
+# too. A separate id can be set, rotated or emptied on its own, and an empty
+# value simply restores the old fail-closed behaviour.
+_FALLBACK_KEY_ENVS: dict[tuple[str, str], str] = {
+    ("help_assistant", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
+}
+
+
+def fallback_key(purpose: str, provider: str) -> str:
+    """The deployment's own credential for this (purpose, provider), or "".
+
+    "" for every pair not in the map above, for an unset value, and for the
+    empty purpose — so a caller that knows nothing about purposes gets exactly
+    the fail-closed behaviour it had before this existed.
+    """
+    env = _FALLBACK_KEY_ENVS.get((purpose, provider))
+    return _api_key(env) if env else ""
+
+
 def house_key(provider: str) -> str:
     """The DEPLOYMENT's own key for one provider ("" if it has none, including
     for a name that is not a provider).

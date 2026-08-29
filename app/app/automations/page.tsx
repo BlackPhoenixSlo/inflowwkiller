@@ -12,7 +12,7 @@ import AutomationsPanel from "@/components/automations/AutomationsPanel";
 
 export default function AutomationsPage() {
   return (
-    <div className="max-w-7xl mx-auto p-3 sm:p-6 space-y-5">
+    <div className="max-w-shell mx-auto p-3 sm:p-6 space-y-5">
       <header>
         <h1 className="text-2xl font-semibold mb-1">Automations</h1>
         <p className="text-sm text-fg-dim">

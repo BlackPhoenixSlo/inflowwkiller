@@ -56,6 +56,7 @@ Fastt.ready(async function(){
   var threadHasOlder = false;    // does the open thread have older history to page back to
   var THREAD_CACHE = {};         // key(aid,fid) -> {msgs, oldestMsgId, hasOlder} — instant re-swap (SWR)
   var THREAD_PREFETCHING = {};   // key(aid,fid) -> true while a hover-prefetch is in flight
+  var THREAD_SEEDING = {};       // key(aid,fid) -> true while a local-DB seed is in flight
   var filter = null;             // null | 'unread' | 'pinned' | 'priority'
   var searchQ = null, onlineOnly = false, withTips = false, oweOnly = false;
   var chatOffset = 0, chatHasMore = false;   // single-creator inbox pagination
@@ -175,17 +176,45 @@ Fastt.ready(async function(){
     }));
 
     // Real display name + avatar straight from OF, per creator.
-    await Promise.all(CREATORS.filter(function(c){ return c.hasSession; }).map(async function(c){
+    //
+    // DELIBERATELY NOT AWAITED. This is tab decoration, and awaiting it put N
+    // live OF round-trips (~0.55s each) in front of the first chat row on EVERY
+    // page load — the skin navigates by full page load, so that cost was paid
+    // 56 pages over. The strip paints from the local /admin/accounts nicknames
+    // immediately; real names and avatars swap in when OF answers. Background
+    // priority so decoration can never hold a lane slot the list or the open
+    // thread is queued behind.
+    Promise.all(CREATORS.filter(function(c){ return c.hasSession; }).map(async function(c){
       try{
-        var me = await Fastt.get('/api/of/v2/users/me', null, {acct: c.id});
+        var me = await Fastt.get('/api/of/v2/users/me', null, {acct: c.id, priority: 'background'});
         if(me && me.name) c.name = me.name;
         if(me && me.username) c.username = me.username;
         var th = me && me.avatarThumbs;
         c.avatar = (th && (th.c50 || th.c144)) || (me && me.avatar) || null;
       }catch(e){ /* keep the roster name */ }
-    }));
+    })).then(function(){
+      // Names/avatars landed — repaint the strip, and the rows too: rowHtml
+      // reads byAid for the per-creator chip in cross-creator mode.
+      renderTabs();
+      if(chats.length) renderRows();
+    });
   }
 
+  // The one place that maps a /admin/chats/recent row into a list row. Shared by
+  // the cross-creator load and the first-paint seed so the two can never drift.
+  function mapRecentRow(r){
+    var wu = r.withUser || {}, lm = r.lastMessage || null;
+    var lastFromFan = !!(lm && lm.fromUser && lm.fromUser.id != null &&
+                         String(lm.fromUser.id) !== String(r.__accountId));
+    var restricted = !!wu.isRestricted;
+    return {aid: String(r.__accountId), fanId: wu.id, name: wu.name, username: wu.username,
+            avatar: wu.avatar, text: lm ? stripHtml(lm.text) : '', at: lm && lm.createdAt,
+            mediaCount: 0, unread: (r.unreadMessagesCount || 0) > 0 || !!r.hasUnread,
+            muted: false, hasUnreadTips: false, unresponded: lastFromFan && !restricted, restricted: restricted};
+  }
+
+  // Returns the fetched rows so boot can hand the SAME payload to the list
+  // seed — one local GET, two consumers. The 60s ticker ignores the return.
   async function loadUnreadCounts(){
     // ONE local-DB call covers every creator. /admin/accounts/roster-counts (the
     // real app's source) returns {"counts":{}} to an unauthed caller, so the
@@ -205,7 +234,9 @@ Fastt.ready(async function(){
         // creator via /api/of/v2/chats (chip + row dots in single-creator view).
       });
       CREATORS.forEach(function(c){ c.unread = (fold[c.id] || {}).unread || 0; });
+      return out.list || [];
     }catch(e){ /* badge simply stays at 0 rather than showing an invented number */ }
+    return [];
   }
 
   function tabOrder(){
@@ -570,7 +601,7 @@ Fastt.ready(async function(){
       aget('/admin/fans/' + aid + '/by-ids', {ids: csv}, aid),
       aget('/admin/fans/' + aid + '/spend-batch', {ids: csv}, aid),
       Fastt.get('/api/of/v2/users/list?' + ids.map(function(i){ return 'ids=' + i; }).join('&') + '&view=m',
-                null, {acct: aid}),
+                null, {acct: aid, priority: 'background'}),
     ]);
     if(jobs[0].status === 'fulfilled'){
       var fans = jobs[0].value.fans || {};
@@ -703,16 +734,7 @@ Fastt.ready(async function(){
     var out = await Fastt.get('/admin/chats/recent', {limit: 100}, {noAccount:true});
     if(scopeSig() !== _scope) return;   // scope moved mid-flight → drop this stale load
     var rows = (out.list || []).filter(function(r){ return r.withUser && r.withUser.id; });
-    chats = rows.map(function(r){
-      var wu = r.withUser || {}, lm = r.lastMessage || null;
-      var lastFromFan = !!(lm && lm.fromUser && lm.fromUser.id != null &&
-                           String(lm.fromUser.id) !== String(r.__accountId));
-      var restricted = !!wu.isRestricted;
-      return {aid: String(r.__accountId), fanId: wu.id, name: wu.name, username: wu.username,
-              avatar: wu.avatar, text: lm ? stripHtml(lm.text) : '', at: lm && lm.createdAt,
-              mediaCount: 0, unread: (r.unreadMessagesCount || 0) > 0 || !!r.hasUnread,
-              muted: false, hasUnreadTips: false, unresponded: lastFromFan && !restricted, restricted: restricted};
-    });
+    chats = rows.map(mapRecentRow);
     renderRows(); updateChipCounts();
     // spend chips per creator present (local DB, cheap) — names already ride the rows
     var byA = {};
@@ -744,6 +766,35 @@ Fastt.ready(async function(){
     CHATS_CACHE[ck] = { rows: chats.slice(), offset: chatOffset, hasMore: chatHasMore,
                         scroll: rowsEl.scrollTop, ts: Date.now() };
   }
+  // First-paint seed for the boot list: pre-warm CHATS_CACHE with the local-DB
+  // rows loadUnreadCounts already fetched, stamped ts:0 so it reads as STALE.
+  // reloadList's own instant-swap branch then does everything — paints the rows
+  // with no skeleton, and (because the entry is stale) always revalidates
+  // against OF. No new render path, no mode flag: the seed is just a cache
+  // entry that arrived before its first read.
+  //
+  // Honesty: rows and their unread state come from the same mirror the creator
+  // tabs and the whole cross-creator list already trust. What the mirror can't
+  // answer stays absent — no owe dots (no message direction in this feed, so
+  // unresponded=false and the owe chip stays hidden), no pin/priority
+  // (loadFlagSets owns those), and hasMore:false so "Load more" waits for OF's
+  // cursor.
+  function seedListFromRecent(rows){
+    var ck = listCacheKey();
+    if(!ck || CHATS_CACHE[ck] || chats.length) return;   // scoped view, or a real load already won
+    var mapped = (rows || []).filter(function(r){ return r.withUser && r.withUser.id; }).map(mapRecentRow);
+    if(inboxMode !== 'all'){
+      // A session-less creator is about to get loadChatsOne's honest "no OF
+      // session for this lane" panel. Seeding local rows in front of it would
+      // contradict the very next paint, so this scope keeps its skeleton.
+      var cre = byAid[activeAid];
+      if(cre && cre.hasSession === false) return;
+      mapped = mapped.filter(function(r){ return String(r.aid) === String(activeAid); });
+    }
+    if(!mapped.length) return;                           // nothing local → leave the skeleton up
+    CHATS_CACHE[ck] = { rows: mapped, offset: 0, hasMore: false, scroll: 0, ts: 0 };
+  }
+
   // force=true → an explicit refresh / post-mutation reload (Reload button, Hide,
   // Mark-unread, a new-inbound SSE): still paint the cache for instant feel, but
   // ALWAYS revalidate (never short-circuit on the TTL). force=false is the plain
@@ -972,6 +1023,154 @@ Fastt.ready(async function(){
     }
   }
 
+  // ── local-DB thread seed ──────────────────────────────────
+  // /admin/messages/{aid}/{fid} is the WS-transcoder's SQLite mirror of this
+  // thread: ~0.1ms to query, not lane-bound, and the exact source the real
+  // app's chat pane paints from (app/hooks/useChatMessagesLocal.ts). The live
+  // OF head page is deliberately uncached at the relay (new DMs land there), so
+  // a cold open sat on "Loading messages…" for the full OF round-trip — p50
+  // 1.5s, p95 5.3s, measured. This paints real history in the meantime.
+  //
+  // THE SEED IS DOM-ONLY. It writes bubbles into threadBody and nothing else:
+  // threadMsgs / oldestMsgId / threadHasOlder / THREAD_CACHE only ever hold
+  // OF-derived data. That one rule is what keeps every existing guard correct
+  // without knowing seeds exist — loadThread's monotonicity check sees an empty
+  // model (never "ahead"), loadOlder has no cursor to page from, cacheThread
+  // can only snapshot real windows, and an SSE inbound appends over the seed
+  // exactly as it appends over the loading placeholder.
+  //
+  // The one mark it leaves is threadBody._sig = SEED_SIG — non-null so a failed
+  // OF load doesn't wipe real history with an error line, yet impossible as
+  // threadSig() output ('0' or 'len:first-last#…'), so the identical-paint
+  // shortcut can never mistake the media-less seed for the real window and
+  // skip the repaint that brings the media in.
+  //
+  // Not a badge case: these are the same messages, from the same mirror the
+  // real app trusts. What IS withheld is anything the mirror cannot answer
+  // honestly — media, the load-older cursor, and the "no messages" verdict.
+  var SEED_SIG = 'seed';
+  var SEED_MASS_MIN = 5e15;   // optimistic mass-send placeholder band starts here
+  var SEED_MASS_END = 6e15;   // ledger-synthesized TIP rows start here
+  var SEED_MASS_MAX_AGE_MS = 60 * 60 * 1000;
+  function seedRowToMsg(r, aid, fid){
+    var isOut = r.direction === 'out';
+    var cents = Number(r.price_cents) || 0;
+    // A tip carries its amount in tipAmount, not price: msgHtml tests `price > 0`
+    // FIRST, so a tip that arrived as a price would render as an unpaid PPV box.
+    // Ledger-synthesized tips are already written with price_cents = 0 and say
+    // the amount in their body, so a zero-cent tip stays a plain bubble rather
+    // than growing a "$0.00 tip" chip it cannot substantiate.
+    var isTip = !!r.is_tip && cents > 0;
+    return {
+      id: r.message_id,
+      // msgHtml picks the bubble side by comparing fromUser.id against the open
+      // creator; carry the authoritative `direction` column through that shape.
+      fromUser: {id: isOut ? Number(aid) : Number(fid), name: r.sender_name || ''},
+      text: r.body || '',
+      createdAt: r.created_at,
+      media: [],                                   // no OF signed URLs in the mirror — OF fills these in
+      mediaCount: Number(r.media_count) || 0,
+      price: isTip ? 0 : cents / 100,
+      isTip: isTip,
+      tipAmount: isTip ? cents / 100 : 0,
+      // The renderer reads OF's `isOpened`; `is_paid` is the ledger's own
+      // confirmation, which lands minutes before OF echoes the unlock.
+      isOpened: !!r.is_paid
+    };
+  }
+  // Mirror rows (newest-first) → bubbles (oldest-first), with the band rules
+  // applied in ONE place for both seeds.
+  function seedRowsToMsgs(rows, aid, fid){
+    var msgs = [];
+    for(var i = rows.length - 1; i >= 0; i--){
+      var r = rows[i], id = Number(r.message_id);
+      if(!isFinite(id) || id <= 0) continue;
+      if(r.is_unsent) continue;                  // gone from OF; would repaint as an empty locked shell
+      // Ids at or above SEED_MASS_END are ledger-synthesized tips: permanent
+      // local history that the OF window does NOT contain, and whose synthetic
+      // ids sit above every real OF id. Seeding them would show a tip that
+      // vanishes seconds later when OF's window lands, and would hand the
+      // monotonicity guard an id no OF response can ever match. The real app
+      // renders them because its cache is the merge point; this pane's merge
+      // point is OF, so they stay out.
+      if(id >= SEED_MASS_END) continue;
+      // Mass-send placeholders only bridge the send→delivery window. Past an
+      // hour they are a dead reconcile or an unsent broadcast.
+      if(id >= SEED_MASS_MIN){
+        var at = Fastt.parseUtc(r.created_at);
+        if(!at || (Date.now() - at.getTime()) > SEED_MASS_MAX_AGE_MS) continue;
+      }
+      msgs.push(seedRowToMsg(r, aid, fid));
+    }
+    return msgs;
+  }
+
+  async function seedThread(fid, aid){
+    var k = key(aid, fid);
+    if(THREAD_SEEDING[k]) return;
+    THREAD_SEEDING[k] = true;
+    try{
+      var out = await aget('/admin/messages/' + aid + '/' + fid, {limit: 30}, aid);
+      // The operator moved on, or something authoritative already painted —
+      // an OF response, a cached window, or an SSE inbound. All of those
+      // outrank the seed; _sig is null only while the pane is still empty.
+      if(String(currentFan) !== String(fid) || String(currentAid) !== String(aid)) return;
+      if(threadBody._sig != null) return;
+      var msgs = seedRowsToMsgs((out && out.messages) || [], aid, fid);
+      // Nothing local → leave "Loading messages…" standing. "No messages yet"
+      // is a verdict only a real OF response gets to deliver.
+      if(!msgs.length) return;
+      threadBody.innerHTML = msgs.map(msgHtml).join('');   // DOM only — no model writes
+      threadBody._sig = SEED_SIG;
+      threadBody.scrollTop = threadBody.scrollHeight;
+      paintSeenReceipts();   // meta may already be loaded (loadChatMeta races ahead)
+      paintAttribution();    // attribution is DOM-keyed, so seed bubbles take chips too
+    }catch(e){ /* best-effort bridge — loadThread is the real load */ }
+    finally{ delete THREAD_SEEDING[k]; }
+  }
+
+  // The older-page twin of seedThread, and the same contract: DOM ONLY. Every
+  // scroll-up used to sit on a live OF round-trip (p50 1.5s) with nothing new
+  // on screen while the very same history sat in the mirror, answerable in ~1ms.
+  //
+  // What it must never do is speak for OF. `oldestMsgId` and `threadHasOlder`
+  // stay exactly where loadOlder's response puts them, so a mirror that runs
+  // deeper than OF's window cannot page the cursor into a gap or promise
+  // history OF won't serve. The bands need no age rule here: the cursor is an
+  // id OF itself gave us, and the mirror filters on `message_id < cursor`,
+  // while every synthetic id (5e15 placeholders, 6e15 ledger tips) sits three
+  // orders of magnitude above the largest real OF id — so they cannot come
+  // back through this door.
+  async function seedOlder(fid, aid, cursor){
+    try{
+      var out = await aget('/admin/messages/' + aid + '/' + fid,
+                           {limit: 30, before_id: cursor}, aid);
+      if(String(currentFan) !== String(fid) || String(currentAid) !== String(aid)) return;
+      // OF's page already landed (it repaints the pane and lowers the cursor)
+      // or the request settled some other way — either way this is stale.
+      if(!loadingOlder || oldestMsgId !== cursor) return;
+      var msgs = seedRowsToMsgs((out && out.messages) || [], aid, fid);
+      // The DOM is the record of what is already on screen. An errored OF page
+      // leaves seeded bubbles standing and the user can click "Load older"
+      // again, so dedupe against what is painted rather than trusting the
+      // cursor — that is what keeps a retry from doubling the history.
+      msgs = msgs.filter(function(m){
+        return !threadBody.querySelector('[data-mid="' + m.id + '"]');
+      });
+      if(!msgs.length) return;
+      var prevH = threadBody.scrollHeight, prevTop = threadBody.scrollTop;
+      var btn = $id('loadOlder');
+      var html = msgs.map(msgHtml).join('');
+      // Insert BELOW the affordance so "↑ Load older messages" stays the top
+      // row — OF is still fetching, and the button is still the live control.
+      if(btn) btn.insertAdjacentHTML('afterend', html);
+      else threadBody.insertAdjacentHTML('afterbegin', html);
+      threadBody.scrollTop = threadBody.scrollHeight - prevH + prevTop;   // hold the anchor row
+      paintSeenReceipts();
+      paintAttribution();
+    }catch(e){ /* best-effort bridge — loadOlder is the real load */ }
+  }
+
   // Hover-prefetch: warm the per-fan cache after a short dwell so the FIRST
   // click paints instantly. Best-effort, read-only (never marks read / sends),
   // deduped against the cache and in-flight set so a mouse sweep costs at most
@@ -982,7 +1181,9 @@ Fastt.ready(async function(){
     if(THREAD_CACHE[k] || THREAD_PREFETCHING[k]) return;
     THREAD_PREFETCHING[k] = true;
     try{
-      var resp = await aget('/api/of/v2/chats/' + fid + '/messages', {limit: 30, order: 'desc'}, aid);
+      var resp = await Fastt.get('/api/of/v2/chats/' + fid + '/messages',
+                                 {limit: 30, order: 'desc'},
+                                 {acct: aid || activeAid, priority: 'background'});
       var msgs = (resp.list || []).slice().reverse();
       THREAD_CACHE[k] = { msgs: msgs, oldestMsgId: msgs.length ? msgs[0].id : null, hasOlder: !!resp.hasMore };
     }catch(e){ /* prefetch is best-effort */ }
@@ -996,6 +1197,7 @@ Fastt.ready(async function(){
     var fid = currentFan, aid = currentAid, cursor = oldestMsgId;   // pin the target at call time
     loadingOlder = true;
     var btn = $id('loadOlder'); if(btn){ btn.textContent = 'Loading…'; btn.classList.add('busy'); }
+    seedOlder(fid, aid, cursor);   // parallel, DOM-only; OF below stays the truth
     try{
       var resp = await aget('/api/of/v2/chats/' + fid + '/messages',
                             {limit: 30, order: 'desc', before_id: cursor}, aid);
@@ -1180,7 +1382,7 @@ Fastt.ready(async function(){
   async function loadInsights(fid, aid){
     resetInsights();
     var jobs = await Promise.allSettled([
-      Fastt.get('/api/of/v2/users/' + fid, null, {acct: aid}),
+      Fastt.get('/api/of/v2/users/' + fid, null, {acct: aid, priority: 'background'}),
       aget('/admin/fans/' + aid + '/' + fid + '/ppv-history', {limit: 200}, aid),
       aget('/admin/fans/' + aid + '/' + fid, null, aid),
       aget('/admin/vault/fan-history', {account_id: aid, fan_id: fid}, aid),
@@ -1482,11 +1684,23 @@ Fastt.ready(async function(){
     // paint the cached view immediately, then revalidate in the background.
     var _cached = THREAD_CACHE[key(aid, fid)];
     threadBody._sig = null;
+    // Empty the thread model on EVERY switch, before either branch paints.
+    // Without this, a cold open still holds the PREVIOUS fan's messages, and
+    // loadThread's monotonicity guard compares that fan's last id against the
+    // new fan's window — OF ids are global and time-ordered, so opening a
+    // less-recent conversation read as "view ahead", painted the previous
+    // fan's thread into this pane, and cached it under the new fan's key.
+    threadMsgs = []; oldestMsgId = null; threadHasOlder = false;
+    renderPinBar();   // pin bar reads threadMsgs — drop the prior fan's pins now
     if(_cached && _cached.msgs.length){
       paintThread(_cached.msgs.slice(), _cached.hasOlder);   // instant from cache
       loadThread(fid, aid);                                  // revalidate (no DOM churn if unchanged)
     }else{
       threadBody.innerHTML = '<div class="msg-meta">Loading messages…</div>';
+      // Cold open: race the local mirror against OF. The seed is ~0.1ms of
+      // SQLite and bails the moment anything authoritative has painted, so
+      // whichever answers first is what the operator sees.
+      seedThread(fid, aid);
       loadThread(fid, aid);
     }
     loadChatMeta(fid, aid);
@@ -1533,7 +1747,7 @@ Fastt.ready(async function(){
     if(!rowEl) return;
     var fid = rowEl.getAttribute('data-fan'), aid = rowEl.getAttribute('data-acct');
     if(_pfTimer) clearTimeout(_pfTimer);
-    _pfTimer = setTimeout(function(){ prefetchThread(fid, aid); }, 200);
+    _pfTimer = setTimeout(function(){ prefetchThread(fid, aid); }, 120);   // matches the real app's ChatList dwell
   });
 
   // Bubble actions — unsend our own message, like the fan's. Delegated once;
@@ -2668,7 +2882,7 @@ Fastt.ready(async function(){
     var chip = $id('schedChip');
     chip.style.display = 'none'; schedForFan = [];
     try{
-      var out = await Fastt.get('/api/of/v2/schedules', null, {acct: aid});
+      var out = await Fastt.get('/api/of/v2/schedules', null, {acct: aid, priority: 'background'});
       if(String(currentFan) !== String(fid)) return;
       var list = (out && out.list) || [];
       schedForFan = list.filter(function(it){
@@ -2718,7 +2932,8 @@ Fastt.ready(async function(){
     var c = byAid[activeAid];
     if(!c || !c.hasSession){ notifBadge.style.display = 'none'; return; }
     try{
-      var n = await Fastt.get('/api/of/v2/users/notifications/count', null, {acct: activeAid});
+      var n = await Fastt.get('/api/of/v2/users/notifications/count', null,
+                              {acct: activeAid, priority: 'background'});
       var all = Number(n && n.all) || 0;
       notifBadge.textContent = all;
       notifBadge.style.display = all ? '' : 'none';
@@ -3232,7 +3447,11 @@ Fastt.ready(async function(){
   }
   activeAid = String(want);
   lsSet(LS_ACTIVE, activeAid);
-  await loadUnreadCounts();
+  // The unread tallies and the first list paint share this ONE local read —
+  // loadUnreadCounts returns the rows it fetched, seedListFromRecent below
+  // turns them into a pre-warmed (stale) CHATS_CACHE entry. Awaiting is fine:
+  // it is an indexed local read, ~1ms measured.
+  var recentRows = await loadUnreadCounts();
   renderTabs();
   paintScopeChrome();
   clearSelection();
@@ -3241,9 +3460,24 @@ Fastt.ready(async function(){
   OPEN_TABS = (Array.isArray(_savedTabs) ? _savedTabs : []).filter(function(t){ return t && t.aid && t.fanId != null; });
   renderTabStrip();   // restore pinned chat tabs from a prior session
   loadNotifCount();
-  await reloadList();
+  seedListFromRecent(recentRows);
+  // Open the thread as soon as there IS a target rather than after the list
+  // settles: a deep-link names its fan outright, and the seed above already
+  // supplied a first row. Awaiting the live /api/of/v2/chats here was the last
+  // thing holding the first message bubble behind a second OF round-trip.
+  // Neither call marks anything read — that needs an explicit user click
+  // (selectFan's `userOpen`), which no boot path passes.
+  var listLoaded = reloadList();
   if(dlFan){ selectFan(String(dlFan), activeAid); }
   else if(chats.length) selectFan(chats[0].fanId, chats[0].aid);
+  await listLoaded;
+  // Nothing local to select from (a cold mirror) → fall back to the OF list.
+  if(currentFan == null && chats.length) selectFan(chats[0].fanId, chats[0].aid);
   setInterval(function(){ loadUnreadCounts().then(renderTabs); }, 60000);
-  setTimeout(startLive, 3000);
+  // The 3s this used to wait was sized for a boot that blocked on OF; the
+  // seed now paints in well under a second, which turned the delay into a
+  // window where the pane is live-looking but deaf to new messages. The
+  // normal app opens its EventSource immediately; one frame is enough here
+  // to let the first paint finish before the stream starts patching it.
+  setTimeout(startLive, 250);
 });

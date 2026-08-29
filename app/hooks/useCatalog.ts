@@ -134,6 +134,18 @@ export interface AiChatterConfig {
    *  Both OFF by default. */
   autoreply_sell_on_ask?: boolean;
   welcome_chatter_for_info_sell_on_ask?: boolean;
+  /** What COUNTS as him asking. The ask pattern only ever matched a question
+   *  about content, so the two turns a sale is really won on reached nothing: a
+   *  price question ("how much for the vid"), and a plain "yes" to an offer she
+   *  just made. ON by default — a "yes" is only read as agreement when her own
+   *  last message actually offered something.
+   *
+   *  `tease_sell_rate` is the fraction of those yeses taken when she only TEASED
+   *  ("the rest is better", "u gotta earn that one") rather than asked outright.
+   *  0..1, default 0.33; 0 switches that half off. Sent as a fraction — the tab
+   *  shows it as a percentage. */
+  wide_ask_enabled?: boolean;
+  tease_sell_rate?: number;
   /** Gather-close PPV — welcome_chatter_for_info's parting set when the getting-to-know-you
    *  chat finishes with a fan (profile complete OR the runaway cutoff). THE
    *  FOLDER IS THE SWITCH: empty = off; picking one arms it. Photos only,

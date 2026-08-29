@@ -133,6 +133,10 @@ export interface AccountConfigResp {
   // provider, so this cannot be a single shared list.
   effort_options: Record<string, string[]>;
   purposes: string[];       // per-purpose override targets
+  // What a purpose runs with NOTHING pinned. A purpose listed here does not
+  // inherit `model` — the server holds it on one model whatever the brain says.
+  // Absent key = inherits, as every purpose used to.
+  purpose_defaults?: Record<string, string>;
   languages: LanguageOption[]; // language codes + labels for the dropdown
   /** Creator-canon fields, ordered by how often fans ask. Single source of truth. */
   persona_fact_fields: PersonaFactField[];

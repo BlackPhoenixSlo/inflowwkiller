@@ -492,6 +492,31 @@ async def suggest_ppvs_from_vault(
     }
 
 
+def _parse_library_blob(raw: str | None) -> dict:
+    """`ppv_library_config_json` as a dict, `{}` for missing or unparseable.
+    The one spelling of that fallback — every read of the column that treats a
+    bad blob as "no config" goes through here."""
+    try:
+        return json.loads(raw or "{}") or {}
+    except Exception:
+        return {}
+
+
+# What the box-set button is told when the account will stack a SECOND
+# model-written opener at send time. `ppv_send._pick_caption` prepends
+# `describe_media.send_time_hook`'s line to whatever box it drew — a feature
+# built for hand-written operator copy; against a generated box the fan reads
+# two openers about the same garment plus the ask. It rides the response
+# `warning` field so the answer does not live only in the UI. Advice, never a
+# refusal: the boxes are a suggestion the operator still reviews, and they are
+# perfectly good copy the moment that switch is off.
+STACKED_HOOK_WARNING = (
+    "This account has \"Write a fresh caption line at every send\" on. These boxes "
+    "already open with a written hook, so at send time a SECOND one is placed "
+    "above it. Turn that switch off for this account, or write the boxes by hand."
+)
+
+
 class _CaptionBoxSetBody(BaseModel):
     account_id: str
     # The PPV's media, in ITS order — deliberately NOT a ppv_id, so the button
@@ -520,11 +545,18 @@ async def caption_box_set(body: _CaptionBoxSetBody = Body(...)) -> dict[str, Any
         raise HTTPException(422, "media_ids is required")
     async with get_session() as s:
         cfg_row = await s.get(AccountAiConfig, body.account_id)
-    return await ppv_captions.build_box_set(
+    out = await ppv_captions.build_box_set(
         body.account_id, media_ids, body.compose,
         voice=getattr(cfg_row, "voice", None) or "",
         lang=getattr(cfg_row, "language", None) or "en",
     )
+    # The composer knows nothing about the SEND path's flags; the stacked-hook
+    # warning is this boundary's to give. Read off the row already in hand — a
+    # bad blob means "off", because advice must never 500 the button.
+    stored = _parse_library_blob(getattr(cfg_row, "ppv_library_config_json", None))
+    if stored.get("ai_caption_at_send"):
+        out["warning"] = STACKED_HOOK_WARNING
+    return out
 
 
 @router.get("/admin/ppv-library-config")
@@ -532,12 +564,7 @@ async def get_ppv_library_config(account_id: str = Query(...)) -> dict[str, Any]
     assert_account_owned(account_id)
     async with get_session() as s:
         row = await s.get(AccountAiConfig, account_id)
-    stored: dict = {}
-    if row is not None and row.ppv_library_config_json:
-        try:
-            stored = json.loads(row.ppv_library_config_json) or {}
-        except Exception:
-            stored = {}
+    stored = _parse_library_blob(row.ppv_library_config_json if row else None)
     return {
         "account_id": account_id,
         "config": stored,
@@ -628,13 +655,7 @@ async def preview_ppv_library(body: _PreviewBody = Body(...)) -> dict[str, Any]:
 async def _load_stored_config(account_id: str) -> dict:
     async with get_session() as s:
         row = await s.get(AccountAiConfig, account_id)
-    stored: dict = {}
-    if row is not None and row.ppv_library_config_json:
-        try:
-            stored = json.loads(row.ppv_library_config_json) or {}
-        except Exception:
-            stored = {}
-    return stored
+    return _parse_library_blob(row.ppv_library_config_json if row else None)
 
 
 def _pick_feed_ppv(stored: dict, *, ppv_id: str | None) -> dict:

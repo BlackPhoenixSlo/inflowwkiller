@@ -4,9 +4,11 @@
  * CaptionSetPanel — the PPV Library's "write me a caption set" control.
  *
  * A set, not a caption: `ppv_send` picks ONE of a PPV's caption boxes at random
- * per send, so a set of boxes IS the rotation, and "8 framed boxes of 10" IS an
- * 80% frame rate at send time. Every knob here is a control rather than a
- * constant because the right mix is a house decision, not a code one.
+ * per send, so a set of boxes IS the rotation. Because that pick is uniform,
+ * EVERY box has to be a whole message — which is why "how many carry the pool
+ * line" is no longer a knob (it was 8 of 10, and the other 2 shipped with no
+ * unlock ask on them; see `service/ppv_captions.py`). What is left is a control
+ * because the right mix is a house decision, not a code one.
  *
  * Suggest-only: the panel hands finished boxes to `onAdd` and the operator still
  * presses Save.
@@ -53,13 +55,9 @@ function summarise(r: CaptionBoxSetResult): string {
     const why = r.skipped[0]?.reason;
     return why ? `Nothing to add — ${SKIP_REASONS[why] ?? why}` : "Nothing to add";
   }
-  const framed = r.boxes.filter((b) => b.frame).length;
-  const pct = Math.round((framed / r.boxes.length) * 100);
-  const parts = [
-    `Added ${r.captions.length} caption box(es)`,
-    `${framed} carry the pool line (${pct}% of sends)`,
-  ];
-  if (!r.pool_lines) parts.push("this style pool has no lines — hooks only");
+  const parts = [`Added ${r.captions.length} caption box(es)`];
+  if (r.pool_lines) parts.push("every one carries this PPV's pool line");
+  else parts.push("this style pool has no lines — bare hooks, no unlock ask");
   return parts.join(" · ");
 }
 
@@ -67,14 +65,12 @@ export interface CaptionSetKnobs {
   /** The server's ceiling, echoed so the panel's inputs bound to it too. */
   boxesMax: number;
   boxes: number;
-  framed: number;
   frameTop: number;
   styles: string[];
   /** Clamped exactly the way the server clamps, so the readout never promises a
    *  shape the route would refuse. */
-  clamped: { boxes: number; framed: number; frameTop: number; pct: number };
+  clamped: { boxes: number; frameTop: number };
   setBoxes: (n: number) => void;
-  setFramed: (n: number) => void;
   setFrameTop: (n: number) => void;
   toggleStyle: (key: string) => void;
 }
@@ -87,30 +83,28 @@ export interface CaptionSetKnobs {
  *  The literal is a pre-load fallback, not a second source of truth. */
 export function useCaptionSetKnobs(boxesMax = 20): CaptionSetKnobs {
   const [boxes, setBoxes] = useState(10);
-  const [framed, setFramed] = useState(8);
-  const [frameTop, setFrameTop] = useState(2);
+  // NONE on top by default. The pool lines are written as closing asks ("unlock
+  // it for me"), so a line above the hook makes the ask the opener and the tease
+  // the afterthought. Mirrors `ComposeSpec.frame_top`.
+  const [frameTop, setFrameTop] = useState(0);
   const [styles, setStyles] = useState<string[]>(CAPTION_STYLES.map((s) => s.key));
 
-  // Ordered, because the knobs nest: you cannot frame more boxes than exist, nor
-  // put more frames on top than are framed. Mirrors `ComposeSpec.clamped`.
+  // Ordered, because the knobs nest: you cannot put the pool line on top of more
+  // boxes than exist. Mirrors `ComposeSpec.clamped`.
   const cBoxes = Math.max(1, Math.min(boxes || 1, boxesMax));
-  const cFramed = Math.max(0, Math.min(framed, cBoxes));
-  const cFrameTop = Math.max(0, Math.min(frameTop, cFramed));
+  const cFrameTop = Math.max(0, Math.min(frameTop, cBoxes));
 
   return {
-    boxesMax, boxes, framed, frameTop, styles,
-    clamped: {
-      boxes: cBoxes, framed: cFramed, frameTop: cFrameTop,
-      pct: Math.round((cFramed / cBoxes) * 100),
-    },
-    setBoxes, setFramed, setFrameTop,
+    boxesMax, boxes, frameTop, styles,
+    clamped: { boxes: cBoxes, frameTop: cFrameTop },
+    setBoxes, setFrameTop,
     toggleStyle: (key) =>
       setStyles((ks) => (ks.includes(key) ? ks.filter((k) => k !== key) : [...ks, key])),
   };
 }
 
 export function CaptionSetPanel({
-  accountId, mediaIds, captionPoolKey, knobs, onAdd,
+  accountId, mediaIds, captionPoolKey, knobs, onAdd, aiCaptionAtSend = false,
 }: {
   accountId: string | null;
   /** The PPV's media, in its order — DRAFT ids, so this works before Save. */
@@ -119,10 +113,16 @@ export function CaptionSetPanel({
   captionPoolKey: string;
   knobs: CaptionSetKnobs;
   onAdd: (captions: string[]) => void;
+  /** The account's "write a fresh caption line at every send" switch, as the
+   *  editor currently has it — the UNSAVED value, because the operator can flip
+   *  it and press this button without saving in between, and the send path will
+   *  eventually read whatever they do save. On means `ppv_send` puts a SECOND
+   *  written hook above whichever of these boxes it draws. */
+  aiCaptionAtSend?: boolean;
 }) {
   const boxSetM = useCaptionBoxSet(accountId);
   const [msg, setMsg] = useState("");
-  const { boxes, framed, frameTop, styles, clamped, boxesMax } = knobs;
+  const { boxes, frameTop, styles, clamped, boxesMax } = knobs;
 
   const write = async () => {
     if (!mediaIds.length) {
@@ -139,7 +139,6 @@ export function CaptionSetPanel({
         mediaIds,
         captionPoolKey,
         boxes: clamped.boxes,
-        framed: clamped.framed,
         frameTop: clamped.frameTop,
         styles,
       });
@@ -168,6 +167,16 @@ export function CaptionSetPanel({
         from its <b>{captionPoolKey || "— no"}</b> style pool.
       </div>
 
+      {aiCaptionAtSend && (
+        <div className="rounded-lg border border-warn/50 bg-warn/10 p-2 text-[11px] leading-relaxed text-fg">
+          <b>Heads up — two openers.</b> This account has{" "}
+          <b>&quot;Write a fresh caption line at every send&quot;</b> on. These boxes already
+          open with a written hook, and at send time a <b>second</b> one is placed above it,
+          so the fan reads two openers about the same media plus the ask. Turn that switch
+          off for this account, or write these boxes by hand.
+        </div>
+      )}
+
       <div className="space-y-1">
         <div className="text-[11px] uppercase tracking-wide text-fg-dim/70">Hook styles</div>
         <div className="flex flex-wrap gap-1.5">
@@ -192,16 +201,21 @@ export function CaptionSetPanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {num("Boxes", boxes, boxesMax, knobs.setBoxes)}
-        {num("With pool line", framed, clamped.boxes, knobs.setFramed)}
-        {num("Line on top", frameTop, clamped.framed, knobs.setFrameTop)}
+        {num("Line on top", frameTop, clamped.boxes, knobs.setFrameTop)}
       </div>
 
       <div className="text-[11px] text-fg-dim/70 leading-relaxed">
-        {clamped.framed} of {clamped.boxes} boxes carry the style-pool line. One box is
-        picked at random each send, so that is <b>{clamped.pct}% of sends</b>.{" "}
-        {clamped.frameTop} of them put the pool line above the hook; the rest sit below it.
+        {captionPoolKey
+          ? <>All {clamped.boxes} boxes carry the style-pool line — one box is picked at
+              random each send, so a box without the unlock ask is a send without one.{" "}
+              {clamped.frameTop === 0
+                ? "The line sits below the hook on every box."
+                : `${clamped.frameTop} of them put the pool line above the hook; the rest sit below it.`}</>
+          : <>This PPV has <b>no style pool</b>, so these boxes are bare hooks with no
+              unlock ask under them. Pick a style pool above, or write the ask into the
+              boxes yourself before you save.</>}
       </div>
 
       <Button size="sm" onClick={write} disabled={boxSetM.isPending}>

@@ -28,6 +28,8 @@ vi.mock("@/lib/perfLog", () => ({
   perfLog: vi.fn(),
   perfDelivered: vi.fn(),
   perfError: vi.fn(),
+  perfPaintPending: vi.fn(),
+  perfPaintOnce: vi.fn(),
 }));
 
 // Scope + account set are module-level so a test can flip between a single

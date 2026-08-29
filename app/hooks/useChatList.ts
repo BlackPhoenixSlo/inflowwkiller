@@ -30,7 +30,7 @@ import {
 
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
-import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
+import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 import { useActiveAccounts } from "./useAccounts";
 import { useAllModelsInclude } from "./useAllModelsInclude";
 
@@ -244,6 +244,20 @@ interface ChatsPage {
   hasMore: boolean;
 }
 
+/** Paint-attribution key for one list view. Exported so ChatList and
+ *  fetchPage can't drift on the format. Deliberately coarser than the query
+ *  key: `limit` and the unified-scope account set don't change which rail
+ *  the user is looking at, and a re-key mid-fetch would strand the op. */
+export function listPaintKey(
+  scope: ReturnType<typeof useScope>["scope"],
+  filter: ChatListParams["filter"],
+  listId: ChatListParams["listId"],
+  query: ChatListParams["query"],
+): string {
+  const scopeKey = scope.kind === "model" ? `model:${scope.accountId}` : "all";
+  return `chat.list:${scopeKey}:${filter ?? ""}:${listId ?? ""}:${query ?? ""}`;
+}
+
 async function fetchPage(
   scope: ReturnType<typeof useScope>["scope"],
   accounts: ReturnType<typeof useActiveAccounts>,
@@ -285,6 +299,15 @@ async function fetchPage(
     phase: offset === 0 ? "initial" : "page",
     accountCount: scope.kind === "all" ? accounts.length : 1,
   });
+  // Only a user-facing first page registers for a `painted` stamp — later
+  // offsets append below the fold, and the background callers that reuse this
+  // function (the 90s head poll, the roster hover-prefetch) must not: their
+  // splice may commit nothing, and a dangling registration would attribute
+  // whatever commit happens NEXT (an SSE bump, minutes later) to their op id.
+  // ChatList emits the matching `painted` when rows reach the DOM.
+  if (offset === 0 && priority === "user") {
+    perfPaintPending(listPaintKey(scope, filter, listId, query), opId);
+  }
 
   if (scope.kind === "model") {
     try {

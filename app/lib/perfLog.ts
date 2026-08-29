@@ -248,6 +248,51 @@ export function perfLater(opId: string, kind: string, meta?: Record<string, unkn
   perfLog(opId, kind, "later", meta);
 }
 
+// ── painted-phase attribution ────────────────────────────────────────
+//
+// `requested` and `delivered` are emitted where the fetch lives (a hook's
+// queryFn); `painted` can only be emitted where the DOM lands (the
+// component). These two helpers carry the op id across that gap so a
+// surface can close its own timing loop without threading an id through
+// props. Registering is idempotent per fetch, and painting fires at most
+// once per registration — a re-render, a background refetch, or a second
+// consumer of the same data cannot double-count.
+//
+// Why it matters here: the inbox is the one surface where `delivered` is
+// NOT the user-visible moment. Both UIs paint from a local-DB seed and
+// reconcile when OF answers, so requested→painted is routinely far shorter
+// than requested→delivered. Without this phase the logs describe the
+// upstream wait rather than the experience.
+
+const PAINT_PENDING_MAX = 200;
+const pendingPaint = new Map<string, { opId: string; painted: boolean }>();
+
+/** Attribute the next first-commit of `key` to `opId`. Call where the op is
+ *  minted. `key` names the surface instance, e.g. `chat.messages:<aid>:<fid>`. */
+export function perfPaintPending(key: string, opId: string): void {
+  // Insertion-ordered eviction: a long session visiting many fans must not
+  // grow this without bound. Anything this old was painted or abandoned.
+  if (pendingPaint.size >= PAINT_PENDING_MAX) {
+    const oldest = pendingPaint.keys().next();
+    if (!oldest.done) pendingPaint.delete(oldest.value);
+  }
+  pendingPaint.set(key, { opId, painted: false });
+}
+
+/** Emit `painted` for whatever op is registered under `key`, once. A no-op
+ *  when nothing is pending — a warm cache paints without ever requesting,
+ *  and inventing an op id for that would fabricate a timing. */
+export function perfPaintOnce(
+  key: string,
+  kind: string,
+  meta?: Record<string, unknown>,
+): void {
+  const entry = pendingPaint.get(key);
+  if (!entry || entry.painted) return;
+  entry.painted = true;
+  perfPainted(entry.opId, kind, meta);
+}
+
 export function perfSnapshot(): PerfEvent[] {
   return buffer.slice();
 }

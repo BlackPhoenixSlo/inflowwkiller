@@ -68,7 +68,7 @@ export default function StatsPage() {
   const toIso = toLocalIso(to, true);
 
   return (
-    <div className="max-w-7xl mx-auto p-3 sm:p-6 space-y-5">
+    <div className="max-w-shell mx-auto p-3 sm:p-6 space-y-5">
       <header className="flex flex-wrap items-end gap-4 justify-between">
         <div>
           <h1 className="text-2xl font-semibold mb-1">Stats</h1>

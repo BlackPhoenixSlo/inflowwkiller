@@ -33,6 +33,8 @@ vi.mock("@/lib/perfLog", () => ({
   perfLog: () => {},
   perfDelivered: () => {},
   perfError: () => {},
+  perfPaintPending: () => {},
+  perfPaintOnce: () => {},
 }));
 
 import { relay } from "@/lib/relay";
@@ -121,7 +123,7 @@ describe("useChatMessages merge-on-poll", () => {
   });
 
   it("gap-heal: load-older cursors from the FETCHED pages, not a persisted old block", async () => {
-    // The long-thread shape (fan FAN_ID): a persisted localStorage cache
+    // The Asian-yakuza shape (fan FAN_ID): a persisted localStorage cache
     // restores welcome-era rows (ids 1,2), then the head fetch lands [100,101]
     // — leaving an unfetched gap 3..99. Pre-fix loadOlder cursored off the
     // cache MINIMUM (1): OF answered "nothing older than the first message",
@@ -192,14 +194,20 @@ describe("mergeOlderPage", () => {
       .toEqual(["1", "50", "51", "100"]);
   });
 
-  it("returns the SAME prev reference when the page brings nothing new", () => {
+  it("returns the SAME prev reference for an empty page", () => {
     const prev = [msg(1), msg(2)];
-    expect(mergeOlderPage(prev, [msg(1), msg(2)])).toBe(prev);
+    expect(mergeOlderPage(prev, [])).toBe(prev);
   });
 
-  it("overlapping ids dedup (cache row wins), new ones insert", () => {
-    expect(ids(mergeOlderPage([msg(2), msg(3)], [msg(1), msg(2)])))
-      .toEqual(["1", "2", "3"]);
+  it("overlapping ids dedupe (FRESH row wins), new ones insert", () => {
+    // Fresh-wins is the same doctrine as mergeTopPage and it is what lets an
+    // OF page upgrade a media-less mirror-seeded row. Cache-wins here (the
+    // old rule) froze scrolled-up history in its seed form forever.
+    const cached = msg(2, { media: [] });
+    const fresh = msg(2, { media: [{ id: 9, type: "photo" }] });
+    const merged = mergeOlderPage([cached, msg(3)], [msg(1), fresh]);
+    expect(ids(merged)).toEqual(["1", "2", "3"]);
+    expect(merged.find((m) => String(m.id) === "2")).toBe(fresh);
   });
 
   it("optimistic + mass-placeholder rows keep their tail position", () => {

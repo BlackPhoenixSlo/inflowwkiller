@@ -41,16 +41,39 @@ import SettingsTransfer from "@/components/settings/SettingsTransfer";
 //   • RuleEditor already renders behind `(adding || editing)`, so an operator
 //     who never opens the editor was paying ~1,000 lines plus its knob widgets
 //     for a form they never see. Splitting it costs nothing at all.
-//   • ReadyMadePanel is the LAST card on the page and drags FunnelEditor and
-//     FunnelMediaPane behind it (~2,500 lines together). It can arrive after
-//     first paint because you have to scroll to reach it.
-// BrainPanel is deliberately NOT split: it is the FIRST card, so deferring it
-// would trade the reported symptom for a slower time-to-the-thing-you-came-for.
+//   • ReadyMadePanel drags FunnelEditor and FunnelMediaPane behind it (~2,500
+//     lines together), and the bundle win holds wherever it sits on the page.
+//     Its position has since moved, though: on desktop it still arrives below
+//     the ~2000px Brain, but on phone it is now the FIRST card. So it carries a
+//     `loading` placeholder that holds the card's own header while the chunk
+//     lands, which keeps the first screen from being blank and then jumping. It
+//     does NOT reserve the loaded panel's full height — the real one carries a
+//     summary paragraph, an account picker and a tab strip — so some shift
+//     remains; this trades a big jump for a small one.
+// BrainPanel is deliberately NOT split: it is the first card at desktop, so
+// deferring it would trade the reported symptom for a slower
+// time-to-the-thing-you-came-for.
 const RuleEditor = dynamic(
   () => import("@/components/automations/RuleEditor"), { ssr: false },
 );
 const ReadyMadePanel = dynamic(
-  () => import("@/components/automations/ReadyMadePanel"), { ssr: false },
+  () => import("@/components/automations/ReadyMadePanel"),
+  {
+    ssr: false,
+    // Built from the same Card + header shape the panel itself opens with, so
+    // the reserved box is the panel's own top rather than a guessed height. The
+    // title is repeated as a literal rather than imported: importing anything
+    // from ReadyMadePanel here would pull it back into this chunk and undo the
+    // split this block exists for.
+    loading: () => (
+      <Card className="p-4 space-y-3">
+        <header>
+          <h2 className="text-sm font-medium text-fg">Ready-made posts &amp; broadcasts</h2>
+          <p className="text-xs text-fg-dim">Loading…</p>
+        </header>
+      </Card>
+    ),
+  },
 );
 
 function StatusBadge({ status }: { status: string }) {
@@ -116,16 +139,26 @@ export default function AutomationsPanel() {
     }
   }
 
+  // THE STACK, stated once — the four `order-*` values below are fragments of
+  // this and are meaningless read alone:
+  //
+  //   phone   ready-made → rules → brain → runs
+  //   md+     brain → ready-made → rules → runs
+  //
+  // Ready-made sits above the rules list at both widths: firing a post or a
+  // broadcast is the errand most visits are for, while the rules list is the
+  // power-user surface. The Brain leads at desktop but drops to third on phone,
+  // where its ~2000px of always-expanded config would otherwise bury everything
+  // else. `order-4` on the runs card is mandatory, not decorative: without it
+  // that card sits at order:0 and floats above every ordered sibling at EVERY
+  // breakpoint.
   return (
     <div className="flex flex-col gap-5">
-      {/* Per-account Brain (persona / time lines + images / model / caps).
-       *  Phone: the ~2000px of always-expanded config drops below the rules
-       *  list; `md:order-1` puts it back on top at desktop. */}
       <div className="order-3 md:order-1">
         <BrainPanel />
       </div>
 
-      <Card className="p-4 space-y-3 order-1 md:order-2">
+      <Card className="p-4 space-y-3 order-2 md:order-3">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-sm font-medium text-fg">Automation rules</h2>
@@ -282,15 +315,12 @@ export default function AutomationsPanel() {
         )}
       </Card>
 
-      {/* Ready-made posts & broadcasts — fire-once actions, tabbed, under the
-       *  recurring-rules list. */}
-      <div className="order-2 md:order-3">
+      {/* Ready-made posts & broadcasts — fire-once actions, tabbed. */}
+      <div className="order-1 md:order-2">
         <ReadyMadePanel />
       </div>
 
-      {/* Full run history (read-only) lives right below the controls.
-       *  `order-4` is mandatory: without it this stays at order:0 and floats
-       *  above every ordered sibling at EVERY breakpoint. */}
+      {/* Full run history (read-only). */}
       <div className="order-4">
         <AutomationRunsCard />
       </div>

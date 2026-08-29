@@ -31,6 +31,19 @@ const nextConfig: NextConfig = {
       static: 300,
     },
   },
+  async redirects() {
+    return [
+      // The owed-customs queue was its own nav entry at /customs; it is now a
+      // tab of the Stuff page. The address is printed in the assistant manual,
+      // in the Auto Convo "Sell customs" help text, in half the automations'
+      // docstrings and in whatever operators bookmarked, so it has to keep
+      // resolving. A config redirect and not a page that calls
+      // `permanentRedirect`: a page at this path prerenders to a 200 whose
+      // redirect only fires once the client router hydrates — a blank flash on
+      // every hit. This is a 308 before any route renders.
+      { source: "/customs", destination: "/messages?tab=customs", permanent: true },
+    ];
+  },
   async rewrites() {
     return [
       // Health + admin CRUD (employees, audit, accounts, proxies, sessions, rev).

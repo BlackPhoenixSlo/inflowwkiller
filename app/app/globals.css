@@ -44,6 +44,17 @@
 
   /* Animation timing */
   --ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+
+  /* The app shell's horizontal bound — `max-w-shell`, worn by the top bar,
+   * the impersonation banner and every dashboard page so they line up on
+   * the same two edges. Was `max-w-7xl` (1280px), which on a laptop threw
+   * away a couple hundred pixels per side that dense tables (paid messages,
+   * the customs queue, the stats grid) had real use for. 1800px is a cap for
+   * ultrawides rather than a target: on anything up to it the page is
+   * effectively full-bleed and the only inset is the container's own
+   * padding, which is the point. Narrow reading surfaces — Settings, Setup,
+   * Home — deliberately keep their own tighter max widths. */
+  --container-shell: 1800px;
 }
 
 /* Tell the UA which native widgets to render (scrollbars, default form

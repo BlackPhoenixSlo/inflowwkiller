@@ -187,7 +187,7 @@ async def handle_event(event: dict) -> None:
     await broadcast(event)
 
 
-async def broadcast(event: dict) -> None:
+async def broadcast(event: dict) -> int:
     """Fan ONE event out to every matching SSE subscriber queue — and nothing
     else (no event_inbox persist, no transcode). `handle_event` uses this for
     OF-WS events after it persists; `publish_db_message` uses it directly for
@@ -195,6 +195,14 @@ async def broadcast(event: dict) -> None:
     would double-write the canonical message row).
 
     Scope routing mirrors `handle_event`: "all" + "model:<__account_id>".
+
+    Returns how many subscriber queues the event was handed to. SSE has no
+    mailbox — with nobody subscribed this is a silent no-op, not a delivery —
+    so a caller sending a ONE-SHOT announcement can tell whether to remember it
+    as sent or offer it again later (see
+    `purchase_notifications._broadcast_purchase`). Reading the count off the
+    fan-out itself, rather than asking a second routing-aware helper, is what
+    keeps "who would receive this" from drifting away from who actually did.
     """
     account_id = event.get("__account_id") if isinstance(event, dict) else None
     targets: list[asyncio.Queue] = []
@@ -215,6 +223,7 @@ async def broadcast(event: dict) -> None:
             except Exception:
                 # Truly dead — let the SSE generator notice on its next get().
                 pass
+    return len(targets)
 
 
 async def publish_db_message(

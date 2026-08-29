@@ -104,7 +104,7 @@ from sqlalchemy import select
 from db.engine import get_session
 from db.models import Fan, LadderState
 
-from . import _customs, _language, upsell
+from . import _customs, _language, _sell_signal, upsell
 
 if TYPE_CHECKING:                    # runtime import is lazy — see `may_sell`
     from . import pack_sender
@@ -213,6 +213,28 @@ class Turn:
     #
     # Defaults False, so every existing caller and every test gets today's verdict.
     model_says_ask: bool = False
+    # 🔔 THE THIRD READER, and the only one that is a STRING. `_sell_signal.wide_ask`
+    # — "price" when he asked what it costs, "affirmation" when he said yes to an
+    # offer we ourselves just made. Set by the ENGINE, never derived from the text
+    # here, and that asymmetry is the design: `welcome_chatter_for_info` calls
+    # `sell` unconditionally (`is_ask` is its entire trigger), so a reader the lane
+    # derived itself would arm the info-gather opener — whose own prompt says not to
+    # offer content — on a bare "yes". An engine opts in by stamping; welcome does
+    # not stamp. No engine-name checks live in this module.
+    #
+    # It is also the `via=` on every line this turn logs, and what tells `qualify`
+    # his one-word answer is substantive. Defaults None: today's verdict.
+    wide_ask: str | None = None
+
+
+def _via(turn: Turn) -> str:
+    """` via=price|affirmation` for a turn a widened reader armed, "" otherwise.
+
+    Every line this lane writes about such a turn carries it, so one grep answers
+    both halves of the open question about those readers: how often they fire, and
+    what happened next. A refusal that looked like any other refusal would leave
+    their precision unmeasurable, which is the only reason they ship arm-first."""
+    return f" via={turn.wide_ask}" if turn.wide_ask else ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -373,9 +395,41 @@ class SellLane:
         So the second reader lands HERE, where the authority already is. The regex is
         still evaluated on every call; `model_says_ask` can only ever ADD an ask, never
         veto one — an AND would let a distracted model kill a plainly matched request,
-        which is strictly worse than the regex alone. See `_sell_signal.decide`."""
+        which is strictly worse than the regex alone. See `_sell_signal.decide`.
+
+        `wide_ask` is the third reader and adds the same way — the engine already
+        decided it (see the field), so this is the stamp, not a second derivation."""
         return (_language.is_content_ask(turn.text, turn.lang)
-                or bool(turn.model_says_ask))
+                or bool(turn.model_says_ask)
+                or bool(turn.wide_ask))
+
+    def wide_ask(self, text: str | None, our_last: str | None, *,
+                 lang: str = "en", fan_id: int = 0) -> str | None:
+        """The widened readers, armed: `"price"` / `"affirmation"` / `"tease"`, or
+        None. The engine stamps the answer onto the Turn it builds.
+
+        HERE, and not in each engine, because every switch it reads is the lane's:
+        `on` (no shelf or no permission means every sale refuses before his words
+        are read, so reading them is spent work) and this account's
+        `wide_ask_enabled` / `tease_sell_rate`. Both engines computing that from
+        the same blob is two answers waiting to disagree — the failure this module
+        exists to prevent, and it had already started: the arming fold and the rate
+        clamp were copied into `ai_chatter` and `autoreply` line for line.
+
+        The engines still own WHERE the words come from. `_Cand.last_in_text` and
+        an autoreply history are not the same shape, and only the caller knows
+        which of its locals is "his own words with no vision tag glued on".
+        """
+        # `get(key, True)`, not a bare `get`: this ships ON, so the default belongs
+        # at the read as well as in `_DEFAULTS`. A bare get answers None — off —
+        # for any caller holding a config that did not come through the merge, and
+        # a feature that is ON everywhere except where someone built the blob by
+        # hand is the kind of difference nobody notices until it is a dark account.
+        if not (self.on and self.cfg.get("wide_ask_enabled", True) is not False):
+            return None
+        return _sell_signal.wide_ask(
+            text, our_last, lang=lang, seed=f"{self.account_id}:{fan_id}",
+            tease_rate=_sell_signal.clamp_rate(self.cfg.get("tease_sell_rate")))
 
     @property
     def stats(self) -> dict:
@@ -544,6 +598,20 @@ class SellLane:
             account_offers_today=cnt.account_day,
             ladder_may_open=True,
             fan_pull=pull,
+            # 🚨 THE COLLISION THE WIDENED READERS LIVE INSIDE. `_LOW_INFO_TOKENS`
+            # holds "ok" / "yes" / "sure" and the token bar also rejects a bare
+            # "how much" — so without this the two readers fire and are refused
+            # `low_information` every time on a gate-ON account. A trigger that
+            # always refuses is worse than none: it spends the READ and reports a
+            # sale that never happens.
+            #
+            # Passed as an INPUT rather than lifted as a refusal, and that is not a
+            # style choice: `low_information` is decided before `declined`, the
+            # staleness TTL and all four ceilings, so lifting it afterwards would
+            # skip every one of them. Here the bar is satisfied and the rest of the
+            # gate still runs — which the "provenance never lifts a brake" case
+            # pins, because the first draft of this DID skip the burst cap.
+            inbound_qualifies=bool(turn.wide_ask),
         ), now)
         if not ok and pull and why in _PULL_LIFTS:
             log.info("sell_lane explicit-ask lifts %s engine=%s account=%s fan=%s",
@@ -606,7 +674,7 @@ class SellLane:
         res = SellResult.from_pack(await pack_sender.deliver(
             client, plan.delivery, voice_line=voice_line, dry_run=dry_run))
         if res.sold:
-            self._sold(plan.fan_id, res)
+            self._sold(plan.fan_id, plan.turn, res)
         else:
             self._lane_refused(plan.fan_id, plan.turn, res)
         return res
@@ -631,16 +699,16 @@ class SellLane:
         if ok:
             return None
         self.refused += 1
-        log.info("sell_lane refused engine=%s account=%s fan=%s: %s",
-                 self.engine, self.account_id, fan_id, why)
+        log.info("sell_lane refused engine=%s account=%s fan=%s: %s%s",
+                 self.engine, self.account_id, fan_id, why, _via(turn))
         return SellResult.refused(why)
 
-    def _sold(self, fan_id: int, res: SellResult) -> None:
+    def _sold(self, fan_id: int, turn: Turn, res: SellResult) -> None:
         self.sold += 1
         self.budget.charge()
-        log.info("sell_lane SOLD engine=%s account=%s fan=%s %s n=%s px=%s",
+        log.info("sell_lane SOLD engine=%s account=%s fan=%s %s n=%s px=%s%s",
                  self.engine, self.account_id, fan_id, res.category, res.n,
-                 res.price_cents)
+                 res.price_cents, _via(turn))
 
     def _lane_refused(self, fan_id: int, turn: Turn, res: SellResult) -> None:
         self.refused += 1
@@ -649,8 +717,8 @@ class SellLane:
         # own refusal is a function of the message, which is what makes it safe
         # to answer from memory.
         _memo_put(self.account_id, fan_id, turn.at, res.reason)
-        log.info("sell_lane lane refused engine=%s account=%s fan=%s: %s",
-                 self.engine, self.account_id, fan_id, res.reason)
+        log.info("sell_lane lane refused engine=%s account=%s fan=%s: %s%s",
+                 self.engine, self.account_id, fan_id, res.reason, _via(turn))
 
     async def sell(self, client, fan_id: int, turn: Turn, *,
                    fan: Fan | None = None, blocked: bool = False,

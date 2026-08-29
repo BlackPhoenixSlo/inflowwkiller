@@ -635,7 +635,7 @@ Fastt.ready(async () => {
   segBtns.forEach((b) => {
     const mode = b.textContent.trim().toLowerCase();
     if (mode === 'hour') {
-      b.title = '/admin/stats/revenue groups by day or kind only — there is no hourly bucket to read';
+      b.title = '/admin/stats/revenue groups by day, kind, or day+kind (by_kind=true) — but there is no hourly bucket to read';
       b.style.opacity = '.55';
     }
     b.addEventListener('click', () => {

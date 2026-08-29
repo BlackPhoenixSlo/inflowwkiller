@@ -135,14 +135,66 @@ async def revenue(
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
     group_by: str = Query("day", pattern="^(day|kind)$"),
+    include_net: bool = Query(False),
+    by_kind: bool = Query(False),
 ) -> dict[str, Any]:
     """Sum + count of `transactions.amount_cents` bucketed by `day` (UTC) or
     by `kind` (ppv / tip / subscription / rebill / custom). When grouping by
     day, `kind` is null in the response; when grouping by kind, `day` is null.
-    Both filters (account_id, from/to) are optional and AND-ed together."""
+    Both filters (account_id, from/to) are optional and AND-ed together.
+
+    Rows are restricted to `_TRACKED_STATUSES` ("cleared", "pending"), matching
+    /admin/stats/per-model. Before 2026-08-29 this endpoint applied NO status
+    predicate while per-model did, so the two surfaces summed different row sets
+    and the dashboard's KPI card could never reconcile with its own creators
+    table. `chargedback` / `refund_pending` is money leaving and is not revenue;
+    `pending` IS counted, because the ledger writes rows pending and clears them
+    ~7 days later — a cleared-only filter renders the current week $0.00.
+
+    Two opt-in flags extend the response. Both default False and, when False,
+    create no keys at all — the day/kind responses are byte-identical to what
+    every existing caller already parses (locked by
+    service/tests/test_stats_revenue.py):
+
+    * `include_net=true` adds `net_cents` (OF's own post-fee figure, summed from
+      `transactions.net_cents`) and `net_missing_count` to every row. Null nets
+      — a WS-pumped row the ledger has not backfilled yet — are counted, never
+      imputed: COALESCE-ing them to `amount_cents` would silently label gross as
+      net. Note `net = gross - fee`; VAT is tracked separately and NOT deducted.
+    * `by_kind=true` (valid only with `group_by=day`) nests a `by_kind[]` array
+      of per-kind rows under each day. Nested rather than flat on purpose: the
+      day-series callers consume with plain assignment (`byDay[r.day] = …`), not
+      accumulation, so a flat day-x-kind list would make them silently keep only
+      the last kind per day. Mirrors /admin/stats/per-employee's `per_account[]`.
+    """
+    if by_kind and group_by != "day":
+        raise HTTPException(
+            status_code=400,
+            detail="by_kind requires group_by=day (it nests kinds inside each day)",
+        )
+
     account_ids = clamp_account_filter(account_id)
     start = _parse_date(from_, field="from")
     end = _parse_date(to, field="to")
+
+    def _scope(q):
+        """The filter set shared by every query in this endpoint. Kept in one
+        place so the nested by_kind pass can never drift from the parent rows —
+        if it did, the child buckets would stop summing to their own day."""
+        if account_ids is not None:
+            q = q.where(Transaction.account_id.in_(account_ids))
+        if start:
+            q = q.where(Transaction.occurred_at >= start)
+        if end:
+            q = q.where(Transaction.occurred_at <= end)
+        return q.where(Transaction.status.in_(_TRACKED_STATUSES))
+
+    net_cols = [
+        func.coalesce(func.sum(Transaction.net_cents), 0).label("net_cents"),
+        func.coalesce(
+            func.sum(case((Transaction.net_cents.is_(None), 1), else_=0)), 0
+        ).label("net_missing"),
+    ]
 
     async with get_session() as s:
         # SQLite-native day bucket. Postgres would use date_trunc — the
@@ -163,25 +215,51 @@ async def revenue(
             grp = [Transaction.kind]
             order = [func.sum(Transaction.amount_cents).desc()]
 
-        q = select(*cols)
-        if account_ids is not None:
-            q = q.where(Transaction.account_id.in_(account_ids))
-        if start:
-            q = q.where(Transaction.occurred_at >= start)
-        if end:
-            q = q.where(Transaction.occurred_at <= end)
-        q = q.group_by(*grp).order_by(*order)
+        if include_net:
+            cols = [*cols, *net_cols]
 
+        q = _scope(select(*cols)).group_by(*grp).order_by(*order)
         rows = (await s.execute(q)).all()
 
-    if group_by == "day":
-        out = [{"day": r.day, "kind": None,
-                "total_cents": int(r.total_cents or 0), "count": int(r.count or 0)}
-               for r in rows]
-    else:
-        out = [{"day": None, "kind": r.kind,
-                "total_cents": int(r.total_cents or 0), "count": int(r.count or 0)}
-               for r in rows]
+        kind_rows: list[Any] = []
+        if by_kind:
+            # Second pass grouped by (day, kind). Same _scope(), so the children
+            # always sum to their parent day.
+            kcols = [day_expr, Transaction.kind.label("kind"),
+                     func.sum(Transaction.amount_cents).label("total_cents"),
+                     func.count(Transaction.id).label("count")]
+            if include_net:
+                kcols = [*kcols, *net_cols]
+            kq = (
+                _scope(select(*kcols))
+                .group_by(day_expr, Transaction.kind)
+                .order_by(day_expr, func.sum(Transaction.amount_cents).desc())
+            )
+            kind_rows = (await s.execute(kq)).all()
+
+    def _base(r) -> dict[str, Any]:
+        d = {"day": r.day if group_by == "day" else None,
+             "kind": r.kind if group_by == "kind" else None,
+             "total_cents": int(r.total_cents or 0), "count": int(r.count or 0)}
+        if include_net:
+            d["net_cents"] = int(r.net_cents or 0)
+            d["net_missing_count"] = int(r.net_missing or 0)
+        return d
+
+    out = [_base(r) for r in rows]
+
+    if by_kind:
+        children: dict[str, list[dict[str, Any]]] = {}
+        for r in kind_rows:
+            c = {"kind": r.kind, "total_cents": int(r.total_cents or 0),
+                 "count": int(r.count or 0)}
+            if include_net:
+                c["net_cents"] = int(r.net_cents or 0)
+                c["net_missing_count"] = int(r.net_missing or 0)
+            children.setdefault(r.day, []).append(c)
+        for row in out:
+            row["by_kind"] = children.get(row["day"], [])
+
     return {"rows": out}
 
 
@@ -1043,10 +1121,20 @@ async def per_model(
     # Counts both cleared and pending — see _TRACKED_STATUSES. Pending
     # is still surfaced separately as pending_by_kind (subset, not
     # additional) so the UI can flag what's not yet bank-cleared.
+    # `net_cents` rides along with gross so the creators table can reconcile
+    # against a Net-basis KPI card. Purely ADDITIVE: it adds top-level keys and
+    # moves no money between the existing `revenue_by_kind` buckets — that dict
+    # is a closed 6-key TypeScript interface (app/hooks/useStats.ts) consumed by
+    # PerModelKpiGrid / PerEmployeeTable / CompetitorReports, and adding a key to
+    # IT would silently reroute revenue into a bucket those surfaces never render.
     revenue_q = select(
         Transaction.account_id.label("account_id"),
         Transaction.kind.label("kind"),
         func.coalesce(func.sum(Transaction.amount_cents), 0).label("amount_cents"),
+        func.coalesce(func.sum(Transaction.net_cents), 0).label("net_cents"),
+        func.coalesce(
+            func.sum(case((Transaction.net_cents.is_(None), 1), else_=0)), 0
+        ).label("net_missing"),
     ).where(
         Transaction.occurred_at >= start,
         Transaction.occurred_at <= end,
@@ -1255,6 +1343,12 @@ async def per_model(
                 "custom": 0,
             },
             "total_revenue_cents": 0,
+            # OF's own post-fee figure, summed from transactions.net_cents.
+            # `net_missing_count` > 0 means some rows have no net yet (a
+            # WS-pumped sale the ledger has not backfilled) — the UI must
+            # disclose that rather than treat the sum as complete.
+            "total_net_revenue_cents": 0,
+            "net_missing_count": 0,
             "messages_sent": 0,
             "ppv_conversions": 0,
             "new_subs_count": 0,
@@ -1279,6 +1373,8 @@ async def per_model(
         amount = int(r.amount_cents or 0)
         row["revenue_by_kind"][bucket] += amount
         row["total_revenue_cents"] += amount
+        row["total_net_revenue_cents"] += int(r.net_cents or 0)
+        row["net_missing_count"] += int(r.net_missing or 0)
 
     for r in r_new:
         row = _ensure(r.account_id)

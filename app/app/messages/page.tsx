@@ -1,20 +1,34 @@
 "use client";
 
 /**
- * /messages — paid-message dashboard.
+ * /messages — the "Stuff" dashboard: the money surfaces in one place.
  *
- * Three tabs:
+ * The ROUTE stays /messages while the LABEL is Stuff. Renaming the path would
+ * break every ?tab= / ?fan_id= deep link the stats page, the per-fan cards, the
+ * assistant's click paths and operators' bookmarks already point at, and buys
+ * nothing — the address bar is not the thing anyone reads.
+ *
+ * The tabs:
  *   • PPV  — outbound priced messages, list view with infinite scroll.
  *            Reads /admin/paid-messages (messages table only, no tx join).
  *   • Tips — tip transactions list. Reads /admin/tips-list directly off
  *            the transactions table (no view dependency — synthesis §2.9).
  *   • All  — all messages (inbound + outbound, free + paid). Same endpoint
  *            as PPV with `type=all&direction=out` defaults. Owns CSV export.
+ *   • Customs — the owed-customs queue: a fan tipped for a voice note and has
+ *            not been sent one. Moved here from its own nav entry, because it
+ *            is money already TAKEN and belongs beside PPV and Tips rather
+ *            than competing with them for a slot in the strip. Live and
+ *            cross-account: it ignores the page's date range, since a debt
+ *            does not stop being owed because it fell out of a 30-day
+ *            window. `/customs` redirects in, so old links still land.
+ *   • Posts / My Feed / Top Posts — the feed side of the same window.
  *
- * URL state: `?tab=ppv|tips|all` + `?fan_id=<n>` — the latter deep-links
- * the All tab to a single fan (used from per-fan cards and the stats page).
+ * URL state: `?tab=ppv|tips|all|customs|posts|myfeed|top` + `?fan_id=<n>` —
+ * the latter deep-links the All tab to a single fan (used from per-fan cards
+ * and the stats page).
  *
- * Right rail: TopTippersCard, visible on BOTH tabs. Clicking a row sets
+ * Right rail: TopTippersCard, visible on every tab. Clicking a row sets
  * `tippersPreset` which TipsTab adopts as its fan_query filter — and we
  * switch the active tab to Tips so the filtered list is visible right
  * away (a click from the PPV tab still means "show me this fan's tips").
@@ -29,6 +43,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import DateRangePicker, { type RangePreset } from "@/components/stats/DateRangePicker";
 import AllMessagesTab from "@/components/messages/AllMessagesTab";
+import CustomsTab from "@/components/messages/CustomsTab";
 import MyFeedTab from "@/components/messages/MyFeedTab";
 import PaidMessagesTab from "@/components/messages/PaidMessagesTab";
 import PostsTab from "@/components/messages/PostsTab";
@@ -38,20 +53,33 @@ import TopTippersCard from "@/components/messages/TopTippersCard";
 import { cn } from "@/lib/utils";
 import { daysAgoISO, todayISO, toLocalIso } from "@/lib/dateRange";
 
-type Tab = "ppv" | "tips" | "all" | "posts" | "myfeed" | "top";
+type Tab = "ppv" | "tips" | "all" | "posts" | "myfeed" | "top" | "customs";
+
+/** The strip, in order. Also the parser's allow-list and the table that
+ *  components/assistant/answerLinks.ts copies — its drift guard reads the
+ *  `key:` literals out of this file, so a renamed tab fails that suite
+ *  instead of quietly sending a help-bot reader to the default tab. */
+const TABS: Array<{ key: Tab; label: string }> = [
+  { key: "ppv",     label: "PPV"       },
+  { key: "tips",    label: "Tips"      },
+  { key: "all",     label: "All"       },
+  { key: "customs", label: "Customs"   },
+  { key: "posts",   label: "Posts"     },
+  { key: "myfeed",  label: "My Feed"   },
+  { key: "top",     label: "Top Posts" },
+];
+
+const TAB_KEYS = new Set<string>(TABS.map((t) => t.key));
 
 function parseTab(raw: string | null): Tab {
-  if (raw === "tips" || raw === "all" || raw === "posts" || raw === "myfeed" || raw === "top") {
-    return raw;
-  }
-  return "ppv";
+  return raw != null && TAB_KEYS.has(raw) ? (raw as Tab) : "ppv";
 }
 
 export default function MessagesPage() {
   // useSearchParams suspends in Next 14+; wrap the body in Suspense so the
   // page can render the static header while it resolves.
   return (
-    <Suspense fallback={<div className="max-w-7xl mx-auto p-3 sm:p-6 text-sm text-fg-dim">Loading…</div>}>
+    <Suspense fallback={<div className="max-w-shell mx-auto p-3 sm:p-6 text-sm text-fg-dim">Loading…</div>}>
       <MessagesPageInner />
     </Suspense>
   );
@@ -145,36 +173,23 @@ function MessagesPageInner() {
     : presetLabel(preset);
 
   return (
-    <div className="max-w-7xl mx-auto p-3 sm:p-6 space-y-5">
+    <div className="max-w-shell mx-auto p-3 sm:p-6 space-y-5">
       <header className="flex flex-wrap items-end gap-4 justify-between">
         <div>
-          <h1 className="text-2xl font-semibold mb-1">Messages</h1>
+          <h1 className="text-2xl font-semibold mb-1">Stuff</h1>
           <p className="text-sm text-fg-dim">
-            Paid messages (PPV) and tips across the selected window.
+            Paid messages (PPV), tips, posts and customs owed.
           </p>
         </div>
         <DateRangePicker from={from} to={to} preset={preset} onChange={handleRange} />
       </header>
 
       <div className="flex items-center gap-1 border-b border-border overflow-x-auto overflow-y-hidden md:overflow-visible no-scrollbar -mx-3 px-3 sm:mx-0 sm:px-0">
-        <TabButton active={tab === "ppv"} onClick={() => setTab("ppv")}>
-          PPV
-        </TabButton>
-        <TabButton active={tab === "tips"} onClick={() => setTab("tips")}>
-          Tips
-        </TabButton>
-        <TabButton active={tab === "all"} onClick={() => setTab("all")}>
-          All
-        </TabButton>
-        <TabButton active={tab === "posts"} onClick={() => setTab("posts")}>
-          Posts
-        </TabButton>
-        <TabButton active={tab === "myfeed"} onClick={() => setTab("myfeed")}>
-          My Feed
-        </TabButton>
-        <TabButton active={tab === "top"} onClick={() => setTab("top")}>
-          Top Posts
-        </TabButton>
+        {TABS.map((t) => (
+          <TabButton key={t.key} active={tab === t.key} onClick={() => setTab(t.key)}>
+            {t.label}
+          </TabButton>
+        ))}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
@@ -199,6 +214,7 @@ function MessagesPageInner() {
               onClearFanId={onClearFanId}
             />
           )}
+          {tab === "customs" && <CustomsTab />}
           {tab === "posts" && <PostsTab />}
           {tab === "myfeed" && <MyFeedTab />}
           {tab === "top" && <TopPostsTab from={fromIso} to={toIso} />}

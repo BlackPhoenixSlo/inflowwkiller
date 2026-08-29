@@ -655,15 +655,24 @@
                     <option value="" selected>Inherit default</option>
                   </select>
                 </div>
+                <!-- data-purpose is the string the LANE passes to resolve_model,
+                     not the automation kind. These two read "send_welcome" /
+                     "send_followup" and so wrote a key nothing ever read. -->
                 <div class="fx-field">
                   <label>Welcomes</label>
-                  <select class="fx-select" data-purpose="send_welcome">
+                  <select class="fx-select" data-purpose="welcome">
                     <option value="" selected>Inherit default</option>
                   </select>
                 </div>
                 <div class="fx-field">
                   <label>Follow-ups</label>
-                  <select class="fx-select" data-purpose="send_followup">
+                  <select class="fx-select" data-purpose="followup">
+                    <option value="" selected>Inherit default</option>
+                  </select>
+                </div>
+                <div class="fx-field">
+                  <label>Help chatbot</label>
+                  <select class="fx-select" data-purpose="help_assistant">
                     <option value="" selected>Inherit default</option>
                   </select>
                 </div>
