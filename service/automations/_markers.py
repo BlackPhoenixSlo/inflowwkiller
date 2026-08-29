@@ -52,9 +52,20 @@ def protocol_marker_re(keyword: str) -> re.Pattern[str]:
     that make people obey" is a real fan-facing body). Offers need the arrows or
     a trailing id, because "well i usually offer 1k per custom vid" is also a
     real body — 636 outbound messages say "offer", and exactly one was a marker.
+
+    The boundary is "no letter before" OR a camelCase seam. Live 2026-08-30, on
+    fastt.lol night one: the model glued its prose straight onto the marker —
+    `...in quel letto robypartySTICKER: flirty` — and the letter-lookbehind
+    refused the seam, so the fan read the protocol verbatim AND no sticker went
+    out. The model writes the marker in caps as instructed even when it forgets
+    the space, so a lowercase letter followed by the keyword in caps IS the
+    marker; `unstickers:` in prose stays all-lowercase and still never matches.
+    `(?-i:...)` scopes the case-sensitivity that seam needs away from the
+    IGNORECASE the wrapper shapes still want.
     """
-    return re.compile(rf"{_WRAP}(?<![A-Za-z])(?:{keyword})([^\n]*)",
-                      re.IGNORECASE | re.MULTILINE)
+    return re.compile(
+        rf"{_WRAP}(?:(?<![A-Za-z])|(?-i:(?<=[a-z])(?=[A-Z])))(?:{keyword})([^\n]*)",
+        re.IGNORECASE | re.MULTILINE)
 
 
 # A `*...*` span PLUS whatever separates it from the next word: group 1 is the

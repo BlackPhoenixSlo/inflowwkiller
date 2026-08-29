@@ -41,7 +41,7 @@ from .pack_claim import Claim, ask_clause, voice_line_ok
 from .pack_sender import (
     PACK_LANGUAGES, REFUSE_AUDIT, REFUSE_LANGUAGE, REFUSE_NO_SHELF,
     REFUSE_TOO_THIN, Delivery, PackPlan, _ask_claim, _available, _bought_media,
-    _refusal, _singleton_item, deliver,
+    _refusal, _singleton_item, deliver, plan_on_ask,
 )
 
 log = logging.getLogger("of-relay.automation.pack_farewell")
@@ -230,6 +230,39 @@ async def send_gather_close(client, cfg: dict, account_id: str, fan_id: int,
         return False
     await _stamp_attempt(account_id, fan_id, f, now)
     try:
+        # 🚨 HE MAY HAVE JUST ASKED FOR SOMETHING — answer THAT, not the folder.
+        # Live 2026-08-30, fastt.lol night one: a new fan asked for feet three
+        # times ("Mi fai vedere i piedi", "I want see your feet"), the gather
+        # graduated him nine seconds later, and this function shipped the
+        # operator folder — latex corset, parting line, $10. He replied "Feet
+        # pls", then "I might be interested in your feet, but I don't give away
+        # money for everything", and did not buy. The parting set is designed
+        # for "a moment he never asked for anything" (module docstring); when he
+        # HAS asked, the ask lane owns the moment — it matches his words against
+        # the vault (the one curated category is literally `feet`), audits the
+        # claim against the media it picks, and its caption is ABOUT the thing
+        # he asked for. Same stamp, same clock, same once-per-attempt cost.
+        contract = await content_resolver.read_contract(account_id, fan_id)
+        if contract.asked:
+            d, refused = await plan_on_ask(account_id, fan_id, cfg=cfg,
+                                           contract=contract)
+            if d is not None:
+                line = await content_resolver.answer_line(
+                    account_id, fan_id, contract.quote or answer_to, f)
+                res = await deliver(client, d,
+                                    voice_line=line if voice_line_ok(line) else None,
+                                    dry_run=dry_run)
+                log.info("gather-close routed to ask lane account=%s fan=%s "
+                         "subject=%r status=%s", account_id, fan_id,
+                         contract.subject, res.get("status"))
+                return str(res.get("status")) in ("ok", "dry_run")
+            # The ask lane refused (thin shelf, no match, pack sends off) — the
+            # parting set still goes, but its voice line now ANSWERS his ask
+            # instead of reciting the parting line over it.
+            log.info("gather-close ask-route refused account=%s fan=%s: %s %s "
+                     "— falling back to the parting set", account_id, fan_id,
+                     refused.get("reason"), refused.get("detail") or "")
+            answer_to = answer_to or contract.quote or contract.subject or ""
         pool = await asyncio.to_thread(_vault_pick.folder_media_pool, client, folder)
         if pool is None:
             log.info("gather-close folder not found account=%s name=%r",
