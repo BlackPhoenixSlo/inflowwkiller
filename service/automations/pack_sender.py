@@ -905,7 +905,8 @@ async def plan_ask_delivery(account_id: str, fan_id: int,
 
 
 async def plan_on_ask(account_id: str, fan_id: int, *,
-                      cfg: dict | None = None) -> tuple[Delivery | None, dict]:
+                      cfg: dict | None = None,
+                      contract=None) -> tuple[Delivery | None, dict]:
     """He asked for content → decide what to sell him. **Sends nothing.**
 
     The whole of `send_pack_on_ask` except the wire: read the ask off the thread,
@@ -917,12 +918,17 @@ async def plan_on_ask(account_id: str, fan_id: int, *,
     `REFUSE_TOO_THIN` is a plan-time refusal: the shelf is spent, which is known
     before anything is charged. Retrying at send time would have meant a second
     wire call after the first had already been reported.
+
+    `contract` lets a caller that has ALREADY read the thread hand its
+    `Contract` in — `read_contract` is an LLM call, and the gather-close route
+    has to read the ask before it knows this function is the one to call.
     """
     cfg = cfg or {}
     if not cfg.get("pack_send_enabled"):
         return None, {"status": "refused", "reason": REFUSE_DISABLED}
 
-    contract = await content_resolver.read_contract(str(account_id), int(fan_id))
+    if contract is None:
+        contract = await content_resolver.read_contract(str(account_id), int(fan_id))
     if not contract.asked:
         return None, {"status": "refused", "reason": content_resolver.NO_ASK,
                       "detail": contract.subject or ""}
