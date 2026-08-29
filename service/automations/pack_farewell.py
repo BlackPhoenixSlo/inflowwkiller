@@ -242,10 +242,15 @@ async def send_gather_close(client, cfg: dict, account_id: str, fan_id: int,
         # the vault (the one curated category is literally `feet`), audits the
         # claim against the media it picks, and its caption is ABOUT the thing
         # he asked for. Same stamp, same clock, same once-per-attempt cost.
+        #
+        # `plan_on_ask` reads the thread again itself. That second read is paid
+        # deliberately: threading a contract through its signature would put one
+        # product's optimization on the shared ask-lane entry, and this trigger
+        # fires at most once per fan per 3 days. If the two reads disagree, the
+        # refusal branch below is the answer either way.
         contract = await content_resolver.read_contract(account_id, fan_id)
         if contract.asked:
-            d, refused = await plan_on_ask(account_id, fan_id, cfg=cfg,
-                                           contract=contract)
+            d, refused = await plan_on_ask(account_id, fan_id, cfg=cfg)
             if d is not None:
                 line = await content_resolver.answer_line(
                     account_id, fan_id, contract.quote or answer_to, f)
