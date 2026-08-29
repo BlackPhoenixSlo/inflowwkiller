@@ -90,12 +90,19 @@ export default function ScopeSwitcher() {
 
   // Master-checkbox state for the "All models" row: checked when every
   // listed model is in the aggregate, indeterminate when only some are.
-  const allIncluded = accounts.every((a) => isIncluded(a.id));
-  const noneIncluded = accounts.length > 0 && accounts.every((a) => !isIncluded(a.id));
+  const includedCount = accounts.filter((a) => isIncluded(a.id)).length;
+  const allIncluded = includedCount === accounts.length;
+  const noneIncluded = accounts.length > 0 && includedCount === 0;
 
+  // Trigger label: "All" when the whole roster is aggregated, "4/7" when
+  // it's been pruned — the fraction says both that a filter is on and how
+  // deep it cuts, in a fraction of the width "all models" took (the
+  // phone bar counts every pixel).
   const currentLabel =
     scope.kind === "all"
-      ? "all models"
+      ? allIncluded
+        ? "All"
+        : `${includedCount}/${accounts.length}`
       : accounts.find((a) => a.id === scope.accountId)?.nickname || scope.accountId;
   const currentColor =
     scope.kind === "all"
@@ -108,6 +115,13 @@ export default function ScopeSwitcher() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-2 px-2 lg:px-3 py-1.5 rounded-lg text-sm bg-bg-elev-1 hover:bg-bg-elev-2 border border-border whitespace-nowrap max-w-[6rem] sm:max-w-[8rem] lg:max-w-none"
+        title={
+          scope.kind === "all"
+            ? allIncluded
+              ? "All models"
+              : `All models — ${includedCount} of ${accounts.length} in the aggregate`
+            : currentLabel
+        }
       >
         <span
           className="w-2 h-2 rounded-full shrink-0"
@@ -171,6 +185,11 @@ export default function ScopeSwitcher() {
               className="flex-1 pr-3 py-2 flex items-center gap-2 text-left"
             >
               <span className="truncate flex-1">All models</span>
+              {!allIncluded && (
+                <span className="text-[10px] text-fg-dim shrink-0">
+                  {includedCount}/{accounts.length}
+                </span>
+              )}
               {scope.kind === "all" && <span className="text-[10px] text-fg-dim">●</span>}
             </button>
           </div>
