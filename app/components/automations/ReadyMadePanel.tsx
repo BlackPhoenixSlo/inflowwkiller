@@ -28,6 +28,7 @@ import { fmtAgo, fmtDateTime } from "@/lib/format";
 import { relay } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useTabParam } from "@/hooks/useTabParam";
 import {
   useAutomationRules,
   useCreateRule,
@@ -103,10 +104,32 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge color={color}>{status === "running" ? "running…" : status}</Badge>;
 }
 
+/** Scroll target for `?ready=` deep links. */
+const READY_MADE_ANCHOR = "ready-made";
+
+const isTab = (v: string): v is Tab => TABS.some((t) => t.key === v);
+
 export default function ReadyMadePanel() {
   const accounts = useActiveAccounts();
   const [accountId, setAccountId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("auto_posts");
+  // Deep link from the help assistant: /automations?ready=nudge_online. The
+  // param is named for THIS panel, not the page — /automations is a stack of
+  // cards and the Brain card above owns its own state.
+  useTabParam("ready", isTab, (t) => {
+    setTab(t);
+    // At desktop this panel sits below the Brain, so selecting a tab that is off
+    // screen looks like the link did nothing. (On phone it is the first card and
+    // the scroll is a no-op — harmless, and cheaper than making it conditional
+    // on a breakpoint this file would then have to know about.) Scroll after
+    // paint. Addressed by id, not a ref: `Card` spreads props but is not a
+    // forwardRef component.
+    requestAnimationFrame(() =>
+      document
+        .getElementById(READY_MADE_ANCHOR)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  });
 
   // Default to the first session-backed account once they load.
   useEffect(() => {
@@ -178,7 +201,7 @@ export default function ReadyMadePanel() {
   const runs = runsQ.data?.runs ?? [];
 
   return (
-    <Card className="p-4 space-y-3">
+    <Card id={READY_MADE_ANCHOR} className="p-4 space-y-3">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-sm font-medium text-fg">Ready-made posts &amp; broadcasts</h2>

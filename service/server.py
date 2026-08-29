@@ -96,6 +96,7 @@ from style_config_api import router as _style_config_router  # noqa: E402
 from banned_words_api import router as _banned_words_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from settings_transfer_api import router as _settings_transfer_router  # noqa: E402
+from assistant_api import router as _assistant_router  # noqa: E402
 # Growth surfaces (gaps-lane: Infloww-gap features) — all self-contained routers.
 from smart_lists_api import router as _smart_lists_router  # noqa: E402
 from trial_links_api import router as _trial_links_router  # noqa: E402
@@ -218,6 +219,11 @@ app.include_router(_style_config_router)
 app.include_router(_banned_words_router)
 app.include_router(_account_config_router)
 app.include_router(_settings_transfer_router)
+# In-product help bot (POST /admin/assistant/ask). Under /admin/* so it
+# inherits the share-token gate + account-isolation middleware; chatters
+# may ask (deliberately not in _CHATTER_BLOCKED_ADMIN_PREFIXES) and the
+# handler derives their role server-side.
+app.include_router(_assistant_router)
 # Per-agency LLM keys. Placed before the auth routers because it is
 # session-gated by them: the signed-in owner is the only row it can touch.
 app.include_router(_tenant_keys_router)
@@ -9732,13 +9738,18 @@ def root_redirect():
 
 
 class NoCacheStatic(StaticFiles):
-    """StaticFiles that tells the browser never to hold a copy.
+    """StaticFiles that never lets the browser reuse a copy without asking.
 
     Belt-and-suspenders cache-bust: both hand-written frontends ship as plain
-    files with no content hashing, so a browser that caches them serves ancient
-    JS after a deploy — especially behind Tailscale's funnel, which held onto
-    bundles for hours despite hard-refreshing. These assets are tiny, so never
-    caching them costs nothing.
+    files with no content hashing, so a browser that reuses them blind serves
+    ancient JS after a deploy — especially behind Tailscale's funnel, which
+    held onto bundles for hours despite hard-refreshing.
+
+    The rule is REVALIDATE, not re-download. Blind reuse is what breaks a
+    deploy; keeping a copy and asking "is this still current?" does not. The
+    ask costs one conditional request that answers 304 with no body, and the
+    skins have no client-side routing — every navigation refetches every asset
+    — so the bytes this saves are the common case, not an edge one.
 
     The headers belong ON THE MOUNT. This used to be two near-identical global
     `@app.middleware("http")` hooks, one per prefix, each running for EVERY
@@ -9754,12 +9765,35 @@ class NoCacheStatic(StaticFiles):
     deploy that created the file. So the miss is caught and stamped too.
     """
 
-    _NO_CACHE = "no-store, no-cache, must-revalidate, max-age=0"
+    # `no-cache` is NOT `no-store`: it lets the browser keep a copy but forbids
+    # using it without asking us first. The deploy-safety property is unchanged
+    # — every navigation still reaches this mount, so a redeployed file is
+    # picked up on the next request — but an unchanged file now answers 304 with
+    # no body instead of resending itself. That is the whole win: static_paths'
+    # docstring counts 129 unhashed files across 54 pages, and this skin has no
+    # client-side routing, so EVERY navigation refetched all of them in full.
+    #
+    # Revalidation depends on a validator, which StaticFiles provides: FileResponse
+    # stamps `etag` (and `last-modified`) from the file's stat, and
+    # StaticFiles.is_not_modified answers If-None-Match with a 304 before we ever
+    # see the response — _stamp then applies to that 304 as well.
+    _REVALIDATE = "no-cache, must-revalidate, max-age=0"
+    # Errors keep the stricter policy. A 404 is heuristically cacheable (the
+    # class docstring below explains why that bites), and storing a miss for an
+    # asset that a deploy is about to create buys nothing — there are no bytes
+    # to save on an error body.
+    _NO_STORE = "no-store, no-cache, must-revalidate, max-age=0"
 
     def _stamp(self, resp: Response) -> Response:
-        resp.headers["Cache-Control"] = self._NO_CACHE
-        resp.headers["Pragma"] = "no-cache"
-        resp.headers["Expires"] = "0"
+        ok = resp.status_code in (200, 304)
+        resp.headers["Cache-Control"] = self._REVALIDATE if ok else self._NO_STORE
+        # Pragma/Expires are the HTTP/1.0 spelling of "don't reuse blind"; they
+        # carry no revalidation semantics of their own, so they stay on the
+        # no-store path only. Sending `Expires: 0` alongside `no-cache` would be
+        # redundant at best and is dropped rather than reasoned about per-client.
+        if not ok:
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
         return resp
 
     async def get_response(self, path: str, scope) -> Response:

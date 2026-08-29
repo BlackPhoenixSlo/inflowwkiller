@@ -8,6 +8,7 @@ import TopNav from "@/components/TopNav";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 import { NotificationToaster } from "@/components/NotificationToaster";
 import { MoneyRail } from "@/components/MoneyRail";
+import { AssistantWidget } from "@/components/assistant/AssistantWidget";
 
 import "./globals.css";
 
@@ -156,6 +157,7 @@ export default function RootLayout({
               {children}
               <NotificationToaster />
               <MoneyRail />
+              <AssistantWidget />
             </EmployeePickerGate>
           </AuthGate>
         </Providers>

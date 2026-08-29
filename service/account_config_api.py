@@ -34,7 +34,8 @@ import llm_client
 import media_cotag
 from auth import assert_account_owned
 from automations import rhythm  # tz_offset_for — the ONE clock resolver
-from automations._common import DEFAULT_MODEL  # what a NULL `model` really runs
+from automations._common import (  # what a NULL `model` runs, + the pinnable keys
+    DEFAULT_MODEL, MODEL_PURPOSES, PURPOSE_DEFAULT_MODELS)
 from automations._persona import PERSONA_FACT_FIELDS, PERSONA_FACTS_OPERATOR_ONLY
 from brain_defaults import brain_defaults
 from db.engine import get_session
@@ -51,10 +52,6 @@ router = APIRouter()
 # The 6 time-of-day slots, ordered — must match send_welcome._SLOT_KEYS.
 TIME_SLOTS: tuple[str, ...] = (
     "morning_1", "morning_2", "afternoon_1", "afternoon_2", "evening", "night",
-)
-# Purposes that support a per-purpose model override (model_by_purpose).
-PURPOSES: tuple[str, ...] = (
-    "gen_info", "welcome_chatter_for_info", "send_welcome", "send_followup",
 )
 # Languages the account can be set to. The code is the routing/guard key; the label is
 # for the editor dropdown. Sourced from the language layer so there's one list.
@@ -336,7 +333,24 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         "slots": list(TIME_SLOTS),
         "model_options": _model_options(),
         "effort_options": llm_client.effort_options_by_model(),
-        "purposes": list(PURPOSES),
+        "purposes": list(MODEL_PURPOSES),
+        # What each purpose runs when the operator has pinned NOTHING. Served
+        # because the editor otherwise lies by omission: a purpose in this map
+        # does not inherit the account brain, and a dropdown reading "inherit
+        # default" beside a brain set to GLM, for a route the server holds on
+        # DeepSeek, is the same class of silent drift as the send_welcome /
+        # welcome key mismatch this list was consolidated to end. Absent key =
+        # inherits the brain, exactly as before.
+        #
+        # 🚨 RESOLVED, not raw. `resolve_model` returns DEFAULT_MODEL when a
+        # pinned id has left `llm_client.MODELS` — the retirement its own
+        # comment says it defends against — so serving the map verbatim would
+        # put the dead id in the box and lie a second, quieter way. What the
+        # editor shows is what the next call will run.
+        "purpose_defaults": {
+            p: (m if m in llm_client.MODELS else DEFAULT_MODEL)
+            for p, m in PURPOSE_DEFAULT_MODELS.items()
+        },
         "languages": list(LANGUAGES),
         # The creator-canon field contract, served the same way as slots /
         # purposes / languages above. The editor renders straight off this, so
@@ -549,6 +563,10 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     cap = int(cap_raw)
 
     # model_by_purpose: {purpose: model}; each model validated against MODELS.
+    # The KEY is deliberately not checked against MODEL_PURPOSES: a stored blob
+    # may carry a retired purpose, and dropping it here would silently rewrite
+    # settings this endpoint was only asked to round-trip. That list is what the
+    # editor OFFERS, not what this column may hold.
     mbp_in = cfg.get("model_by_purpose") or {}
     if not isinstance(mbp_in, dict):
         raise HTTPException(422, "model_by_purpose must be an object")

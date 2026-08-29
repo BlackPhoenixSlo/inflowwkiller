@@ -413,6 +413,20 @@ def _decorate_knob(kn: dict[str, Any]) -> dict[str, Any]:
     return {**kn, "widget": widget}
 
 
+# What a rule CREATED for a kind starts with, when its caller sends no payload.
+# Writing the nickname and note onto OnlyFans is what "apply profiles" means to
+# an operator, and what that kind's catalog example already advertises.
+#
+# It lives out here, and is not a knob `default`, for one reason: both `_CATALOG`
+# (spread onto the wire) and a knob default are DISPLAY, and the editor applies
+# defaults when it OPENS a rule as well as when it makes one. Either would let a
+# row created without the key acquire it on the next unrelated save — turning an
+# account's silence into a decision it never made. Only a create reads this.
+_CREATE_PAYLOAD: dict[str, dict[str, Any]] = {
+    "apply_profiles": {"push_to_of": True},
+}
+
+
 def _kind_catalog() -> list[dict[str, Any]]:
     load_automation_plugins()  # ensure every @register has run
     out: list[dict[str, Any]] = []
@@ -739,8 +753,10 @@ async def ensure_kind_rule(
     `name` / `every_seconds` / `steps` are written when given and left ALONE when
     not. A caller that owns the schedule (nudge, make_right) passes it on every
     save; one whose cadence the operator tunes in the rules editor (ai_chatter)
-    passes nothing and keeps it. Defaults on CREATE come from the same catalog
-    the editor offers, so a new row is what picking the kind by hand would give.
+    passes nothing and keeps it. A CREATE takes its name and cadence from the
+    catalog and its payload from `_CREATE_PAYLOAD` — which is NOT the editor's
+    form output, so the two create paths deliberately differ; see that constant.
+    An EXISTING row is never re-seeded with any of it.
 
     Queries `kind_family` — a pre-rename row still carries its retired name, and
     matching only the canonical one would silently create a duplicate beside it.
@@ -770,7 +786,8 @@ async def ensure_kind_rule(
             trigger_json=json.dumps({"every_seconds": int(
                 every_seconds if every_seconds is not None
                 else meta.get("cadence_default_s") or _FALLBACK_EVERY_S)}),
-            steps_json=json.dumps(steps or {}),
+            steps_json=json.dumps(steps if steps is not None
+                                  else _CREATE_PAYLOAD.get(kind, {})),
             is_enabled=True))
         return "created"
 

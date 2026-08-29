@@ -46,7 +46,7 @@ from db.models import (
     CATALOG_IS_SINGLE, AccountAiConfig, CatalogItem,
     ContentOffer, Fan, Message, created_at_text, parse_ts,
 )
-from automations import _ghost, _voice, rhythm, script_packs, starter_catalog
+from automations import _ghost, _sell_signal, _voice, rhythm, script_packs, starter_catalog
 from automations._common import load_voice_blocks
 # The bound on the operator's typing-pace knob. Read from the engine rather than
 # retyped, so the API cannot advertise a maximum the send path would clamp away.
@@ -439,6 +439,16 @@ def _validate_cfg(cfg: dict) -> dict:
     # decides. Named here or the validator drops it silently, as it has twice.
     if "sell_signal_enabled" in cfg:
         out["sell_signal_enabled"] = truthy(cfg["sell_signal_enabled"])
+    # The CODE readers of the same question — "how much?" and "yes" to an offer we
+    # just made (`_sell_signal.wide_ask`). Ships ON with the rest of the seller.
+    if "wide_ask_enabled" in cfg:
+        out["wide_ask_enabled"] = truthy(cfg["wide_ask_enabled"])
+    # …and how often a "yes" to a TEASE is played as a sale (0.33 by ruling).
+    # Clamped by the same helper the engines read it with, so the number stored is
+    # the number that acts — a `33` typed for "33%" becomes 1.0 here rather than
+    # turning the dice into "always" at send time.
+    if "tease_sell_rate" in cfg:
+        out["tease_sell_rate"] = _sell_signal.clamp_rate(cfg["tease_sell_rate"])
     # The rate card is a BASELINE, not a ceiling (operator ruling 2026-08-11).
     # This restores the old hard veto for an account that wants it: never charge
     # more than the attached content is worth.

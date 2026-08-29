@@ -800,6 +800,15 @@ class GateCtx:
     ladder_may_open: bool = True     # rhythm: not within 30min of her bedtime
     fan_pull: bool = False           # HE explicitly asked to buy this turn (content-ask /
                                      # "send it" / named a price) — his own initiation
+    # The caller knows this short message is substantive even though the token bar
+    # cannot see it: he answered an offer WE made ("yes"), or asked what it costs.
+    # Satisfies the low-information bar and NOTHING else — every check below it
+    # still runs, which is the entire reason this is a ctx field and not a lifted
+    # refusal. `low_information` is tested before `declined`, the staleness TTL and
+    # all four ceilings, so a caller that lifted the reason after the fact would
+    # skip them: a burst inside one hour is the OF-session shape those exist to
+    # prevent, and "no thanks" is a sentence that must never sell.
+    inbound_qualifies: bool = False
 
 
 def qualify(ctx: GateCtx, now: datetime) -> tuple[bool, str]:
@@ -825,7 +834,7 @@ def qualify(ctx: GateCtx, now: datetime) -> tuple[bool, str]:
 
     if not ctx.fan_spoke_last:
         return False, "we_spoke_last"        # never stack an offer on our own message
-    if not is_qualifying_inbound(ctx.last_inbound_text):
+    if not (ctx.inbound_qualifies or is_qualifying_inbound(ctx.last_inbound_text)):
         return False, "low_information"      # "k" / "ok" / "lol" is not a buying signal
     if classify_decline(ctx.last_inbound_text):
         return False, "declined"

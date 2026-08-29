@@ -29,7 +29,7 @@ Fastt.ready(async () => {
 
   const out = await Fastt.get('/admin/account-config');
   let stored = out.config;               // last server-confirmed brain
-  const purposes = out.purposes || [];   // sanity reference; selects carry data-purpose
+  const purposes = out.purposes || [];   // the server's key list — load-bearing, see pSelects
 
   // ---- language: the shipped es/sl packs had no control at all -------------
   // GET already returns languages:[{code,label}] alongside config.language, and
@@ -146,7 +146,17 @@ Fastt.ready(async () => {
   }
   sModel.addEventListener('change', () => syncEffort(''));
 
-  const pSelects = $$('select[data-purpose]');
+  // A hand-typed `data-purpose` is the copy that drifts. The server owns the key
+  // list (MODEL_PURPOSES) and the lanes read those exact strings, so a field
+  // naming a key the server no longer offers would go on silently writing a dead
+  // override — which is precisely how the "send_welcome"/"send_followup" fields
+  // sat dead for months. Hide those instead of letting them lie.
+  const pSelects = $$('select[data-purpose]').filter((sel) => {
+    if (purposes.indexOf(sel.dataset.purpose) >= 0) return true;
+    const field = sel.closest('.fx-field');
+    if (field) field.style.display = 'none';
+    return false;
+  });
   pSelects.forEach((sel) => {
     sel.innerHTML = '<option value="">Inherit default</option>' +
       (out.model_options || []).map((m) =>

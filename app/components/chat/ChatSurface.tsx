@@ -18,8 +18,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn, decodeHtmlEntities } from "@/lib/utils";
 import { openGroupTab } from "@/lib/groupChannel";
 
-import { useChatMessages } from "@/hooks/useChatMessages";
-import { mergeSeedIntoMessages, useChatMessagesLocal } from "@/hooks/useChatMessagesLocal";
+import { messagesPaintKey, useChatMessages } from "@/hooks/useChatMessages";
+import { fetchOlderSeed, mergeSeedIntoMessages, useChatMessagesLocal } from "@/hooks/useChatMessagesLocal";
 import { useChatAttribution } from "@/hooks/useChatAttribution";
 import { useChatImageDesc } from "@/hooks/useChatImageDesc";
 import { useSendMessage } from "@/hooks/useSendMessage";
@@ -42,6 +42,7 @@ import {
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { proxyImage, relay, type OFChatItem, type OFMessage, type OFUserMini } from "@/lib/relay";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
+import { perfPaintOnce } from "@/lib/perfLog";
 
 import { MessageList } from "./MessageList";
 import { Composer, type ComposerApi } from "./Composer";
@@ -274,6 +275,56 @@ export function ChatSurface({
       (prev) => mergeSeedIntoMessages(prev, seedQ.rows),
     );
   }, [seedQ.rows, accountId, fanId, qc]);
+
+  // Older pages get the head page's treatment: scrolling up used to sit on
+  // a live OF round-trip (p50 ~1.5s) with nothing on screen, even though the
+  // same history is already in the local mirror and answers in ~1ms. Fire
+  // both, paint whichever lands first, let OF reconcile.
+  //
+  // The seed writes through mergeSeedIntoMessages — the SAME merge the head
+  // seed uses — so it can only ADD rows the cache is missing and orders them
+  // by created_at. What it deliberately does NOT touch is `oldestCursorRef`
+  // or `hasOlder`: both stay owned by loadOlder's OF response, so a mirror
+  // that runs deeper than OF's window can never move the cursor into a gap
+  // or claim there is more history than OF will actually serve. A mirror
+  // miss (or error) returns [] and the user simply waits on OF, as before.
+  const loadOlderSeeded = useCallback(async () => {
+    // The hook drops re-entrant calls; don't pay for a second seed fetch
+    // that the merge would only dedupe away.
+    if (handle.isLoadingOlder) return handle.loadOlder();
+    // Read the cursor BEFORE loadOlder runs — it lowers the cursor when OF
+    // answers, and the seed must page from the same boundary OF does.
+    const cursor = handle.olderCursor();
+    if (cursor != null && accountId && fanId != null) {
+      void fetchOlderSeed(accountId, fanId, cursor).then((rows) => {
+        if (rows.length === 0) return;
+        qc.setQueryData<OFMessage[]>(
+          ["messages", accountId, fanId],
+          (prev) => mergeSeedIntoMessages(prev, rows),
+        );
+      });
+    }
+    return handle.loadOlder();
+  }, [handle, accountId, fanId, qc]);
+
+  // `painted` — the first commit that puts real bubbles on screen. This is
+  // the number the thread should be judged on: `delivered` measures OF's
+  // round-trip, but the seed above means the user is usually reading history
+  // long before it lands. `ofSettled` separates the two populations in the
+  // log (false = the seed carried this paint).
+  //
+  // Fires from an effect rather than a ref callback on the first bubble
+  // because MessageList commits in the same pass as this component; the
+  // extra prop would buy nothing but coupling.
+  useEffect(() => {
+    if (!accountId || fanId == null) return;
+    if ((handle.data?.length ?? 0) === 0) return;
+    perfPaintOnce(messagesPaintKey(accountId, fanId), "chat.messages", {
+      count: handle.data?.length ?? 0,
+      ofSettled: handle.isSuccess,
+      phase: "initial",
+    });
+  }, [accountId, fanId, handle.data, handle.isSuccess]);
 
   // Prefetch the fan row so opening the drawer is instant. The hook
   // is cheap (one indexed sqlite lookup) and the data drives the
@@ -703,7 +754,7 @@ export function ChatSurface({
       anchorRef.current = key;               // give up quietly, stay put
       return;
     }
-    void handle.loadOlder();
+    void loadOlderSeeded();
   }, [accountId, fanId, handle.data, handle.isLoading, handle.hasOlder,
       handle.isLoadingOlder]);   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -965,7 +1016,7 @@ export function ChatSurface({
           ownerUserId={ownerUserId}
           hasOlder={handle.hasOlder}
           loadingOlder={handle.isLoadingOlder}
-          onLoadOlder={() => handle.loadOlder()}
+          onLoadOlder={() => loadOlderSeeded()}
           onPick={jumpToMessage}
           onClose={() => setSearchOpen(false)}
         />
@@ -995,7 +1046,7 @@ export function ChatSurface({
         error={handle.error as Error | null}
         hasOlder={handle.hasOlder}
         loadingOlder={handle.isLoadingOlder}
-        onLoadOlder={() => handle.loadOlder()}
+        onLoadOlder={() => loadOlderSeeded()}
         onRetry={sender.retry}
         onCancelScheduled={(jobId) => {
           if (accountId && fanId != null) {

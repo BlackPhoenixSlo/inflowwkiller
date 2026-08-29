@@ -118,6 +118,18 @@ REFUSE_LANGUAGE = "unsupported_language"
 REFUSE_NO_PRICE = pack_pricing.REFUSE_NO_PRICE
 REFUSE_RESOLVER = "resolver_refused"
 
+# "This account's SHELF cannot serve this ask" — missing, spent/filtered thin,
+# failing its own audit, or unpriceable. None of these is a verdict about the
+# fan or the account's permission to sell, so `plan_on_ask` answers them from
+# the whole vault instead of returning silence (the Footworm dead end,
+# 2026-08-28: `feet` is the ONE curated category, so on an account that never
+# built the shelf a perfectly-read feet ask died `no_shelf` while the vault
+# held 524 matchable videos). Deliberately NOT `REFUSE_DISABLED` /
+# `REFUSE_LANGUAGE`: those are brakes, and the vault lane brakes the same way.
+_SHELF_CANNOT_SERVE = frozenset({
+    REFUSE_NO_SHELF, REFUSE_TOO_THIN, REFUSE_AUDIT, REFUSE_NO_PRICE,
+})
+
 
 @dataclass(frozen=True)
 class PackPlan:
@@ -945,6 +957,13 @@ async def plan_on_ask(account_id: str, fan_id: int, *,
         d, refused = await plan_pack_delivery(
             account_id, fan_id, category, LADDER_RUNG, cfg=cfg,
             company=contract.company, media_kind=contract.media_kind)
+    # The shelf cannot serve him, but he still asked: go to the whole vault,
+    # same as a subject no category maps. Brakes never fall through.
+    if d is None and refused.get("reason") in _SHELF_CANNOT_SERVE:
+        log.info("pack shelf cannot serve account=%s fan=%s %s: %s — "
+                 "falling through to the vault-wide ask",
+                 account_id, fan_id, category, refused.get("reason"))
+        return await plan_ask_delivery(account_id, fan_id, contract, cfg=cfg)
     return d, refused
 
 

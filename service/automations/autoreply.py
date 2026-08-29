@@ -140,7 +140,8 @@ async def _load_config(account_id: str) -> dict | None:
 
 
 def _sell_turn(last_in: str, at: datetime | None, lang: str, *,
-               model_says_ask: bool = False) -> sell_lane.Turn:
+               model_says_ask: bool = False,
+               wide_ask: str | None = None) -> sell_lane.Turn:
     """His side of this turn, as the seller reads it.
 
     ONE place, because `run` now has TWO sale moments — the regex one before the
@@ -150,9 +151,11 @@ def _sell_turn(last_in: str, at: datetime | None, lang: str, *,
 
     `fan_spoke_last` / `our_last_at` are left at their defaults on purpose, unlike
     the closer's: every autoreply candidate IS a fan waiting on an unanswered
-    inbound (that is the trigger), so the default `True` is not an assumption here."""
+    inbound (that is the trigger), so the default `True` is not an assumption here.
+    (`our_last_at` staying unset is also why the widened readers key on the TEXT of
+    our last message and never on its age — see `_sell_signal`.)"""
     return sell_lane.Turn(text=last_in, at=at, lang=lang,
-                          model_says_ask=model_says_ask)
+                          model_says_ask=model_says_ask, wide_ask=wide_ask)
 
 
 def _in_quiet_hours(cfg: dict, now: datetime) -> bool:
@@ -674,6 +677,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # money surfaces can never both fire on one turn.
             content_ask = ((not ai_chatter_owns)
                            and _language.is_content_ask(last_in, fan_lang))
+            # 🚨 THE VAULT TRIGGER IS ITS OWN VARIABLE, and `content_ask` must stay
+            # narrow. `content_ask` also reaches `_build_messages`, where it swaps
+            # the whole system prompt for the tip-ask sales one — so folding "how
+            # much?" or a bare "yes" into it would make an agreement fire a TIP
+            # pitch, which is the regression the widened readers exist to avoid.
+            # Same split ai_chatter keeps between `content_ask` and `vault_ask`.
+            _wide = (None if ai_chatter_owns else
+                     lane.wide_ask(last_in, _sell_signal.last_outbound(history),
+                                   lang=fan_lang, fan_id=fid))
+            vault_ask = content_ask or bool(_wide)
 
             if client is None:
                 try:
@@ -696,8 +709,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # he typed, not that plus "so what are u up to") and COUNTS as a send:
             # `sent` is what `max_sends` bounds, so a sale that skipped it would let
             # one run ship its whole reply budget plus unbounded priced PPVs.
-            if content_ask and await lane.sell(
-                    client, fid, _sell_turn(last_in, inbound_at, fan_lang),
+            if vault_ask and await lane.sell(
+                    client, fid, _sell_turn(last_in, inbound_at, fan_lang,
+                                            wide_ask=_wide),
                     fan=f, dry_run=dry_run):
                 sent += 1
                 sent_ok = True   # a priced send IS a send: keep the lease to TTL
@@ -749,16 +763,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # `record`, not `decide`: the OR is not what acts here (see below), and a
             # `decide` whose verdict is thrown away reads like a bug.
             if signal_on:
-                _sell_signal.record(regex_says=content_ask, model_says=_model_ask,
+                _sell_signal.record(regex_says=vault_ask, model_says=_model_ask,
                                     account_id=account_id, fan_id=fid,
-                                    engine=_PURPOSE)
+                                    engine=_PURPOSE, via=_wide)
             # …and what acts is the model-ONLY case, which is the recall this exists
-            # for. `content_ask` is not an OR here but a BAR: the regex path already
-            # took its shot above and `continue`d on success, so reaching this line
-            # with it True means that sale was REFUSED (caps, no matching media) —
-            # and a refused ask must not be re-attempted on the same inbound.
-            # `sell_lane` memoes and counts it exactly once.
-            model_added_ask = signal_on and _model_ask and not content_ask
+            # for. `vault_ask` is not an OR here but a BAR: the deterministic path
+            # already took its shot above and `continue`d on success, so reaching
+            # this line with it True means that sale was REFUSED (caps, no matching
+            # media) — and a refused ask must not be re-attempted on the same
+            # inbound. `sell_lane` memoes and counts it exactly once. It reads
+            # `vault_ask`, NOT `content_ask`: since the widened readers can take
+            # that first shot too, barring on the narrow one would re-attempt every
+            # refused "how much?" seconds later.
+            model_added_ask = signal_on and _model_ask and not vault_ask
             # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still leaked
             # a number / off-platform handle / meetup arrangement, swap for a deflection.
             # The shared send chokepoint (_outbound): off-platform guard, then the
@@ -865,6 +882,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # mean splitting the dry-run early-exit around the whole send block,
                 # which buys a diagnostic number at the price of the live path's
                 # shape. The live counters (`sold` / `sell_refused`) are unaffected.
+                # No `wide_ask` here, and it is not an omission: this branch runs
+                # only when `vault_ask` was False, which already means no widened
+                # reader fired on this turn.
                 if model_added_ask and await lane.sell(
                         client, fid,
                         _sell_turn(last_in, inbound_at, fan_lang,

@@ -305,6 +305,10 @@ export interface CaptionBoxSetResult {
   cost_millicents: number;
   /** How many house lines this PPV's lane actually has. 0 → bare hooks only. */
   pool_lines?: number;
+  /** Non-empty when the account will stack a SECOND written hook above these
+   *  boxes at send time (`ai_caption_at_send`). Advice, never a refusal — the
+   *  boxes are still returned and are good copy the moment that switch is off. */
+  warning?: string;
 }
 
 export interface CaptionBoxSetArgs {
@@ -313,9 +317,9 @@ export interface CaptionBoxSetArgs {
   /** The PPV's lane. Its house lines become the frames. */
   captionPoolKey: string;
   boxes: number;
-  /** How many boxes carry the lane line. This IS the "X% of sends" number. */
-  framed: number;
-  /** How many of the framed boxes put the line ABOVE the hook. */
+  /** How many boxes put the lane line ABOVE the hook. The rest sit below it.
+   *  There is no "how many carry the line" — every box does, because the send
+   *  picks one at random and a box without it has no unlock ask. */
   frameTop: number;
   styles: string[];
 }
@@ -325,17 +329,17 @@ export interface CaptionBoxSetArgs {
  *
  *  Suggest-only. The set is appended to the editor and the operator still
  *  presses Save. The sender already picks one box at random per send — which is
- *  what turns the set into a rotation, and what makes "8 framed of 10" mean
- *  "80% of sends" without a single line of send-path code. */
+ *  what turns the set into a rotation, and what makes every box carrying the
+ *  lane line the only way every SEND carries it. */
 export function useCaptionBoxSet(accountId: string | null) {
   return useMutation<CaptionBoxSetResult, Error, CaptionBoxSetArgs>({
-    mutationFn: ({ mediaIds, captionPoolKey, boxes, framed, frameTop, styles }) =>
+    mutationFn: ({ mediaIds, captionPoolKey, boxes, frameTop, styles }) =>
       relay.post(`/admin/ppv-library-config/caption-box-set`, {
         account_id: accountId,
         media_ids: mediaIds,
         compose: {
           caption_pool_key: captionPoolKey,
-          boxes, framed, frame_top: frameTop, styles,
+          boxes, frame_top: frameTop, styles,
         },
       }),
   });

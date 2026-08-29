@@ -420,7 +420,13 @@ async def caption_for(account_id: str, fan_id: int, media_ids: list[int], *,
         style = style_for(f"{account_id}:{fan_id}:{item.media_id}",
                           dm.CAPTION_STYLES)
     res = await dm._copy_call(
-        account_id, item, dm.caption_style_prompt(style, voice), model,
+        # audience="1to1" drops `_CAPTION_MASS_AUDIENCE` — the mass lane's rule
+        # that the writer knows nothing about who is reading. Here it does: the
+        # body suffix below hands it his name, his kink and what he has spent,
+        # and `_maybe_discount_resend` deliberately writes to what he already
+        # saw. Leaving that clause in would forbid the whole point of this lane.
+        account_id, item, dm.caption_style_prompt(style, voice, audience="1to1"),
+        model,
         body_extra=body_suffix(
             await _him_context(account_id, fan_id, spend_facts),
             price_cents=price_cents, was_cents=was_cents),

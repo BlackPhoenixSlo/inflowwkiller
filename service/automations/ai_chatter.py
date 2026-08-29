@@ -822,6 +822,24 @@ _DEFAULTS: dict = {
     # been the only reader and every gap in it was found in production by a fan who
     # asked and got banter.
     "sell_signal_enabled": True,
+    # ── The WIDENED readers (`_sell_signal.wide_ask`) ─────────────────────────
+    # The two turns a sale is won on that no ask regex ever saw: "how much?", and
+    # "yes" to an offer she just made. ON by default, with the rest of the seller:
+    # replayed over 7,710 live inbound messages the price reader fires 4 times and
+    # all 4 are real fans asking a real price, so there is nothing to stage.
+    "wide_ask_enabled": True,
+    # …and how often a "yes" to a TEASE — "the rest is better", "u gotta earn that
+    # one" — is taken as a sale, rather than a "yes" to a plain offer question.
+    # 0.33 by operator ruling: on this roster teases are 3.37% of outbound against
+    # 0.33% for offer questions, so this is where the volume is AND where the
+    # ambiguity is (a "yes" mid-sext is not always a purchase). Playing a third of
+    # them is the deliberate middle. 0 switches the tease reader off and leaves the
+    # other two; 1 takes every tease-yes.
+    #
+    # The roll is DETERMINISTIC per turn (see `_sell_signal._tease_rolls`) — a
+    # fresh roll each tick would let a "yes" that lost the dice win it two minutes
+    # later and answer a sentence that has scrolled away.
+    "tease_sell_rate": _sell_signal.TEASE_SELL_RATE,
     # force_ask: the OFFER is emitted by the MODEL (an offer marker it may or may not
     # write). So a fan the gate has already cleared, with a priced manifest in front
     # of the model, still gets pure chat whenever the model declines to sell — which
@@ -4167,15 +4185,19 @@ def _recent_realized_raw(rst: RhythmState | None) -> list[dict]:
 # welcome / followup / mass — a cross-automation, UI-invisible blackout. A decline
 # is LADDER-scoped (ladder_state.offers_paused_until / status) and nothing else.
 
-def _sell_turn(c: "_Cand", lang: str, *, model_says_ask: bool = False) -> sell_lane.Turn:
+def _sell_turn(c: "_Cand", lang: str, *, model_says_ask: bool = False,
+               wide_ask: str | None = None) -> sell_lane.Turn:
     """His side of this turn, as the seller reads it. One place, so the closer and
     the seam can never disagree about which message (or which language) is being
     judged — nor about whether the MODEL also read an ask in it (`_sell_signal`),
-    which the lane's own `is_ask` ORs with its regex."""
+    which the lane's own `is_ask` ORs with its regex.
+
+    `wide_ask` is the same module's CODE readers ("how much?" / "yes" to our own
+    offer), decided at the call site and carried, not re-derived — see the field."""
     return sell_lane.Turn(text=c.last_body, at=c.last_in_at,
                           our_last_at=c.last_out_at,
                           fan_spoke_last=(c.last_dir == "in"), lang=lang,
-                          model_says_ask=model_says_ask)
+                          model_says_ask=model_says_ask, wide_ask=wide_ask)
 
 
 async def _load_ladders(account_id: str, fan_ids) -> dict[int, LadderState]:
@@ -7146,7 +7168,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # that coupling was just removed, and on an empty shelf the lane would
             # again be dead however plainly he asked. The catalog surfaces keep
             # `content_ask`; the vault lane gets the fan.
-            vault_ask = _language.is_content_ask(c.last_body, fan_lang)
+            # 🔔 …plus the two ways he buys without asking: "how much?", and "yes"
+            # to an offer WE just made. `last_in_text` and not `last_body`, because
+            # the latter carries the `[he sent: …]` vision tag and a full-message
+            # affirmation match must see his own words alone.
+            _wide = lane.wide_ask(c.last_in_text,
+                                  _sell_signal.last_outbound(c.messages),
+                                  lang=fan_lang, fan_id=fan_id)
+            vault_ask = _language.is_content_ask(c.last_body, fan_lang) or bool(_wide)
             # Lean-in pivot: he's getting physical/horny (ESCALATION) with something
             # to sell and HAS chatted a bit — ride it as an offer instead of teasing
             # again. An explicit content-ask already owns the pivot, so don't
@@ -7319,7 +7348,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if signal_on:
                 vault_ask = _sell_signal.decide(
                     regex_says=vault_ask, model_says=_model_ask,
-                    account_id=account_id, fan_id=fan_id, engine=_PURPOSE)
+                    account_id=account_id, fan_id=fan_id, engine=_PURPOSE,
+                    via=_wide)
 
             # A rating with no number in it is not a rating — re-ask once. Placed AFTER
             # the marker parse on purpose; see _scored_or_re_asked for why.
@@ -7500,7 +7530,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # it a model-only ask is refused `R_NOT_ARMED` inside the gate
                     # however plainly `vault_ask` said yes out here.
                     fan_id, _sell_turn(c, fan_lang,
-                                       model_says_ask=signal_on and _model_ask),
+                                       model_says_ask=signal_on and _model_ask,
+                                       wide_ask=_wide),
                     fan=f,
                     blocked=seller_off,
                     counters=sell_lane.AskCounters(

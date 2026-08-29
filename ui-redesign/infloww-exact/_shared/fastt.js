@@ -137,21 +137,62 @@
   // unchanged: /admin/* still gets the account_id param, every call still gets
   // the X-Account-Id header. Without this, those pages hand-roll noAccount:true
   // plus their own header, which is this same rule copied into the page.
+  // `scope` names the POPULATION a read is about, where `noAccount` only named a
+  // mechanism ("don't send the id"). Three values:
+  //   "creator" (default) — the globally-selected creator. Unchanged behaviour.
+  //   "agency"            — every creator the SIGNED-IN PRINCIPAL owns. Sends
+  //                         neither the account_id param nor the X-Account-Id
+  //                         header, so the server's clamp_account_filter(None)
+  //                         resolves the roster from the session.
+  //   an unknown string   — THROWS. See the note below; this is load-bearing.
+  //
+  // ⚠️ SECURITY: "agency" is a NAME, not a boundary. The real gate is the
+  // relay's _account_isolation_middleware, which 401s anonymous /admin/*. Under
+  // ALLOW_ANONYMOUS_ADMIN=1 clamp_account_filter returns None — no WHERE clause,
+  // every tenant in the DB. Never exercise agency reads under that flag against
+  // a multi-tenant database.
+  //
+  // ⚠️ WHY UNKNOWN SCOPES THROW: a client that predates this option would drop
+  // `scope` on the floor (JS ignores unknown keys), inject the selected
+  // account_id anyway, and render a per-creator number under an "all creators"
+  // label — with no console error and no visual tell. Pages that depend on
+  // agency scope must therefore ALSO check `Fastt.supportsScope("agency")` at
+  // boot and refuse to render money if it is missing. Failing loud is the whole
+  // point; a silent wrong number is worse than a blank card.
+  const SCOPES = ["creator", "agency"];
+  function supportsScope(name) { return SCOPES.indexOf(name) !== -1; }
+
   async function api(path, opts = {}) {
     const { method = "GET", body, params, headers = {}, raw = false,
-            noAccount = false, acct } = opts;
+            noAccount = false, acct, scope, priority } = opts;
+    if (scope !== undefined && !supportsScope(scope)) {
+      throw new Error(
+        'Fastt.api: unknown scope "' + scope + '" (expected ' + SCOPES.join(" | ") + ")",
+      );
+    }
+    // "agency" suppresses the param AND the header, exactly as noAccount does.
+    const anon = noAccount || scope === "agency";
     const aid = (acct === undefined || acct === null || acct === "")
       ? state.accountId : String(acct);
     const url = new URL(path, location.origin);
     if (params) for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
     }
-    if (!noAccount && aid && url.pathname.startsWith("/admin/")
+    if (!anon && aid && url.pathname.startsWith("/admin/")
         && !url.searchParams.has("account_id")) {
       url.searchParams.set("account_id", aid);
     }
     const h = { ...headers };
-    if (!noAccount && aid) h["X-Account-Id"] = aid;
+    if (!anon && aid) h["X-Account-Id"] = aid;
+    // ⚠️ PRIORITY IS A DEMOTION, NOT A BOOST. The relay runs a per-account OF
+    // lane (service/server.py:1362): `total` = 5 concurrent calls, of which a
+    // `background` caller must ALSO hold one of 2 sub-cap slots. So user work
+    // always keeps >= 3 reserved slots and jumps the queue ahead of anything
+    // tagged background. The server default for a missing/any-other header is
+    // "user" (server.py:_current_priority), so ONLY the demotion travels — and
+    // tagging a call the operator is waiting on is the one way to make this
+    // header hurt. Reserve it for bulk enrichment and decoration.
+    if (priority === "background") h["X-Priority"] = "background";
     let payload;
     if (body !== undefined) {
       h["Content-Type"] = "application/json";
@@ -277,6 +318,31 @@
     const b = document.createElement("span");
     b.className = cls; b.textContent = label;
     el.appendChild(b);
+  }
+
+  /** Badge that REPLACES whatever badge the element already wears.
+   *
+   *  `liveBadge`/`staticBadge` above deliberately no-op when any badge is
+   *  already present, which makes a card's badge permanently wrong in both
+   *  directions once state changes: succeed-then-fail leaves a green LIVE over
+   *  an "unavailable" card, and fail-then-succeed leaves a grey failure note
+   *  over live data.
+   *
+   *  This is a SEPARATE function rather than a fix to `_badge` on purpose.
+   *  Eight pages call both badge kinds on the same element from mutually
+   *  exclusive branches; they would all be improved by replace semantics, but
+   *  they are not covered by tests and `outreach-broadcast.js` badges once at
+   *  boot and again at the end of a load. Changing the shared helper would put
+   *  55 untested pages in the blast radius of one page's bug. Opt in per page;
+   *  migrating the rest is its own change.
+   */
+  function setBadge(el, kind, label) {
+    if (!el) return;
+    injectCss();
+    const old = el.querySelector(":scope > .ft-live, :scope > .ft-static");
+    if (old) old.remove();
+    _badge(el, kind === "live" ? "ft-live" : "ft-static",
+           label || (kind === "live" ? "LIVE" : "STATIC DEMO"));
   }
 
   // ── sign-in modal (friend auth) ──────────────────────────────
@@ -706,6 +772,36 @@
     } catch (e) { /* leave the baked value rather than error */ }
   }
 
+  /** Help center — the skin ships this sidebar link DEAD (`href="#"`, all 52
+   *  pages that carry it), so wire it to the help that exists.
+   *
+   *  NOT a port of the "?" dock. The bot is closed-book over a 1,900-line
+   *  manual whose 113 click paths are written in the NORMAL view's nav words —
+   *  42 say "Automations →", 10 "Setup →", 8 "Stuff →", none of which
+   *  exist here; the 27 under "Settings"/"Growth" resolve to pages with
+   *  different tabs, which is the worse failure because it looks right. A bot
+   *  mounted here would answer in coordinates this view does not have. So the
+   *  honest wiring is a HANDOFF, the same one `mountViewSwitch` already offers.
+   *
+   *  The click also sets the dock's own persisted open bit (one origin serves
+   *  both views) so the panel is open on arrival — landing on /inbox next to a
+   *  collapsed 9px bubble is a link that technically worked and practically
+   *  did not. Key mirrors `OPEN_KEY` in app/components/assistant/AssistantWidget.tsx. */
+  const ASSISTANT_OPEN_KEY = "chatterly:assistant_open";
+  function mountHelpLink() {
+    for (const a of $$(".sbfoot a.nav-item")) {
+      const lbl = $(".lbl", a);
+      if (!lbl || lbl.textContent.trim() !== "Help center") continue;
+      // Only ever adopt the dead one — a real href here is someone's later work.
+      if (a.getAttribute("href") !== "#") continue;
+      a.setAttribute("href", "/inbox");
+      a.title = "Ask the help bot — opens the ? panel in the normal view";
+      a.addEventListener("click", () => {
+        try { localStorage.setItem(ASSISTANT_OPEN_KEY, "1"); } catch (e) { /* private mode */ }
+      });
+    }
+  }
+
   async function boot() {
     injectCss();
     await loadAccounts();
@@ -716,6 +812,7 @@
     mountViewSwitch();
     mountRailToggle();
     mountSfwToggle();
+    mountHelpLink();
     if (!state.accountId) noAccountBanner();
     for (const fn of readyFns) {
       try { await fn(); } catch (e) { oops(e); }
@@ -734,6 +831,7 @@
     api, get, post, put, patch, del, ApiError,
     account, accountRow, setAccount, accounts: () => state.accounts, hasAccount,
     rule, rulesByKind, upsertRule, ruleStats,
-    toast, saved, oops, liveBadge, staticBadge, signInModal, sse, ready,
+    toast, saved, oops, liveBadge, staticBadge, setBadge, supportsScope,
+    signInModal, sse, ready,
   };
 })();

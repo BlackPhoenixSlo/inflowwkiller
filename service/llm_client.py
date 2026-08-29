@@ -61,7 +61,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import tenant_keys
 from db.engine import get_session
 from db.models import AccountAiConfig, GrokCall, GrokDailyCost
-from llm_providers import LLMProvider, PROVIDERS, house_key
+from llm_providers import (
+    LLMProvider, PROVIDERS, fallback_key, house_key)
 
 log = logging.getLogger("of-relay.llm_client")
 
@@ -256,7 +257,8 @@ async def _account_effort(account_id: str, mdl: LLMModel) -> str:
     return saved
 
 
-async def _tenant_api_key(account_id: str, prov: LLMProvider) -> str:
+async def _tenant_api_key(account_id: str, prov: LLMProvider,
+                          purpose: str = "") -> str:
     """The credential THIS account's call must bill.
 
     One agency = one key set: the owner of `account_id` (a `users` row) supplies
@@ -267,12 +269,26 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider) -> str:
     across, and refusing those would take the deployment's own maintenance
     calls down with them.
 
-    Everything else FAILS CLOSED. An owner that has not pasted a key for this
-    provider gets an error, never a silent fall-through to the house key: a
-    generic `or house_key` turns every configuration and ownership defect into a
-    successful cross-tenant request billed to the deployment owner, which is
-    both the invariant this function exists to hold and the only alarm that
-    would ever have reported it broken.
+    Everything else FAILS CLOSED, with ONE named exception. An owner that has not
+    pasted a key for this provider gets an error, never a silent fall-through to
+    the house key: a generic `or house_key` turns every configuration and
+    ownership defect into a successful cross-tenant request billed to the
+    deployment owner, which is both the invariant this function exists to hold
+    and the only alarm that would ever have reported it broken.
+
+    THE EXCEPTION is `llm_providers._FALLBACK_KEY_ENVS`, one row per deliberate
+    hole, today holding only the in-product help assistant on DeepSeek. It is
+    not a widening of the rule above: a different credential entirely, for a
+    route that sends no fan anything, because "where do I paste my API key?" is
+    the question the fail-closed gate makes unanswerable exactly when it is
+    asked. `purpose` selects a row, it does not authorize one — the map decides,
+    so a caller inventing a purpose string finds no row. Empty purpose, unknown
+    pair, or unset value → the old behaviour, byte for byte.
+
+    ⚠️ A fallback call still reserves against and records under `account_id`:
+    the cap that bounds it is the account's, and `grok_calls` has no column for
+    who paid. The log line at the fall-through is the only place the two are
+    told apart today.
     """
     owners = await tenant_keys.owners_of(account_id)
     if len(owners) > 1:
@@ -301,6 +317,16 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider) -> str:
     owner = owners[0]
     key = await tenant_keys.get_key(owner, prov.name)
     if not key:
+        # The deployment's own credential for this purpose, if policy grants one
+        # — "" for every purpose that does not, which is all of them but the
+        # help bot. No feature name appears here on purpose: the policy is one
+        # readable map in `llm_providers`, not an `if` in the billing path.
+        shared = fallback_key(purpose, prov.name)
+        if shared:
+            log.info("fallback_key_used purpose=%s provider=%s account=%s "
+                     "owner=%s — billed to THIS DEPLOYMENT, not the agency",
+                     purpose, prov.name, account_id, owner)
+            return shared
         # The one log line this feature needs: an agency's models can be split
         # across providers (`model_by_purpose` is per account AND per purpose),
         # so "they brought a DeepSeek key" does not mean every one of their
@@ -773,7 +799,7 @@ async def chat(
     # provider would reject.
     stored_effort = "" if reasoning_effort else await _account_effort(account_id, mdl)
     effort = _resolve_effort(mdl, reasoning_effort, stored=stored_effort)
-    api_key = await _tenant_api_key(account_id, prov)
+    api_key = await _tenant_api_key(account_id, prov, purpose)
 
     url = prov.base_url.rstrip("/") + "/chat/completions"
     endpoint = httpx.URL(url).path  # "/v1/chat/completions" (grok) | "/chat/completions" (deepseek)

@@ -115,7 +115,11 @@ _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 # came back capitalised and em-dashed — ad copy, not her — while `house` and
 # `detail` stayed in voice. The examples are what hold the register, so every
 # lane gets them (and see the module note: an example beats the rule beside it).
-_CAPTION_REGISTER = (
+# Split in two so the mass lane can splice its own clause BETWEEN them without a
+# second spelling of either half — the examples are the strongest signal here, so
+# anything that has to be obeyed goes above them, not after. `_CAPTION_REGISTER`
+# below is the two halves joined, and is what the 1:1 lane reads.
+_CAPTION_GROUND_TRUTH = (
     # The ground-truth line comes FIRST and names the failure mode, because the
     # examples below are the strongest signal in this prompt and they carry
     # concrete nouns. Live draw 2026-08-23 on a BLACK lace set returned "red set
@@ -126,10 +130,37 @@ _CAPTION_REGISTER = (
     # Selling a fan a red set that is not in the file is a refund, not a typo.
     "GROUND TRUTH: never name a colour, garment, place, body part or act that is\n"
     "not in the facts above. If the facts do not say it, you may not write it.\n"
+    # The nouns were only half of it. The facts carry no CLOCK — see the
+    # `project_prompt_clock_all_engines` finding, which is true of every engine
+    # here — so "tomorrow i lose it" (live, 2026-08-29, on a $3.99 send), "just
+    # shot this" and "only up for an hour" were all legal output from a rule that
+    # bans inventing a garment. A deadline nothing enforces is worse than a
+    # colour that is wrong: it trains a fan to read every urgency line as noise.
+    # True of the 1:1 lane too — that one has no clock either.
+    "You do not know WHEN this was filmed, whether it expires, or whether it is\n"
+    "leaving. Never claim a time, a deadline or a limited window.\n"
+)
+
+_CAPTION_EXAMPLES = (
     "Match the register of these (adapt to the facts, never copy them):\n"
     '  "couldnt keep the red set on for long"\n'
     '  "you caught me in the tub... come see"\n'
 )
+
+# MASS ONLY, and it is spliced by `caption_style_prompt(audience="mass")` — never
+# folded into `_CAPTION_REGISTER`, because it is FALSE on the 1:1 lane. There the
+# line goes to one man whose name, kink and notes `_ppv_caption.body_suffix`
+# deliberately hands the model under `_STEER_RULE`, and the discount resend
+# deliberately claims the shared history ("he already saw this at $X"). On a mass
+# send there is no "him": "u asked for this" is false for ~every recipient of a
+# fan-out that reaches hundreds at once.
+_CAPTION_MASS_AUDIENCE = (
+    "AUDIENCE: this one line goes to hundreds of people at once. You know nothing\n"
+    "about whoever reads it. Never claim what he asked for, what he already has,\n"
+    "or anything the two of you have done before.\n"
+)
+
+_CAPTION_REGISTER = _CAPTION_GROUND_TRUTH + _CAPTION_EXAMPLES
 
 # Ordered. `_compose_boxes` cycles this tuple, so at the default 10 boxes the
 # mix lands 3 detail / 3 house / 2 blunt / 2 question — the most grounded style
@@ -195,19 +226,31 @@ async def caption_model(account_id: str) -> str:
                           fallback="deepseek-v4-flash")
 
 
-def caption_style_prompt(style: str, voice: str = "her") -> str:
+def caption_style_prompt(style: str, voice: str = "her", *,
+                         audience: str = "mass") -> str:
     """System prompt for one caption style, in the account's voice lane.
 
     Unknown style falls back to `detail` rather than raising: this is reached
     from an operator button, and a stale style name in a saved UI preference
     must not 500 the whole set.
+
+    `audience` is "mass" (the box-set button and `send_time_hook`) or anything
+    else for a 1:1 thread, and it decides ONE thing: whether
+    `_CAPTION_MASS_AUDIENCE` is spliced in. It defaults to the strict lane on
+    purpose — a new caller that forgets to say gets the rule that is safe for a
+    fan-out, and only `_ppv_caption.caption_for`, which is holding a real fan,
+    opts out. Unknown style falls back to `detail`; an unknown audience falls
+    back to mass, for the same reason.
     """
     tone = _COPY_TONE["him" if str(voice or "").strip().lower() == "him" else "her"]
     rule = _CAPTION_STYLE_RULES.get(style) or _CAPTION_STYLE_RULES["detail"]
+    register = (_CAPTION_GROUND_TRUTH + _CAPTION_MASS_AUDIENCE + _CAPTION_EXAMPLES
+                if str(audience or "").strip().lower() != "1to1"
+                else _CAPTION_REGISTER)
     return ("You write first-person sales copy for an OnlyFans creator's PPV "
             "send, from the recorded facts about one piece of vault media.\n"
             "  caption - " + rule.format(tone=tone)
-            + _CAPTION_REGISTER
+            + register
             + 'Respond with STRICT JSON only: {"caption": "..."}.')
 
 

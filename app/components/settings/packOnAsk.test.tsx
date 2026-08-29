@@ -76,6 +76,43 @@ describe("answering a content-ask", () => {
     expect(body.config.pack_send_enabled).toBe(true);
   });
 
+  it("the widened readers are on by default, and the tease rate is sent as a fraction", async () => {
+    // 🚨 THE UNIT MISMATCH THIS EXISTS TO CATCH. The operator types a PERCENT and
+    // the engine reads a 0..1 FRACTION. Send 33 instead of 0.33 and the server's
+    // clamp turns it into 1.0 — every tease-yes sells, which is the opposite of
+    // the ruling and would look like a working save.
+    relayGet.mockImplementation(async (path: string) =>
+      path.includes("ai-chatter-config") ? CONFIG_RESPONSE : {});
+    relayPut.mockResolvedValue({ ok: true });
+    const user = userEvent.setup();
+
+    render(<UpsellerTab accountId="123456789" />, { wrapper });
+    // ON by default: the stored blob above carries neither key, and the box must
+    // still read ticked — `!!cfg.x` would render it OFF and an operator ticking it
+    // "on" would be writing a no-op.
+    const wide = await screen.findByRole("checkbox", {
+      name: /Count "how much\?" and "yes" as asking/i,
+    });
+    expect(wide).toBeChecked();
+
+    // …but inert until the master trigger is on, like everything else in this
+    // card — so the operator's real path is to tick that first.
+    const rate = screen.getByRole("spinbutton", { name: /sell on his yes this often/i });
+    expect(rate).toBeDisabled();
+    await user.click(await screen.findByRole("checkbox", {
+      name: /Answer with the content, not a sentence/i,
+    }));
+    expect(rate).toBeEnabled();
+    expect(rate).toHaveValue(33);          // the shipped default, as a percentage
+    await user.clear(rate);
+    await user.type(rate, "50");
+
+    await user.click(
+      screen.getAllByRole("button", { name: /Save Upseller settings/i })[0]);
+    const body = relayPut.mock.calls.at(-1)?.[1] as { config: Record<string, unknown> };
+    expect(body.config.tease_sell_rate).toBe(0.5);
+  });
+
   it("the rate-card veto is unreachable until the trigger is on", async () => {
     relayGet.mockImplementation(async (path: string) =>
       path.includes("ai-chatter-config") ? CONFIG_RESPONSE : {});

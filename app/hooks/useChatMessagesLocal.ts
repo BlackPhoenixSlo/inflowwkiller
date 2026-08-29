@@ -123,6 +123,37 @@ export function useChatMessagesLocal(opts: {
   return { rows, isLoading: q.isLoading };
 }
 
+/** One older page from the local mirror, mapped to the render shape.
+ *
+ *  Same endpoint and same mapping as the head seed above — only the cursor
+ *  differs. `beforeId` MUST be the cursor `useChatMessages.olderCursor()`
+ *  returns, i.e. an id OF itself handed us: the mirror filters on
+ *  `message_id < beforeId`, and every synthetic id (mass placeholders at
+ *  5e15, ledger tips at 6e15) sits above every real OF id — so paging from
+ *  a real cursor excludes both bands structurally, with no age rule needed.
+ *  Passing a synthetic id here would silently re-admit them.
+ *
+ *  Returns [] on any failure: a mirror miss (the ~7% of threads whose local
+ *  history is shallower than the fan has scrolled) must degrade to the plain
+ *  OF wait, never to an error surface. */
+export async function fetchOlderSeed(
+  accountId: string | null,
+  fanId: number | null,
+  beforeId: number | null,
+  limit = 30,
+): Promise<OFMessage[]> {
+  if (!accountId || fanId == null || beforeId == null || !(beforeId > 0)) return [];
+  try {
+    const qs = new URLSearchParams({ limit: String(limit), before_id: String(beforeId) });
+    const resp = await relay.get<LocalMessagesResp>(
+      `/admin/messages/${encodeURIComponent(accountId)}/${fanId}?${qs.toString()}`,
+    );
+    return mapRows(resp.messages ?? [], accountId, fanId);
+  } catch {
+    return [];
+  }
+}
+
 /** Fold DB-seed rows into whatever the real `["messages", ...]` cache holds,
  *  for ChatSurface's one-time hydration. Two cases:
  *   • Empty/undefined cache (the common cold-open): the seed becomes the

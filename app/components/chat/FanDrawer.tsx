@@ -16,12 +16,12 @@
  * The mutation patches the cache directly so the panel feels instant.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useFan } from "@/hooks/useFan";
 import { useAccountLabel } from "@/hooks/useAccounts";
-import { useOFUser } from "@/hooks/useOFUser";
+import { OF_USER_STALE_MS, useOFUser } from "@/hooks/useOFUser";
 import { useMassExclude, type MassExcludeKind } from "@/hooks/useMassExclude";
 import { useFanActivity } from "@/hooks/useLastPurchases";
 import { useFanPpvHistory, type PpvHistoryItem } from "@/hooks/useFanPpvHistory";
@@ -208,7 +208,7 @@ export function FanDrawer({
     // A manual refresh should also re-pull the authoritative fan profile —
     // the live OF read (nickname/notice/spend) and our local mirror — so a
     // nickname/note changed out-of-band (automation, another device) shows up
-    // immediately instead of waiting for the next open/focus.
+    // immediately instead of waiting for a window focus or the next edit.
     void qc.invalidateQueries({ queryKey: ["of-user", accountId, fanId] });
     void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
   };
@@ -243,10 +243,37 @@ export function FanDrawer({
   // edited) when its current value no longer equals what we applied — in that
   // case a fresh OF value must NOT overwrite it.
   const appliedRef = useRef({ nick: "", notes: "", tags: "" });
+  // Nickname/note are the only fields here that are read back OUT of `of-user`
+  // and written over. Opening the drawer no longer refetches that query (see
+  // [useOFUser.ts] — the per-open cost on the user lane bought very little), so
+  // a value changed elsewhere inside the 5-minute window would prefill stale,
+  // get typed over, and save — silently reverting the other change. Focus
+  // refetch only covers tab switches, not a same-tab reopen.
+  //
+  // So we re-read at the moment the operator engages an edit affordance: a
+  // deliberate click, orders of magnitude rarer than a drawer open, and the
+  // one instant where freshness is load-bearing. It is non-blocking by
+  // construction — the field keeps rendering the cached value and the adopt
+  // effect below swaps in the fresh one ONLY while nothing has been typed.
+  // At most once per staleTime window (per fan): re-reading on every
+  // focus/blur cycle would just re-spend the lane we set out to stop
+  // spending. Guarded by TIME, not by open — a pinned or popout drawer stays
+  // open all day, so a once-per-open boolean would go stale right along with
+  // the value it exists to refresh. The window is the query's own
+  // OF_USER_STALE_MS because that cache window is precisely what creates
+  // the risk this read closes.
+  const ofRefetch = ofUserQ.refetch;
+  const editRefreshAtRef = useRef(0);
+  useEffect(() => { editRefreshAtRef.current = 0; }, [open, accountId, fanId]);
+  const refreshBeforeEdit = useCallback(() => {
+    if (Date.now() - editRefreshAtRef.current < OF_USER_STALE_MS) return;
+    editRefreshAtRef.current = Date.now();
+    void ofRefetch();
+  }, [ofRefetch]);
   // The OF write-through (custom name / private note) is fire-and-forget and
   // hits a different backend than the local PATCH. When it rejects the local
   // mirror still updates, so without this the panel shows a value OF never
-  // accepted and silently reverts on the next ~30s of-user refetch. Surface
+  // accepted and silently reverts the next time of-user is re-read. Surface
   // the failure so the operator knows the OF sync didn't stick.
   const [ofWriteError, setOfWriteError] = useState<string | null>(null);
 
@@ -254,9 +281,10 @@ export function FanDrawer({
     if (!fan) return;
     const tags = (fan.tags ?? []).join(", ");
     // Adopt the freshest effective value ONLY for fields the user hasn't touched.
-    // With the OF query now background-refetching every ~30s, a naive reset would
-    // clobber an in-progress edit; comparing against the last-applied value keeps
-    // the operator's typing while still picking up out-of-band changes.
+    // A fresh OF read can land at any time (focus refetch, an invalidation, or
+    // the pre-edit refresh above), and a naive reset would clobber an
+    // in-progress edit; comparing against the last-applied value keeps the
+    // operator's typing while still picking up out-of-band changes.
     const prev = appliedRef.current;
     setNickname((cur) => (cur === prev.nick ? effectiveNickname : cur));
     setNotes((cur) => (cur === prev.notes ? effectiveNotes : cur));
@@ -375,6 +403,7 @@ export function FanDrawer({
                   type="text"
                   value={nickname}
                   onChange={(e) => setNickname(e.target.value)}
+                  onFocus={refreshBeforeEdit}
                   onBlur={() => {
                     const next = nickname.trim();
                     if (next === effectiveNickname.trim()) return;
@@ -396,6 +425,7 @@ export function FanDrawer({
                 <textarea
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
+                  onFocus={refreshBeforeEdit}
                   onBlur={() => {
                     if (notes === effectiveNotes) return;
                     setOfWriteError(null);

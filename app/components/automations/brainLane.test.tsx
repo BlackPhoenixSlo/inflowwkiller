@@ -24,7 +24,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
-  return { ...mod, relay: { ...mod.relay, get: vi.fn(), put: vi.fn() } };
+  // Every verb the client exposes is stubbed, not just the ones today's panel
+  // reaches: the spread hands out the REAL method for anything left off this
+  // list, so an allowlist lets a future edit escape the mock and talk to a live
+  // relay silently instead of failing loudly.
+  return {
+    ...mod,
+    relay: {
+      ...mod.relay,
+      get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn(),
+      delete: vi.fn(), uploadFile: vi.fn(),
+    },
+  };
 });
 // The panel's non-lane dependencies. Everything else is real, because the thing
 // under test is BrainPanel's own wiring.
@@ -144,6 +155,27 @@ describe("the starter brain follows the SELECTED lane", () => {
                   config: { ...ACCOUNT_CONFIG.config, persona: "blake, written by hand." },
                   persona_fact_fields_by_voice: {} });
     expect((screen.getByText("🪄 Enrich") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+/** The Fan-profiles section sits OUTSIDE BrainPanel's `cfgQ.isLoading || !form`
+ *  branch on purpose: it reads the automation rules and never the brain config,
+ *  so gating it on that query would hide the button — and its own error line —
+ *  whenever an unrelated fetch is slow or failed. That placement is a one-line
+ *  decision with nothing else holding it, which is exactly the kind that gets
+ *  undone by a later tidy-up. */
+describe("the Fan profiles section does not wait on the brain config", () => {
+  it("renders while the account-config request is still pending", async () => {
+    relayGet.mockImplementation((path: string) =>
+      String(path).startsWith("/admin/account-config")
+        ? new Promise(() => {})            // brain config never answers
+        : Promise.resolve({ rules: [] }));
+    render(<QueryClientProvider client={client}><BrainPanel /></QueryClientProvider>);
+
+    // The brain form is still a spinner, and the section is on screen anyway.
+    expect(await screen.findByText("Fan profiles")).toBeTruthy();
+    expect(await screen.findByText("Turn on fan profiles")).toBeTruthy();
+    expect(screen.queryByText("Default (all purposes)")).toBeNull();
   });
 });
 

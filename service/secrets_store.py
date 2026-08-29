@@ -69,6 +69,15 @@ KNOWN: dict[str, dict] = {
         "help": "Optional provider for chat replies (z.ai). Only needed if an "
                 "account's Brain is set to a GLM model.",
     },
+    "HELP_ASSISTANT_DEEPSEEK_KEY": {
+        "label": "Help-bot fallback key (DeepSeek)",
+        "group": "AI models",
+        "help": "Paid by this deployment, used ONLY by the in-product help "
+                "chatbot and ONLY for an agency that has pasted no DeepSeek key "
+                "of its own. It is what lets a brand-new agency ask the product "
+                "where to paste its keys. Blank = the help bot fails closed for "
+                "keyless agencies, as it did before.",
+    },
     "GOOGLE_SHEETS_TOKEN_JSON": {
         "label": "Google Sheets token JSON",
         "group": "Google Sheets export",

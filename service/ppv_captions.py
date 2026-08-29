@@ -11,9 +11,26 @@ random per send. That single fact is the whole design:
 
   • rotation is what a SET is — consecutive sends of one PPV draw different
     boxes, so the fan never sees the same line twice running;
-  • "the pool line rides along 80% of the time" is ARITHMETIC over the set —
-    8 framed boxes out of 10 IS an 80% frame rate. There is no probability to
-    roll, nothing to seed, and NOTHING ADDED TO THE SEND PATH.
+  • EVERY box in that set has to be a whole message, because the pick is
+    UNIFORM. There is no probability to roll, nothing to seed, and NOTHING
+    ADDED TO THE SEND PATH — which also means there is no send-path check
+    left to catch a box that is only half a caption.
+
+WHY THERE IS NO "HOW MANY GET THE POOL LINE" KNOB ANY MORE
+----------------------------------------------------------
+There was one — `framed`, defaulting to 8 of 10 — and the two boxes it left
+bare are the whole of the 2026-08-29 incident: a live $3.99 PPV whose entire
+message body was
+
+    glad i finally had an excuse to wear this bra. tomorrow i lose it.
+
+No unlock ask, no price. The knob read like a style mix and was really a 20%
+chance of shipping half a caption, because NONE of the four hook styles asks
+the model for a call to action — deliberately, since the pool line underneath
+was assumed to carry it. That assumption was simply absent from the tail of
+the set. So a bare box is legal in exactly one case now: the lane has no house
+lines at all (no `caption_pool_key`, or a key that resolves to nothing), and
+there the hook is all there is to send.
 
 So this module produces boxes and stops. It writes no config: the operator reads
 the set, keeps what they want, and presses Save. A caption reaching a fan has
@@ -65,24 +82,30 @@ class ComposeSpec(BaseModel):
     # Empty (or a pool with no lines) composes bare hooks and says so.
     caption_pool_key: str = ""
     boxes: int = 10
-    framed: int = 8
-    frame_top: int = 2
+    # `framed` ("how many boxes carry a house line") was RETIRED 2026-08-29 —
+    # its default left two of ten boxes with no ask on them (the module note).
+    # There is no field for it: pydantic ignores unknown keys here, so a stale
+    # client still posting `framed` composes a fully framed set with no 422.
+
+    # How many boxes put the house line ABOVE the hook. NONE by default: the
+    # pool lines are written as closing asks ("unlock it for me"), so a line on
+    # top makes the ask the opener and the tease the afterthought.
+    frame_top: int = 0
     # Empty → all styles, in `describe_media.CAPTION_STYLES` order.
     styles: list[str] = []
 
-    def clamped(self) -> tuple[int, int, int, list[str]]:
-        """(boxes, framed, frame_top, styles), each bounded by the one before it.
+    def clamped(self) -> tuple[int, int, list[str]]:
+        """(boxes, frame_top, styles), each bounded by the one before it.
 
-        Ordered, because the knobs nest: you cannot frame more boxes than exist,
-        nor put more frames on top than are framed. Clamping rather than
-        rejecting is deliberate — this is reached from a number input an operator
-        is typing into, and a 422 mid-keystroke is worse than a clamped preview.
+        Ordered, because the knobs nest: you cannot put the line on top of more
+        boxes than exist. Clamping rather than rejecting is deliberate — this is
+        reached from a number input an operator is typing into, and a 422
+        mid-keystroke is worse than a clamped preview.
         """
         boxes = max(1, min(int(self.boxes or 1), BOXES_MAX))
-        framed = max(0, min(int(self.framed or 0), boxes))
-        frame_top = max(0, min(int(self.frame_top or 0), framed))
+        frame_top = max(0, min(int(self.frame_top or 0), boxes))
         styles = [s for s in (self.styles or []) if s in dm.CAPTION_STYLES]
-        return boxes, framed, frame_top, (styles or list(dm.CAPTION_STYLES))[:CALLS_MAX]
+        return boxes, frame_top, (styles or list(dm.CAPTION_STYLES))[:CALLS_MAX]
 
 
 def lane_frames(pool_key: str, voice: str, lang: str) -> list[str]:
@@ -104,11 +127,18 @@ def lane_frames(pool_key: str, voice: str, lang: str) -> list[str]:
 
 
 def compose_boxes(hooks: list[tuple[str, str]], frames: list[str], *,
-                  boxes: int, framed: int, frame_top: int) -> list[dict[str, Any]]:
-    """Rotate `hooks` across `boxes` caption boxes, giving the first `framed` of
-    them one of the lane's own `frames`, `frame_top` of those with the frame
-    ABOVE the hook. Pure and deterministic — the same knobs always build the same
-    set, so what the operator reviews is exactly what will send.
+                  boxes: int, frame_top: int = 0) -> list[dict[str, Any]]:
+    """Rotate `hooks` across `boxes` caption boxes, giving EVERY one of them one
+    of the lane's own `frames`, `frame_top` of those with the frame ABOVE the
+    hook. Pure and deterministic — the same knobs always build the same set, so
+    what the operator reviews is exactly what will send.
+
+    EVERY box, with no knob to say otherwise: the sender picks one uniformly and
+    ships it whole, so a box without the lane's ask under it is a mood line over
+    a paywall. The only bare box left is the one with nothing to frame — an
+    empty `frames`, meaning the PPV has no `caption_pool_key` or a key that
+    resolves to no lines. See the module note for what the old `framed` knob
+    cost live.
 
     Framed boxes advance the frame index until the (hook, frame) PAIR is one we
     have not emitted. Plain `i % len(frames)` looks right and silently halves the
@@ -127,8 +157,8 @@ def compose_boxes(hooks: list[tuple[str, str]], frames: list[str], *,
     if not hooks:
         return out
     top_at: set[int] = set()
-    if frames and framed > 0 and frame_top > 0:
-        step = framed / frame_top
+    if frames and frame_top > 0:
+        step = boxes / frame_top
         top_at = {int(i * step + step / 2) for i in range(frame_top)}
     seen: set[str] = set()
     pairs: set[tuple[int, int]] = set()
@@ -136,7 +166,7 @@ def compose_boxes(hooks: list[tuple[str, str]], frames: list[str], *,
     for i in range(boxes):
         hi = i % len(hooks)
         style, hook = hooks[hi]
-        if frames and i < framed:
+        if frames:
             for _ in range(len(frames)):
                 if (hi, fi % len(frames)) not in pairs:
                     break
@@ -170,6 +200,10 @@ def _result(account_id: str, *, boxes: list[dict[str, Any]],
         "generated": generated,
         "cost_millicents": cost_mc,
         "pool_lines": pool_lines,
+        # Advice about the SEND path's `ai_caption_at_send` flag, which this
+        # module knows nothing about. Always present so a client reads it
+        # unconditionally; the route is the one writer of a non-empty value.
+        "warning": "",
     }
 
 
@@ -181,7 +215,7 @@ async def build_box_set(account_id: str, media_ids: list[int], spec: ComposeSpec
     holds the account's config row, and a second opinion about which voice lane
     an account is in is exactly how the male pool gets missed.
     """
-    boxes, framed, frame_top, styles = spec.clamped()
+    boxes, frame_top, styles = spec.clamped()
 
     # The Vault-AI master used to stand in front of this press; the 2026-08-23
     # ruling took it out. That switch runs the SWEEP — it is what WRITES the
@@ -215,11 +249,14 @@ async def build_box_set(account_id: str, media_ids: list[int], spec: ComposeSpec
                        cost_mc=cost_mc)
 
     frames = lane_frames(spec.caption_pool_key, voice, lang)
-    if not frames and framed:
+    if not frames and spec.caption_pool_key:
+        # A lane was NAMED and came back empty — with every box framed, that is
+        # the difference between a full set and a set of bare hooks, and the
+        # operator has to read the reason before they press Add. An empty key is
+        # not reported: bare hooks are exactly what a pool-less PPV asked for.
         skipped.append({"reason": "no_pool_lines",
                         "caption_pool_key": spec.caption_pool_key})
-    built = compose_boxes(hooks, frames, boxes=boxes, framed=framed,
-                          frame_top=frame_top)
+    built = compose_boxes(hooks, frames, boxes=boxes, frame_top=frame_top)
 
     log.info("caption_box_set account=%s media=%d styles=%s boxes=%d framed=%d "
              "generated=%d cost_mc=%d", account_id, len(media_ids),

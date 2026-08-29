@@ -385,12 +385,24 @@ def _channels_for(role: str, price_cents: int, theme: str, *, combine: bool = Tr
 # The mass-caption framing that rides ABOVE PAINFUL_TEXTING for a broadcast
 # (PAINFUL_TEXTING was written for 1:1 chat; a PPV/post caption is a one-to-many
 # sell, so it must not pretend to answer a specific fan).
+#
+# The clock ban mirrors describe_media's (`project_prompt_clock_all_engines`):
+# this brief used to say "promise tomorrow", and the model slid from teasing the
+# next drop into inventing expiry — "tomorrow i lose it" went out live on a
+# $3.99 send (2026-08-29). Yesterday's callback stays because it is REAL data
+# (`connects_to` names the actual previous drop); a deadline is not — nothing
+# enforces one, and every fake one trains fans to read urgency as noise. The
+# ask requirement is the other half of the same incident: arc days were the
+# source of the 56 saved caption boxes with no unlock ask under them.
 MASS_CAPTION_BRIEF = (
     "You are writing ONE caption for a MASS send / feed post that sells this "
     "locked content to ALL your fans at once — not a 1:1 reply, so never answer a "
     "specific message. lowercase, no quotes, no hashtags. it is one day of a "
-    "seven-day build that gets hotter each day, so REFERENCE where the week is "
-    "(callback to yesterday, promise tomorrow) and make him NEED to unlock today. "
+    "seven-day build that gets hotter each day, so you may call back to "
+    "yesterday's drop and make him NEED to unlock today. the content does not "
+    "expire and is not leaving: never claim a time, a deadline, a limited "
+    "window, or that anything disappears. the caption must carry a direct ask "
+    "to unlock or open it — a mood line alone is not a caption. "
     "one line, occasionally two. punch the feeling; do not explain."
 )
 

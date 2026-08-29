@@ -359,6 +359,62 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           </ul>
         </div>
 
+        {/* ── what COUNTS as him asking ────────────────────────────────────
+            The ask regex only ever caught a question. These two are the turns a
+            sale is actually won on and no pattern saw: a price question, and a
+            plain "yes". Inert without the master switch, like everything else in
+            this card. */}
+        <div className={cn("space-y-2 pt-1",
+          cfg.pack_on_ask_enabled ? "" : "opacity-50 pointer-events-none")}>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" className="mt-0.5"
+              checked={cfg.wide_ask_enabled !== false}
+              disabled={!cfg.pack_on_ask_enabled}
+              onChange={(e) => set({ wide_ask_enabled: e.target.checked })} />
+            <span className="text-sm">
+              <span className="font-medium">Count &quot;how much?&quot; and &quot;yes&quot; as asking</span>
+              <span className="text-[11px] text-fg-dim"> · on by default</span>
+              <span className="block max-md:hidden text-fg-dim text-xs">
+                A man who types <i>&quot;how much for the vid&quot;</i> is asking to
+                buy, and one who says <i>&quot;yes&quot;</i> after she offers him
+                something has already agreed — neither is phrased as a question about
+                content, so neither used to reach the vault at all. The
+                <b> &quot;yes&quot; only counts when her own last message actually
+                offered something</b>: a yes to <i>&quot;do u like dogs?&quot;</i>
+                sells nothing.
+              </span>
+            </span>
+          </label>
+
+          <label className={cn("space-y-1 block pl-6",
+            cfg.wide_ask_enabled !== false ? "" : "opacity-50 pointer-events-none")}>
+            <div className="text-fg-dim text-xs">
+              …and when she only <i>teased</i> it, sell on his yes this often
+              <span className="ml-1 opacity-70">(0 = never)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="number" min={0} max={100} step={1}
+                className={`${INPUT} w-full md:w-28`}
+                disabled={!cfg.pack_on_ask_enabled || cfg.wide_ask_enabled === false}
+                value={Math.round((cfg.tease_sell_rate ?? 0.33) * 100)}
+                onChange={(e) => set({
+                  tease_sell_rate: Math.max(0, Math.min(100,
+                    parseInt(e.target.value || "0", 10) || 0)) / 100,
+                })} />
+              <span className="text-fg-dim text-sm">%</span>
+            </div>
+            <div className="max-md:hidden text-fg-dim text-xs">
+              Most of the time she doesn&apos;t ask, she <b>dangles</b> —
+              <i> &quot;the rest is better&quot;</i>, <i>&quot;u gotta earn that
+              one&quot;</i>. That is a real selling moment and an ambiguous one: a
+              &quot;yes&quot; there can mean <i>send it</i> or can just be him playing
+              along. So it is played <b>sometimes</b> rather than always. The roll is
+              fixed per message — the same &quot;yes&quot; never sells a minute later
+              after losing once.
+            </div>
+          </label>
+        </div>
+
         <label className={cn("flex items-start gap-2",
           cfg.pack_on_ask_enabled ? "cursor-pointer" : "cursor-not-allowed opacity-50")}>
           <input type="checkbox" className="mt-0.5" checked={!!cfg.value_caps_price}

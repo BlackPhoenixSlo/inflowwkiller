@@ -68,7 +68,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import or_, select, update
 
@@ -214,27 +214,55 @@ async def _flip_paid(account_id: str, fan_id: int, message_id: int) -> bool:
     return bool(res.rowcount)
 
 
+class _NotifKey(NamedTuple):
+    """What the two memos below are keyed on. A plain tuple would do — this
+    exists so the `notif_id is None` guard reads as itself everywhere it is
+    asked, rather than as `key[2]`."""
+    kind: str            # "msg" | "post" — namespaces the two lanes explicitly
+    account_id: str
+    notif_id: Any        # OF's own id; None when the payload carried none
+
+
 # Notifications fully handled this process-lifetime — the feed re-serves the
 # same events every poll until they age out, so without this every sighting
-# re-runs the stamp queries (and, for posts, could re-hit OF). Keys are
-# ("msg"|"post", account_id, notif_id) — the kind tag namespaces the two
-# lanes explicitly. Insertion-ordered dict as a cheap FIFO; a relay restart
-# just reprocesses once (everything downstream is idempotent).
-_DONE_NOTIFS: dict[tuple[str, str, Any], None] = {}
-_DONE_NOTIFS_MAX = 4096
+# re-runs the stamp queries (and, for posts, could re-hit OF). A relay restart
+# just reprocesses each once (everything downstream is idempotent).
+_DONE_NOTIFS: dict[_NotifKey, None] = {}
 
 
-# Notifications already ANNOUNCED to the browser. Deliberately separate from
-# _DONE_NOTIFS: "resolved" and "announced" are different questions. A purchase
-# whose message row hasn't been scraped yet stays un-done and retries every
-# poll — but it must not re-toast on each of those retries, and conversely a
-# purchase somebody else flipped first is still news worth announcing.
-_ANNOUNCED_NOTIFS: dict[tuple[str, str, Any], None] = {}
+# Notifications already DELIVERED to at least one browser. Deliberately
+# separate from _DONE_NOTIFS: "resolved" and "announced" are different
+# questions. A purchase whose message row hasn't been scraped yet stays un-done
+# and retries every poll — but it must not re-toast on each of those retries,
+# and conversely a purchase somebody else flipped first is still news worth
+# announcing. An entry lands here only once the ping REACHED a live subscriber:
+# a broadcast into an empty room leaves the memo untouched, so the sale is
+# offered again on the next poll instead of being remembered as told.
+_ANNOUNCED_NOTIFS: dict[_NotifKey, None] = {}
+
+# Shared bound for both memos above.
+_NOTIF_MEMO_MAX = 4096
+
 # Only announce purchases this fresh. Bounds the noise when the relay restarts
 # and re-walks a feed page it already announced (same rationale as the ledger's
 # 48h insert cap), without needing durable state. Generous next to the 30s
 # poll, so an ordinary gap or a slow tick still notifies.
 _ANNOUNCE_MAX_AGE_S = 2 * 60 * 60
+
+
+def _remember(memo: dict[_NotifKey, None], key: _NotifKey) -> None:
+    """Record `key` in one of the two memos, evicting oldest-first past
+    _NOTIF_MEMO_MAX — an insertion-ordered dict as a cheap ring buffer."""
+    while len(memo) >= _NOTIF_MEMO_MAX:
+        memo.pop(next(iter(memo)))
+    memo[key] = None
+
+
+def _is_done(key: _NotifKey) -> bool:
+    """Has this notification already been fully resolved this process-lifetime?
+    An id-less one is never remembered (nothing to key on), so it can never be
+    done either."""
+    return key.notif_id is not None and key in _DONE_NOTIFS
 
 
 def _is_fresh(created_at: Any) -> bool:
@@ -254,23 +282,25 @@ def _is_fresh(created_at: Any) -> bool:
     return (datetime.now(timezone.utc) - ts).total_seconds() <= _ANNOUNCE_MAX_AGE_S
 
 
-def _should_announce(key: tuple[str, str, Any], parsed: dict[str, Any]) -> bool:
-    """Does this purchase warrant a live ping — and is this the first time we
-    have asked? Stateful on purpose: a True answer CLAIMS the announcement, so
-    the caller must broadcast. Says no to an id-less notification (nothing the
-    browser could dedupe on) and to anything stale."""
-    if parsed["notif_id"] is None or not _is_fresh(parsed["created_at"]):
-        return False
-    if key in _ANNOUNCED_NOTIFS:
-        return False
-    while len(_ANNOUNCED_NOTIFS) >= _DONE_NOTIFS_MAX:
-        _ANNOUNCED_NOTIFS.pop(next(iter(_ANNOUNCED_NOTIFS)))
-    _ANNOUNCED_NOTIFS[key] = None
-    return True
+def _should_announce(key: _NotifKey, created_at: Any) -> bool:
+    """Is this purchase worth a live ping we have not already landed? Says no
+    to an id-less notification (nothing the browser could dedupe on) and to
+    anything stale.
+
+    Pure: the memo is written by the caller, and only on a real delivery. Two
+    concurrent polls of one account can therefore both answer True and both
+    broadcast — deliberate, because the ping carries OF's real notification id
+    and the browser claims ids before rendering. That is the same dedupe this
+    design already leans on to collapse the ping against the feed row, so a
+    claim-and-rollback protocol here would buy nothing."""
+    return (key.notif_id is not None
+            and _is_fresh(created_at)
+            and key not in _ANNOUNCED_NOTIFS)
 
 
-async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> None:
-    """Tell every open browser a PPV was just unlocked.
+async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> bool:
+    """Tell every open browser a PPV was just unlocked. Returns whether the
+    ping had anywhere to land.
 
     OF pushes no purchase event and its own `toasts` feed carries none either,
     so without this a sale is invisible until something refetches. The ledger
@@ -282,19 +312,27 @@ async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> None:
     can key on it, so the live ping and the eventual feed row dedupe against
     each other instead of showing one sale twice.
 
-    Never raises: a broadcast failure must not cost us the is_paid flip.
+    **A broadcast with no subscriber is not a delivery.** SSE has no mailbox,
+    so `events.broadcast` returns how many queues it actually handed the event
+    to, and zero is reported as False rather than pretending. The caller then
+    leaves the memo unwritten and the next 30s poll offers the sale again —
+    the whole difference between "toasted the moment someone was looking" and
+    "silently never toasted, because the tab was closed at 18:33".
+
+    Never raises: a broadcast failure must not cost us the is_paid flip. It
+    returns False, which only costs a retry.
     """
-    # Drop the relay's cached money feeds first, so the refetch this broadcast
-    # provokes cannot be served our own pre-sale snapshot. This is the ONLY
-    # money lane that fires in production — the WS carries no purchase frame,
-    # so event_transcoder's unlock handlers never run and this 30s poll is how
-    # a sale becomes visible at all. Sits under the `_should_announce` claim in
-    # `_handle_items`, so it costs one bust per NEW purchase rather than one
-    # per 30s re-sighting.
+    # Unconditional, and NOT under the delivery question below: the bust is
+    # server-side truth (this account's money changed), so it must happen even
+    # with nobody watching — the tab that connects two seconds from now
+    # refetches on its own and must not be served our pre-sale snapshot. This
+    # is the ONLY money lane that fires in production: the WS carries no
+    # purchase frame, so event_transcoder's unlock handlers never run and this
+    # 30s poll is how a sale becomes visible at all.
     relay_cache.invalidate_money_feeds(str(account_id))
     try:
         from events import broadcast as _sse_broadcast
-        await _sse_broadcast({
+        reached = await _sse_broadcast({
             "purchase_notified": {
                 "notif_id": str(p["notif_id"]),
                 "fan_id": int(p["fan_id"]),
@@ -308,12 +346,8 @@ async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> None:
     except Exception:  # noqa: BLE001
         log.debug("purchase_notified broadcast failed account=%s", account_id,
                   exc_info=True)
-
-
-def _mark_done(key: tuple[str, str, Any]) -> None:
-    while len(_DONE_NOTIFS) >= _DONE_NOTIFS_MAX:
-        _DONE_NOTIFS.pop(next(iter(_DONE_NOTIFS)))
-    _DONE_NOTIFS[key] = None
+        return False
+    return reached > 0
 
 
 async def _message_paid(account_id: str, fan_id: int, message_id: int) -> bool:
@@ -343,15 +377,18 @@ async def _handle_items(account_id: str, client: Any, items: list,
         parsed = parse_purchase(n)
         if parsed:
             out["seen"] += 1
-            key = ("msg", str(account_id), parsed["notif_id"])
-            if parsed["notif_id"] is not None and key in _DONE_NOTIFS:
+            key = _NotifKey("msg", str(account_id), parsed["notif_id"])
+            # The ANNOUNCE lane, deliberately above the _is_done gate: a
+            # purchase is news whether or not this call is the one that flips
+            # is_paid, and on a live seller the ledger linker usually wins that
+            # race — so the very first sighting is already marked done, and
+            # gating on _is_done first would retire the announcement before it
+            # was ever heard. Remembered only on a real delivery.
+            if (announce and _should_announce(key, parsed["created_at"])
+                    and await _broadcast_purchase(account_id, parsed)):
+                _remember(_ANNOUNCED_NOTIFS, key)
+            if _is_done(key):
                 continue
-            # Announce BEFORE the flip, and independently of it: a purchase is
-            # news whether or not this call is the one that flips is_paid (the
-            # ledger linker may have got there first), and a message row that
-            # hasn't been scraped yet must still ping now rather than never.
-            if announce and _should_announce(key, parsed):
-                await _broadcast_purchase(account_id, parsed)
             flipped = await _flip_paid(
                 account_id, parsed["fan_id"], parsed["message_id"])
             if flipped:
@@ -366,26 +403,26 @@ async def _handle_items(account_id: str, client: Any, items: list,
             out["stamped"] += stamped
             # Done once flipped/stamped/already-paid; a message row that
             # hasn't landed yet (scrape lag) stays retryable.
-            if parsed["notif_id"] is not None and (
+            if key.notif_id is not None and (
                 flipped or stamped
                 or await _message_paid(account_id, parsed["fan_id"],
                                        parsed["message_id"])
             ):
-                _mark_done(key)
+                _remember(_DONE_NOTIFS, key)
             continue
         post = parse_post_purchase(n)
         if post:
             out["posts"] += 1
-            key = ("post", str(account_id), post["notif_id"])
-            if post["notif_id"] is not None and key in _DONE_NOTIFS:
+            key = _NotifKey("post", str(account_id), post["notif_id"])
+            if _is_done(key):
                 continue
             res = await ownership.try_stamp_post(
                 account_id, post["fan_id"], post["post_id"],
                 price_cents=post["amount_cents"], client=client,
                 context="notif_post")
             out["stamped"] += res["stamped"]
-            if post["notif_id"] is not None and res["resolved"]:
-                _mark_done(key)
+            if key.notif_id is not None and res["resolved"]:
+                _remember(_DONE_NOTIFS, key)
     return out
 
 
