@@ -168,6 +168,11 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   const postM = usePostPpvToFeed(accountId);
   const previewFeedM = usePreviewPpvToFeed(accountId);
   const captionKnobs = useCaptionSetKnobs(cfgQ.data?.caption_limits?.boxes_max);
+  // "Caption set": which PPV row has the panel open. The knobs themselves live
+  // in `captionKnobs` at tab level, so tuning the mix once survives moving
+  // between PPVs. Must sit above the account/loading early returns — a hook
+  // below them runs on some renders and not others, which is React #310.
+  const [boxSetIdx, setBoxSetIdx] = useState<number | null>(null);
   // A subscription page has no paid-post lane on OF, and a feed PPV is always
   // priced — so every feed control here is dead for it (the relay refuses too).
   const { isPaidPage } = usePaidPage(accountId);
@@ -436,10 +441,6 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
     setPpvs((ps) => ps.map((p, j) =>
       j === i ? { ...p, caption_texts: (p.caption_texts ?? []).filter((_, k) => k !== ci) } : p));
   };
-  // "Caption set": which PPV row has the panel open. The knobs themselves live
-  // in `captionKnobs` at tab level, so tuning the mix once survives moving
-  // between PPVs.
-  const [boxSetIdx, setBoxSetIdx] = useState<number | null>(null);
   const addCaptions = (i: number, lines: string[]) => {
     markDirty();
     setPpvs((ps) => ps.map((q, j) =>
