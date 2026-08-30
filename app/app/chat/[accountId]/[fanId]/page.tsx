@@ -147,14 +147,6 @@ export default function ChatPopoutPage({
     );
   }, [isRestoring, qc, accountId, fanId]);
 
-  if (!Number.isFinite(fanId)) {
-    return (
-      <div className="grid place-items-center h-chat text-sm text-err">
-        Invalid fan id: {fanIdStr}
-      </div>
-    );
-  }
-
   // Synthesize the minimum OFChatItem the surface needs. canSendMessage
   // defaults to true; if OF actually blocks the chat the Composer will
   // surface the 400 reason on first send. Acceptable tradeoff for a popout.
@@ -182,6 +174,16 @@ export default function ChatPopoutPage({
     ? `(${unreadHidden}) ${label} · Fastt`
     : `${label} · Fastt`;
   useDocumentTitle(tabTitle);
+
+  // Guard AFTER every hook: an early return above any hook makes the hook
+  // count differ between renders (React #310) if fanId turns valid in place.
+  if (!Number.isFinite(fanId)) {
+    return (
+      <div className="grid place-items-center h-chat text-sm text-err">
+        Invalid fan id: {fanIdStr}
+      </div>
+    );
+  }
 
   return (
     <div className="h-chat flex flex-col">
