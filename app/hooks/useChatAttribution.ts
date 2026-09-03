@@ -16,6 +16,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface AttributionEntry {
   employee_id: number | null;
@@ -37,7 +38,7 @@ export interface AttributionResponse {
 
 export function useChatAttribution(
   accountId: string | null,
-  fanId: number | null,
+  fanId: FanId | null,
   oldestId: number | null,
 ) {
   return useQuery<AttributionResponse>({

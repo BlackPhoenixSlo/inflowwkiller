@@ -6,6 +6,7 @@
  * Composition:
  *   • DriftBanner    — only renders when at least one model is stale.
  *   • PasteCurlCard  — primary bootstrap path; mirrors the legacy /ui/.
+ *   • FanslyPasteSessionCard — same, for Fansly (paste session blob).
  *   • AccountsTable  — every model, with rename + default + delete.
  *   • ProxiesTable   — every proxy + assignment + test.
  *   • AgencyKeysCard — YOUR agency's LLM keys (what your models bill).
@@ -19,6 +20,7 @@ import DriftBanner from "@/components/setup/DriftBanner";
 import AccountsTable from "@/components/setup/AccountsTable";
 import ProxiesTable from "@/components/setup/ProxiesTable";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
+import FanslyPasteSessionCard from "@/components/setup/FanslyPasteSessionCard";
 import KeysCard from "@/components/setup/KeysCard";
 import AgencyKeysCard from "@/components/setup/AgencyKeysCard";
 import ManagedAgencyKeysCard from "@/components/setup/ManagedAgencyKeysCard";
@@ -41,6 +43,10 @@ export default function SetupPage() {
       {/* Desk-only cards. One wrapper PER card — a single shared wrapper would
           collapse the parent's space-y-6 gap on desktop. */}
       <div className="hidden md:block"><PasteCurlCard /></div>
+
+      {/* Fansly analogue of PasteCurlCard. Additive: OnlyFans-only setups
+          never see it change anything. */}
+      <div className="hidden md:block"><FanslyPasteSessionCard /></div>
 
       <AccountsTable />
 

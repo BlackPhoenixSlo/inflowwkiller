@@ -25,6 +25,7 @@
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface FanChatMediaItem {
   /** OF's message id. */
@@ -64,7 +65,7 @@ export interface FanChatMediaPage {
 
 export function useFanChatMedia(
   accountId: string | null,
-  fanId: number | null,
+  fanId: FanId | null,
   opts: { purchased?: boolean; limit?: number; enabled?: boolean } = {},
 ) {
   const purchased = opts.purchased ?? true;

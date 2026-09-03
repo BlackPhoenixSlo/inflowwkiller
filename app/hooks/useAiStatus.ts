@@ -11,6 +11,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export type AiState = "active" | "paused" | "companion" | "blocked" | "off";
 
@@ -111,7 +112,7 @@ export type AiStatus = {
   };
 };
 
-export function useAiStatus(accountId: string | null, fanId: number | null) {
+export function useAiStatus(accountId: string | null, fanId: FanId | null) {
   return useQuery<AiStatus>({
     queryKey: ["ai-status", accountId, fanId],
     enabled: !!accountId && !!fanId,

@@ -25,7 +25,10 @@ import { useNotificationSettings } from "@/hooks/useNotificationSettings";
 import { chatTabName, openChatTab } from "@/lib/chatPopout";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { resolveChatTarget, toUtcIso, type ChatTarget } from "@/hooks/useInboxRealtime";
-import { relay, proxyImage } from "@/lib/relay";
+import { relay } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { isValidFanId, type FanId } from "@/lib/fanId";
+import type { NotificationUser } from "@/lib/moneyRailStorage";
 import {
   appendNotifHistory,
   dispatchNotifArrived,
@@ -61,12 +64,6 @@ function claimUnseen(aid: string, id: string): boolean {
   return true;
 }
 
-interface NotificationUser {
-  id?: number;
-  name?: string;
-  username?: string;
-  avatar?: string;
-}
 interface NotificationItem {
   id?: number | string;
   type?: string;
@@ -127,14 +124,14 @@ function patchToastHref(accountId: string, id: string, href: string): void {
 // Username → user-id cache. SSE-pushed likes carry only the @username;
 // we resolve eagerly so the toast's click target is canonical and the
 // chat popout's header renders instantly.
-const resolvedIdByUsername = new Map<string, number>();
-const inflightLookups = new Map<string, Promise<number | null>>();
+const resolvedIdByUsername = new Map<string, FanId>();
+const inflightLookups = new Map<string, Promise<FanId | null>>();
 
 async function resolveUsernameId(
   accountId: string,
   username: string,
   qc: QueryClient,
-): Promise<number | null> {
+): Promise<FanId | null> {
   const key = `${accountId}:${username}`;
   const cached = resolvedIdByUsername.get(key);
   if (cached) return cached;
@@ -152,9 +149,11 @@ async function resolveUsernameId(
         `/api/of/v2/users/${encodeURIComponent(username)}`,
         { accountId },
       );
-      const rawId = typeof u?.id === "number" ? u.id : Number(u?.id);
-      if (!Number.isFinite(rawId)) return null;
-      const id = rawId as number;
+      // Keep the id as sent — `Number(...)` + `as number` truncated a Fansly
+      // snowflake and then seeded ["of-user", accountId, id] with it, so the
+      // cache entry was keyed off an id nothing else in the app looks up.
+      const id = u?.id;
+      if (!isValidFanId(id)) return null;
       resolvedIdByUsername.set(key, id);
       qc.setQueryData(["of-user", accountId, id], (prev: { customNickname?: string | null } | undefined) => ({
         id,
@@ -553,11 +552,11 @@ function NotificationDeltaPoller() {
       const aid = env.__account_id;
       if (!aid || !targetIds.includes(aid)) return;
       const p = env.purchase_notified as {
-        notif_id?: string; fan_id?: number; amount_cents?: number;
+        notif_id?: string; fan_id?: FanId; amount_cents?: number;
         created_at?: string | null; name?: string | null;
       } | undefined;
-      const fanId = Number(p?.fan_id);
-      if (!p?.notif_id || !Number.isFinite(fanId)) return;
+      const fanId = p?.fan_id;
+      if (!p?.notif_id || !isValidFanId(fanId)) return;
 
       // OF's own id, unprefixed — it MUST equal the id the feed will carry
       // for this purchase, or the dedupe this whole design rests on fails.

@@ -77,10 +77,12 @@ _DEFAULT_LOOKBACK_H = 72      # far enough back to catch a weekend, short enough
                               # historical $200 tip an account has ever taken
 _DEFAULT_LIMIT = 200
 
-# Transaction states that mean the money is real. Mirrors
-# `ai_chatter._tip_sum_since` deliberately — a tip is either an order everywhere
-# or nowhere, and these two were the pair that disagreed.
-_SETTLED_STATUSES = ("cleared", "pending")
+# Transaction states that mean the money is real. THE spelling now lives in
+# `_customs.SETTLED_STATUSES` — aliased here so the existing call sites read
+# unchanged, but there is only one definition. It moved because `customs_api`
+# was missing this filter entirely, which is exactly the "two engines disagree
+# about whether the same tip was real" bug this constant exists to prevent.
+_SETTLED_STATUSES = _customs.SETTLED_STATUSES
 
 
 async def _delivered_since(account_id: str, fan_id: int,

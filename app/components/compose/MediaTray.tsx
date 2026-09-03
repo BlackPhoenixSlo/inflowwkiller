@@ -14,7 +14,8 @@ import { Fragment } from "react";
 import { Library } from "lucide-react";
 
 import { useReorder } from "@/hooks/useReorder";
-import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
 
 export function MediaTray({

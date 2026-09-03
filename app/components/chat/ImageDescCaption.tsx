@@ -26,10 +26,11 @@ import { useDescribeImage } from "@/hooks/useChatImageDesc";
 import { hasDescribableStill } from "@/lib/ofMedia";
 import { cn } from "@/lib/utils";
 import type { OFMedia } from "@/lib/relay";
+import type { FanId } from "@/lib/fanId";
 
 export function ImageDescCaption({ accountId, fanId, messageId, desc, isGif, media }: {
   accountId: string | null;
-  fanId: number | null;
+  fanId: FanId | null;
   messageId: number;
   /** The cached read; null = this one was never described. */
   desc: string | null;

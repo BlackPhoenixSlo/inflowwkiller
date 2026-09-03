@@ -17,11 +17,12 @@ import { relay, type RelayContext, type VaultList, type VaultListsResp, type Vau
 import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
+import { type FanId } from "@/lib/fanId";
 
 const PAGE = 24;
 
 export interface ChatterFolderGrant {
-  folder_id: number;
+  folder_id: FanId;
   folder_name: string | null;
 }
 
@@ -120,7 +121,9 @@ export function useVaultLists(accountId: string | null, enabled = true, includeE
 export interface UseVaultMediaOpts {
   accountId: string | null;
   type?: "all" | "photo" | "video" | "gif" | "audio";
-  listId?: number | null;
+  /** Folder id. FanId, not number: Fansly album ids are snowflakes >2^53.
+   *  Only ever compared and echoed back into `list_id`, never arithmetic. */
+  listId?: FanId | null;
   enabled?: boolean;
   /** OF honors server-side ordering — "oldest" maps to `sort=asc`. Kept out
    *  of client-side reversal so pagination stays correct (older pages append

@@ -23,6 +23,12 @@ confirm with one real click. `url_verified: false` rides every row so the UI can
 say so. Single source of truth for the format is `_campaign_url` below — fix it
 in one place the moment a real link is pasted.
 
+TODO (parked): the operator wants the COLLECTIVE SPEND of the fans a link
+brought in, printed next to the click/sub counts. Not possible from this
+payload — countSubscribers is a scalar, and no OF endpoint returns WHICH fan
+ids a campaign produced. Design note + the three ways to get it anyway:
+library/TRACKING_LINK_SPEND_PARKED.md
+
 Routes (owner-gated, under /admin/*):
   GET    /admin/of-tracking-links?account_id=   list campaigns (+ url, stats)
   POST   /admin/of-tracking-links               create {name}

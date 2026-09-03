@@ -6,7 +6,7 @@
  * of `alt` when there's no avatar URL.
  */
 
-import { proxyImage } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
 
 export default function FanAvatar({

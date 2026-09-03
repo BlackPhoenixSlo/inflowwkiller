@@ -22,7 +22,7 @@
 import { Badge, Card } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { fmtCents, fmtDateShort, fmtInt } from "@/lib/format";
-import { proxyImage } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { useAccounts } from "@/hooks/useAccounts";
 import {
   useAccountProfile,

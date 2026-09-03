@@ -17,15 +17,16 @@ import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { relay, type OFMessage } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
-export function useTogglePinMessage(accountId: string | null, fanId: number | null) {
+export function useTogglePinMessage(accountId: string | null, fanId: FanId | null) {
   const qc = useQueryClient();
   const queryKey = ["messages", accountId, fanId] as const;
 
   const patchLocal = useCallback(
-    (messageId: number, isPinned: boolean) => {
+    (messageId: string, isPinned: boolean) => {
       qc.setQueryData<OFMessage[]>(queryKey, (prev = []) =>
-        prev.map((m) => (Number(m.id) === messageId ? { ...m, isPinned } : m)),
+        prev.map((m) => (String(m.id) === messageId ? { ...m, isPinned } : m)),
       );
     },
     [qc, queryKey],
@@ -34,8 +35,10 @@ export function useTogglePinMessage(accountId: string | null, fanId: number | nu
   const toggle = useCallback(
     async (msg: OFMessage) => {
       if (!accountId || fanId == null) return;
-      const id = Number(msg.id);
-      if (!Number.isFinite(id) || id <= 0) return;
+      // Exact, not Number(): a Fansly message id is a snowflake past 2^53,
+      // so a rounded value here would pin a DIFFERENT message (or 404).
+      const id = String(msg.id ?? "");
+      if (!/^\d+$/.test(id) || /^0+$/.test(id)) return;
       const next = !msg.isPinned;
       patchLocal(id, next);
       try {

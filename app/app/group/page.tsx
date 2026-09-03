@@ -29,7 +29,9 @@ import { GroupPane } from "@/components/group/GroupPane";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { cn } from "@/lib/utils";
-import { proxyImage, relay, type OFChatItem, type OFUserMini } from "@/lib/relay";
+import { relay, type OFChatItem, type OFUserMini } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { fanIdFromParam, sameUserId, type FanId } from "@/lib/fanId";
 import {
   GROUP_CHANNEL_NAME,
   GROUP_HEARTBEAT_MS,
@@ -103,8 +105,10 @@ function takeSeedParams(): { seeds: Slot[]; spawnToken: string | null } {
   const idx = rawAdd.lastIndexOf(":");
   if (idx <= 0) return { seeds: [], spawnToken };
   const accountId = rawAdd.slice(0, idx);
-  const fan = Number(rawAdd.slice(idx + 1));
-  if (!accountId || !Number.isFinite(fan) || fan <= 0) return { seeds: [], spawnToken };
+  // Not `Number(...)`: a Fansly snowflake does not survive float64, so the
+  // "👥 group" button opened a slot pointing at a fan that does not exist.
+  const fan = fanIdFromParam(rawAdd.slice(idx + 1));
+  if (!accountId || fan == null) return { seeds: [], spawnToken };
   return { seeds: [{ accountId, fanId: fan }], spawnToken };
 }
 
@@ -266,7 +270,11 @@ export default function GroupChatPage() {
           try { ch.postMessage({ type: "add-ack", tabId, reqId: msg.reqId, ok: next.length > 0 }); } catch {}
         }
         if (msg.type === "add") {
-          if (typeof msg.accountId !== "string" || typeof msg.fanId !== "number") return;
+          // Accept BOTH id shapes: `!== "number"` silently dropped every
+          // Fansly `add` broadcast (string snowflakes), so the slot was lost
+          // with no error — the same bug the localStorage filter had.
+          if (typeof msg.accountId !== "string"
+              || (typeof msg.fanId !== "number" && typeof msg.fanId !== "string")) return;
           let accepted = false;
           setSlots((cur) => {
             if (cur.some((s) => s.accountId === msg.accountId && s.fanId === msg.fanId)) {
@@ -331,9 +339,9 @@ export default function GroupChatPage() {
     };
   }, [hydrated]);
 
-  const removeSlot = useCallback((accountId: string, fanId: number) => {
+  const removeSlot = useCallback((accountId: string, fanId: FanId) => {
     setSlots((cur) =>
-      cur.filter((s) => !(s.accountId === accountId && s.fanId === fanId)),
+      cur.filter((s) => !(s.accountId === accountId && sameUserId(s.fanId, fanId))),
     );
   }, []);
 
@@ -369,7 +377,7 @@ export default function GroupChatPage() {
       const c = byKey.get(`${s.accountId}:${s.fanId}`);
       const lm = c?.lastMessage;
       if (!lm) continue;
-      if (lm.fromUser?.id != null && lm.fromUser.id !== Number(s.accountId)) n++;
+      if (lm.fromUser?.id != null && !sameUserId(lm.fromUser.id, s.accountId)) n++;
     }
     return n;
     // chatsCacheTick is a render trigger so cache patches re-evaluate.

@@ -23,7 +23,8 @@ import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaPreviewModal } from "@/components/settings/MediaPreviewModal";
 import { useMediaCache } from "@/hooks/useMediaCache";
 import { mirrorThumbSrc } from "@/hooks/useVaultCache";
-import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
 // Display only — this tab READS the account's clock and never writes it.
 import { utcLabel, zoneLabel } from "@/lib/creatorClock";

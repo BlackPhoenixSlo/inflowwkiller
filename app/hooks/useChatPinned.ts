@@ -22,6 +22,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { relay, type OFMessage } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 interface PinnedResp {
   list?: OFMessage[];
@@ -29,7 +30,7 @@ interface PinnedResp {
 
 export function useChatPinned(
   accountId: string | null,
-  fanId: number | string | null,
+  fanId: FanId | null,
   enabled = true,
 ) {
   return useQuery<OFMessage[]>({

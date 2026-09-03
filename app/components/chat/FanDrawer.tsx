@@ -27,7 +27,9 @@ import { useFanActivity } from "@/hooks/useLastPurchases";
 import { useFanPpvHistory, type PpvHistoryItem } from "@/hooks/useFanPpvHistory";
 import { useFanChatMedia, type FanChatMediaItem } from "@/hooks/useFanChatMedia";
 import { stripOFHtml } from "@/lib/ofHtml";
-import { proxyImage, proxyScrubFrame, relay, type FanRecord, type OFChatItem, type VaultMedia } from "@/lib/relay";
+import { relay, type FanRecord, type OFChatItem, type VaultMedia } from "@/lib/relay";
+import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
+import { type FanId } from "@/lib/fanId";
 import { cn, fmtRelTime, interpretSubStatus } from "@/lib/utils";
 import { PersonaClaims } from "./PersonaClaims";
 import { type PickedTemplate } from "./TemplatePicker";
@@ -37,7 +39,7 @@ import { useAiChatterSessions, useCancelOffer } from "@/hooks/useCatalog";
  *  and human chatters — see it, and kill the offer to take over cleanly.
  *  Renders nothing when the fan isn't in any AI-seller flow. (The tip/both
  *  mode branches render LEGACY open rows — new offers are always ppv.) */
-function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: number }) {
+function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: FanId }) {
   const sessionsQ = useAiChatterSessions(accountId);
   const cancelM = useCancelOffer(accountId);
   const offer = (sessionsQ.data?.offers ?? []).find(
@@ -78,7 +80,7 @@ function AiSellerChip({ accountId, fanId }: { accountId: string; fanId: number }
 function MassExcludeToggle({
   accountId, fanId, kind, title, hint,
 }: {
-  accountId: string; fanId: number; kind: MassExcludeKind; title: string; hint: string;
+  accountId: string; fanId: FanId; kind: MassExcludeKind; title: string; hint: string;
 }) {
   const { isOn, isLoading, toggle } = useMassExclude(accountId, fanId, kind);
   return (
@@ -120,7 +122,7 @@ export function FanDrawer({
   open: boolean;
   onClose: () => void;
   accountId: string;
-  fanId: number;
+  fanId: FanId;
   chat: OFChatItem;
   /** When true, render as an in-flow side column (no backdrop, no
    *  click-out close). Used when the "keep drawer open" flag is on
@@ -1792,7 +1794,7 @@ function petLabel(p: unknown): string {
 // exposes them as separate endpoints. Empty string clears the field on OF.
 // X-Account-Id (via the ctx) is required — without it the relay can't
 // route the upstream call to the right account's OFClient.
-function writeOFCustomName(accountId: string, fanId: number, name: string) {
+function writeOFCustomName(accountId: string, fanId: FanId, name: string) {
   return relay.put(
     `/api/of/v2/subscriptions/${fanId}/custom-name`,
     { name },
@@ -1800,7 +1802,7 @@ function writeOFCustomName(accountId: string, fanId: number, name: string) {
   );
 }
 
-function writeOFNotice(accountId: string, fanId: number, note: string) {
+function writeOFNotice(accountId: string, fanId: FanId, note: string) {
   return relay.put(
     `/api/of/v2/subscriptions/${fanId}/note`,
     { note },

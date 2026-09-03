@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type RelayContext } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 const KEY = "ai-chatter";
 const BG_CTX: RelayContext = { priority: "background" };
@@ -53,6 +54,30 @@ export interface AiChatterConfig {
   engage_old_fans?: boolean;
   /** Payer floor — undefined means the default, which is ON. */
   payers_only?: boolean;
+  /** The life-expense tip ask — every 15-25 of his messages one reply asks him to
+   *  spoil her with something she is paying for today. Ships OFF. */
+  life_tip_ask_enabled?: boolean;
+  /** null/undefined = she names a modest figure herself. */
+  life_tip_ask_amount_dollars?: number | null;
+  /** The ask's knobs — every one falls back to the shipped constant when absent
+   *  (see automations/_life_tip.Settings). Pairs are [min, max]. */
+  life_tip_ask_every?: number[];
+  life_tip_ask_every_tipped?: number[];
+  life_tip_ask_retry?: number[];
+  life_tip_ask_days?: number[];
+  life_tip_ask_range_dollars?: number[];
+  life_tip_ask_reasons_her?: string[];
+  life_tip_ask_reasons_him?: string[];
+  life_tip_ask_reasons_shown?: number;
+  life_tip_ask_extra?: string;
+  /** The BIG ask (see automations/_life_tip.BigSettings) — once a month, tippers
+   *  only, $100-300. Its own switch; no amount knob (the reason names the number). */
+  life_tip_big_enabled?: boolean;
+  life_tip_big_days?: number[];
+  life_tip_big_range_dollars?: number[];
+  life_tip_big_reasons_her?: string[];
+  life_tip_big_reasons_him?: string[];
+  life_tip_big_extra?: string;
   old_fan_question_every?: number;
   sla_minutes?: number;
   max_lifetime_spend_cents?: number;
@@ -290,7 +315,7 @@ export interface SaveAiChatterConfigVars {
 
 export interface OfferRow {
   id: number;
-  fan_id: number;
+  fan_id: FanId;
   fan_name: string;
   item_label: string | null;
   mode: string;

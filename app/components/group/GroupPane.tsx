@@ -22,14 +22,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAccountLabel } from "@/hooks/useAccounts";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { useSendMessage } from "@/hooks/useSendMessage";
-import {
-  describeLoadError,
-  proxyImage,
-  relay,
-  type OFChatItem,
-  type OFMessage,
-  type OFUserMini,
-} from "@/lib/relay";
+import { describeLoadError, relay, type OFChatItem, type OFMessage, type OFUserMini } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { type FanId } from "@/lib/fanId";
 import { cn, decodeHtmlEntities, fmtRelTime } from "@/lib/utils";
 
 const MESSAGE_DISPLAY_CAP = 20;
@@ -52,7 +47,7 @@ export function GroupPane({
   onClose,
 }: {
   accountId: string;
-  fanId: number;
+  fanId: FanId;
   onClose: () => void;
 }) {
   const qc = useQueryClient();

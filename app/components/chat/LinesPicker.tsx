@@ -13,10 +13,11 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useFanLines, type FanLine } from "@/hooks/useFanLines";
+import type { FanId } from "@/lib/fanId";
 
 export interface LinesPickerProps {
   accountId: string | null;
-  fanId: number | null;
+  fanId: FanId | null;
   /** Insert this line's text into the composer + arm its slot for consume-on-send. */
   onPick: (line: FanLine) => void;
 }

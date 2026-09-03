@@ -29,7 +29,9 @@ from typing import NamedTuple
 _CATS: list[tuple[str, tuple[str, ...]]] = [
     ("turn", ("RIGHT NOW for you it is", "HIS NAME:", "STYLE FOR THIS MESSAGE",
               "YOUR GOAL THIS MESSAGE", "THIS MESSAGE:",
-              "You know enough about him now")),
+              "You know enough about him now",
+              "ASK HIM FOR A LITTLE HELP THIS MESSAGE",
+              "ASK HIM FOR REAL HELP THIS MESSAGE")),
     ("hard", ("STAY ON ONLYFANS", "WHO YOU ARE (hard rule)", "NEVER NARRATE",
               "DON'T NARRATE", "BIO CONSISTENCY")),
     ("voice", ("THE FEEL OF TEXTING", "HOW YOU TEXT", "TEXT LIKE A REAL PERSON",
@@ -109,7 +111,7 @@ def facts_are_redundant(system: str, elsewhere: str = "") -> bool:
     read the transcript, the same account would drop the block for one fan and keep it
     for the next — a system prefix that varies per fan, which defeats DeepSeek's
     prefix cache (the whole reason static text is kept static) and makes behaviour
-    non-deterministic. Measured live 2026-08-13: account ACCOUNT_ID_2 flipped 1-of-2 that
+    non-deterministic. Measured live 2026-08-13: account 2024813 flipped 1-of-2 that
     way. So callers pass nothing; the bio lines carry the duplication or they do not.
 
     Conservative by construction: a block whose fields cannot be parsed returns False

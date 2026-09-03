@@ -28,7 +28,9 @@ import { searchOf, useMirrorItems, useVaultCacheSummary, vaultTileThumb } from "
 import { useFanVaultHistory, type FanVaultEntry } from "@/hooks/useFanVaultHistory";
 import { useWallMedia } from "@/hooks/useWallMedia";
 import { useBlurMode, blurImageClass } from "@/hooks/useBlurMode";
-import { proxyImage, proxyScrubFrame, type VaultList, type VaultMedia } from "@/lib/relay";
+import { type VaultList, type VaultMedia } from "@/lib/relay";
+import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
+import { type FanId } from "@/lib/fanId";
 import { fmtDuration } from "@/lib/format";
 import { perfLog, perfOpId, perfPainted } from "@/lib/perfLog";
 
@@ -238,17 +240,17 @@ const TYPE_CHIPS: Array<{ value: MediaType; label: string }> = [
 const MRU_CAP = 3;
 
 interface PickerFanState {
-  listId: number | null;
+  listId: FanId | null;
   sort: Sort;
   type: MediaType;
 }
 
-function fanStateKey(accountId: string | null, fanId: number | null): string | null {
+function fanStateKey(accountId: string | null, fanId: FanId | null): string | null {
   if (!accountId || fanId == null) return null;
   return `chatterly:vault-state:${accountId}:${fanId}`;
 }
 
-function fanMruKey(accountId: string | null, fanId: number | null): string | null {
+function fanMruKey(accountId: string | null, fanId: FanId | null): string | null {
   if (!accountId || fanId == null) return null;
   return `chatterly:vault-mru:${accountId}:${fanId}`;
 }
@@ -261,7 +263,7 @@ function accountCountsKey(accountId: string | null): string | null {
 /** Full picker state for one fan — folder, sort order, media type. We
  *  persist all three so reopening the picker is byte-identical to where
  *  the chatter left it (no forced "pop to last folder" surprises). */
-function loadFanState(accountId: string | null, fanId: number | null): PickerFanState | null {
+function loadFanState(accountId: string | null, fanId: FanId | null): PickerFanState | null {
   const k = fanStateKey(accountId, fanId);
   if (!k || typeof window === "undefined") return null;
   try {
@@ -269,7 +271,8 @@ function loadFanState(accountId: string | null, fanId: number | null): PickerFan
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PickerFanState>;
     return {
-      listId: typeof parsed.listId === "number" ? parsed.listId : null,
+      listId: (typeof parsed.listId === "number" || typeof parsed.listId === "string")
+        ? parsed.listId : null,
       sort: parsed.sort === "oldest" ? "oldest" : "newest",
       type:
         parsed.type === "photo" || parsed.type === "video" || parsed.type === "gif"
@@ -281,7 +284,7 @@ function loadFanState(accountId: string | null, fanId: number | null): PickerFan
   }
 }
 
-function saveFanState(accountId: string | null, fanId: number | null, state: PickerFanState): void {
+function saveFanState(accountId: string | null, fanId: FanId | null, state: PickerFanState): void {
   const k = fanStateKey(accountId, fanId);
   if (!k || typeof window === "undefined") return;
   try {
@@ -292,7 +295,7 @@ function saveFanState(accountId: string | null, fanId: number | null, state: Pic
 
 /** Per-fan folder MRU. Drives the quick-chip row when this specific fan
  *  has history. Most-recent first, capped at MRU_CAP. */
-function loadFanMru(accountId: string | null, fanId: number | null): number[] {
+function loadFanMru(accountId: string | null, fanId: FanId | null): FanId[] {
   const k = fanMruKey(accountId, fanId);
   if (!k || typeof window === "undefined") return [];
   try {
@@ -304,7 +307,7 @@ function loadFanMru(accountId: string | null, fanId: number | null): number[] {
   } catch { return []; }
 }
 
-function saveFanMru(accountId: string | null, fanId: number | null, mru: number[]): void {
+function saveFanMru(accountId: string | null, fanId: FanId | null, mru: FanId[]): void {
   const k = fanMruKey(accountId, fanId);
   if (!k || typeof window === "undefined") return;
   try {
@@ -327,7 +330,7 @@ function loadAccountCounts(accountId: string | null): Record<string, number> {
   } catch { return {}; }
 }
 
-function bumpAccountCount(accountId: string | null, folderId: number): void {
+function bumpAccountCount(accountId: string | null, folderId: FanId): void {
   const k = accountCountsKey(accountId);
   if (!k || typeof window === "undefined") return;
   try {
@@ -345,7 +348,7 @@ export interface VaultPickerProps {
    *  status badge on each tile + enable the fan-aware filter chips.
    *  Leave null for mass-message or post-builder usages where there's
    *  no single fan in scope. */
-  fanId?: number | null;
+  fanId?: FanId | null;
   /** Already-attached ids from the Composer so we can pre-select them. */
   initialSelectedIds: number[];
   /** Caller receives the full media objects so it can render previews. */
@@ -354,7 +357,7 @@ export interface VaultPickerProps {
 
 export function VaultPicker({ open, onClose, accountId, fanId = null, initialSelectedIds, onConfirm }: VaultPickerProps) {
   const [type, setType] = useState<MediaType>("all");
-  const [listId, setListId] = useState<number | null>(null);
+  const [listId, setListId] = useState<FanId | null>(null);
   const [sort, setSort] = useState<Sort>("newest");
   // Vault search — OF-native (verified live: wire param `query`). Debounced
   // so we fire one OF fetch after the user pauses typing, not per keystroke.
@@ -366,7 +369,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   }, [queryInput]);
   // Per-fan folder MRU (last 3 used). Lives in localStorage so it
   // survives reloads + transfers between tabs.
-  const [folderMru, setFolderMru] = useState<number[]>([]);
+  const [folderMru, setFolderMru] = useState<FanId[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set(initialSelectedIds));
   // Cache of media metadata for ids the user picked across filter switches
   // so we can return the full VaultMedia[] on confirm even if the user
@@ -451,7 +454,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   // enriched with item counts from listsQ where present so the option still
   // reads "Name (N)". Names come from the access endpoint, NOT vault/lists,
   // so a folder past the paginated lists page still appears.
-  const folderSelectItems = useMemo<Array<{ id: number; name: string; label: string }>>(() => {
+  const folderSelectItems = useMemo<Array<{ id: FanId; name: string; label: string }>>(() => {
     const lists = listsQ.data?.list ?? [];
     // Infloww-style per-kind counts: "🖼 3 · 🎬 17". GIFs fold into the
     // image bucket, audio gets its own segment; zero segments are hidden.
@@ -805,7 +808,7 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   // allowed folder that OF still reports as having media (listsQ is
   // backend-filtered to the allowed set), which transparently falls
   // through past a folder that was deleted/emptied on OF (per DA-3).
-  const firstUsableFolderId = useMemo<number | null>(() => {
+  const firstUsableFolderId = useMemo<FanId | null>(() => {
     if (allowedFolders.length === 0) return null;
     const liveIds = new Set((listsQ.data?.list ?? []).map((l) => l.id));
     const live = allowedFolders.find((f) => liveIds.has(f.folder_id));
@@ -962,14 +965,14 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
   //      with a • — "you use this folder a lot in general".
   //   3. First few vault folders OF returned, as last-ditch defaults.
   //  Capped at MRU_CAP total. Same id never appears twice.
-  type Chip = { id: number; name: string; source: "mru" | "global" | "default" };
+  type Chip = { id: FanId; name: string; source: "mru" | "global" | "default" };
   const folderChips = useMemo<Chip[]>(() => {
     const allFolders = listsQ.data?.list ?? [];
     if (allFolders.length === 0) return [];
     const byId = new Map(allFolders.map((l) => [l.id, l]));
     const out: Chip[] = [];
-    const seen = new Set<number>();
-    const push = (id: number, source: Chip["source"]) => {
+    const seen = new Set<FanId>();
+    const push = (id: FanId, source: Chip["source"]) => {
       if (out.length >= MRU_CAP || seen.has(id)) return;
       const l = byId.get(id);
       if (!l) return; // folder deleted upstream — skip
@@ -981,8 +984,10 @@ export function VaultPicker({ open, onClose, accountId, fanId = null, initialSel
     // (2) Account-wide most-used. Sort folderIds by count DESC.
     if (out.length < MRU_CAP) {
       const ranked = Object.entries(accountCounts)
-        .map(([id, count]) => ({ id: Number(id), count: Number(count) || 0 }))
-        .filter((e) => Number.isFinite(e.id) && e.count > 0)
+        // Keep the id a STRING: these keys are folder ids, and Number() on a
+        // Fansly snowflake (>2^53) lands on a different folder.
+        .map(([id, count]) => ({ id: id as FanId, count: Number(count) || 0 }))
+        .filter((e) => e.id !== "" && e.count > 0)
         .sort((a, b) => b.count - a.count);
       for (const e of ranked) push(e.id, "global");
     }

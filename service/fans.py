@@ -492,8 +492,10 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     rstates = await ac._load_rhythm(account_id, [int(fan_id)])
     lad = ladders.get(int(fan_id))
     rst = rstates.get(int(fan_id))
+    # `_NO_MONEY` rather than a hand-written tuple: `_Money` has been widened
+    # twice, and the literal that stood here was already the wrong arity.
     human = (await ac._human_money_signals(account_id, [int(fan_id)], now)).get(
-        int(fan_id), (None, None))
+        int(fan_id), ac._NO_MONEY)
     open_offers = await ac._open_offers(account_id, int(fan_id))
 
     def _iso(dt: datetime | None) -> str | None:
@@ -527,7 +529,7 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     engine = "ai_chatter"
     if not engine_on:
         engine = "none"
-    elif open_offers or human[0] is not None or (
+    elif open_offers or human.ask is not None or (
             lad is not None and lad.status in (upsell.STATUS_OPEN, upsell.STATUS_HOT)):
         engine = "ai_upseller"
 
@@ -687,7 +689,7 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
                 status=(lad.status if lad is not None else upsell.STATUS_IDLE),
                 offers_paused_until=(lad.offers_paused_until if lad is not None else None),
                 last_ask_at=ac._newest(
-                    lad.last_ask_at if lad is not None else None, human[0]),
+                    lad.last_ask_at if lad is not None else None, human.ask),
             ), now)
             gate = {"enabled": True, "ok": bool(ok), "why": (None if ok else why)}
 
@@ -742,8 +744,8 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         # never drift from what she'll actually do.
         "break_proof": bool(
             ac._breakproof(ac._newest(
-                human[0], open_offers[0].offered_at if open_offers else None), now)
-            or (human[1] is not None and (now - human[1]).total_seconds() <= 3600)),
+                human.ask, open_offers[0].offered_at if open_offers else None), now)
+            or (human.paid is not None and (now - human.paid).total_seconds() <= 3600)),
         "ladder": {
             "status": (lad.status if lad is not None else "idle"),
             "rung": int(lad.rung_index or 0) if lad is not None else 0,
@@ -759,10 +761,10 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
             {"price_cents": int(open_offers[0].price_cents or 0),
              "at": _iso(open_offers[0].offered_at), "by": "ai"}
             if open_offers else
-            {"price_cents": None, "at": _iso(human[0]), "by": "human"}
-            if human[0] is not None else None
+            {"price_cents": None, "at": _iso(human.ask), "by": "human"}
+            if human.ask is not None else None
         ),
-        "last_paid_at": _iso(human[1]),
+        "last_paid_at": _iso(human.paid),
         "force_ask": bool(cfg.get("force_ask")) and gate_on,
     }
 

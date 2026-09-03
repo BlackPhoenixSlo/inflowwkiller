@@ -51,9 +51,29 @@ interface CustomRow {
   fan_id: number;
   display_name: string;
   tip_cents: number | null;
+  /** How many SEPARATE orders make up `tip_cents`. Two $100 tips a day apart
+   *  are two voice notes, and the queue used to show one. 0 on a row whose
+   *  amount could not be reconstructed from transactions. */
+  order_count?: number;
   tipped_at: string | null;
   lifetime_spend_cents: number;
   chat_href: string;
+}
+
+/** The recording brief. Amounts come from the DB, never from the model —
+ *  see `/admin/customs/brief`. */
+interface Brief {
+  ok: boolean;
+  reason?: string;
+  paid_cents?: number;
+  order_count?: number;
+  /** false = the model could not see him ask for anything in this excerpt.
+   *  Rendered as a warning, never as a work order. */
+  found_request?: boolean;
+  summary?: string;
+  deliverables?: string[];
+  say_by_name?: string | null;
+  uncertain?: string[];
 }
 
 interface ContextMsg {
@@ -82,6 +102,28 @@ function waited(iso: string | null): { label: string; hours: number } {
 }
 
 
+/** The fan's own words, most likely to BE the work order.
+ *
+ *  His longest inbound message in the pane. No model, no inference, no
+ *  paraphrase — a summary that quietly rewrites "25 back 25 front" is worse
+ *  than no summary at all, because the operator films against it. This is
+ *  verbatim or nothing, and when it guesses wrong the raw thread is directly
+ *  underneath it.
+ *
+ *  Tip rows carry no body of their own (the money is the content), so they are
+ *  skipped; very short replies ("ok", "yes") never carry a brief. */
+function workOrderQuote(msgs: ContextMsg[]): string | null {
+  let best: string | null = null;
+  for (const m of msgs) {
+    if (!m.from_fan || m.is_tip) continue;
+    const t = (m.text || "").trim();
+    if (t.length < 25) continue;
+    if (best === null || t.length > best.length) best = t;
+  }
+  return best;
+}
+
+
 function Section({
   title,
   note,
@@ -100,6 +142,37 @@ function Section({
   // decide surface, and two open threads is two things to hold in your head.
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [ctx, setCtx] = useState<ContextMsg[] | null>(null);
+  // Which row is mid-pull. The re-scrape is synchronous (~1-2s) and the pane
+  // must not look merely slow while it runs.
+  const [pulling, setPulling] = useState<string | null>(null);
+  // The brief for the open row. `undefined` = never asked (the operator has to
+  // click), `null` = in flight.
+  const [brief, setBrief] = useState<Brief | null | undefined>(undefined);
+
+  /** Load the thread around this row's anchor tip into the pane. */
+  const loadCtx = useCallback(async (r: CustomRow) => {
+    setCtx(null);
+    setBrief(undefined);
+    try {
+      const q = new URLSearchParams({
+        account_id: r.account_id,
+        fan_id: String(r.fan_id),
+        // The endpoint accepts up to 60 either side and we were sending
+        // neither, so every Read silently took the 18-before default. A fan
+        // with two orders on different days needs to reach back past the
+        // newer tip to the conversation that placed the older one.
+        before: "50",
+        after: "10",
+      });
+      if (r.tipped_at) q.set("at", r.tipped_at);
+      const res = await relay.get<{ messages: ContextMsg[] }>(
+        `/admin/customs/context?${q.toString()}`,
+      );
+      setCtx(res.messages || []);
+    } catch {
+      setCtx([]);
+    }
+  }, []);
 
   const toggle = useCallback(
     async (r: CustomRow) => {
@@ -109,22 +182,54 @@ function Section({
         return;
       }
       setOpenKey(key);
-      setCtx(null);
+      await loadCtx(r);
+    },
+    [openKey, loadCtx],
+  );
+
+  /** Ask the model what to record. ON CLICK ONLY — a call per row on queue
+   *  load would be money spent on rows nobody opens. Best-effort: a failure
+   *  renders as a line in the pane, never as the page-wide error banner, and
+   *  the raw thread underneath is unaffected. */
+  const askBrief = useCallback(async (r: CustomRow) => {
+    setBrief(null);
+    try {
+      const res = await relay.post<Brief>("/admin/customs/brief", {
+        account_id: r.account_id,
+        fan_id: r.fan_id,
+        at: r.tipped_at,
+      });
+      setBrief(res);
+    } catch (e) {
+      setBrief({ ok: false, reason: e instanceof Error ? e.message : "failed" });
+    }
+  }, []);
+
+  /** Re-scrape this fan's thread from OF, then re-read the pane.
+   *
+   *  The context pane can only show what we have STORED, so on a thread the
+   *  scraper never reached the work order simply is not there. This is the
+   *  existing chat ↻ endpoint (`rescrape-now`) — synchronous, ~1-2s, and
+   *  best-effort: it returns ok=false rather than throwing, so a failed pull
+   *  leaves the pane exactly as it was instead of blanking it. */
+  const pull = useCallback(
+    async (r: CustomRow) => {
+      const key = `${r.account_id}:${r.fan_id}`;
+      setPulling(key);
       try {
-        const q = new URLSearchParams({
-          account_id: r.account_id,
-          fan_id: String(r.fan_id),
-        });
-        if (r.tipped_at) q.set("at", r.tipped_at);
-        const res = await relay.get<{ messages: ContextMsg[] }>(
-          `/admin/customs/context?${q.toString()}`,
+        await relay.post(
+          `/admin/messages/${r.account_id}/${r.fan_id}/rescrape-now`,
+          {},
         );
-        setCtx(res.messages || []);
+        setOpenKey(key);
+        await loadCtx(r);
       } catch {
-        setCtx([]);
+        // Best-effort by design — keep whatever the pane already had.
+      } finally {
+        setPulling(null);
       }
     },
-    [openKey],
+    [loadCtx],
   );
 
   return (
@@ -200,6 +305,18 @@ function Section({
                   <td className="py-2 pr-3 opacity-80">{r.account_name}</td>
                   <td className="py-2 pr-3 tabular-nums font-medium">
                     {money(r.tip_cents)}
+                    {/* TWO $100 tips a day apart are TWO voice notes. The total
+                        alone reads as one big custom, so the count is what makes
+                        it legible. Shown only when it is more than one — a "1"
+                        on every row is noise. */}
+                    {(r.order_count || 0) > 1 && (
+                      <span
+                        className="ml-1 font-normal opacity-60"
+                        title={`${r.order_count} separate orders — ${r.order_count} voice notes owed`}
+                      >
+                        · {r.order_count} tips
+                      </span>
+                    )}
                   </td>
                   <td className="py-2 pr-3 tabular-nums opacity-70">
                     {money(r.lifetime_spend_cents)}
@@ -215,6 +332,17 @@ function Section({
                     >
                       {openKey === key ? "Hide" : "Read"}
                     </button>
+                    {/* When the stored thread is thin (or the work order sits
+                        further back than we ever scraped), pull it from OF and
+                        re-read. Same endpoint the chat ↻ uses. */}
+                    <button
+                      disabled={pulling === key}
+                      onClick={() => void pull(r)}
+                      className="mr-2 rounded border px-2 py-1 text-xs hover:bg-black/5 disabled:opacity-40"
+                      title="Re-fetch this chat from OnlyFans, then re-read it"
+                    >
+                      {pulling === key ? "…" : "Pull"}
+                    </button>
                     <button
                       disabled={busy === key}
                       onClick={() => onClear(r)}
@@ -222,7 +350,15 @@ function Section({
                       title={
                         isReview
                           ? "Nothing owed here — settle it and stop showing it"
-                          : "Mark delivered; also clears the Custom tag on OnlyFans"
+                          : (r.order_count || 0) > 1
+                            // HONEST about the one thing this button cannot do.
+                            // The ledger is a single nullable timestamp, so one
+                            // click settles EVERY outstanding order for this fan
+                            // — there is no way to say "I sent one of two", and
+                            // customs_watch will not re-mark what is stamped
+                            // cleared. Say so where the click happens.
+                            ? `Mark delivered — settles ALL ${r.order_count} orders for this fan, not just one`
+                            : "Mark delivered; also clears the Custom tag on OnlyFans"
                       }
                     >
                       {busy === key ? "…" : isReview ? "Dismiss" : "Sent"}
@@ -230,6 +366,19 @@ function Section({
                   </td>
                 </tr>
               );
+              // The brief's four visible states, named once. `undefined` =
+              // never asked, `null` = in flight; deriving the phase here keeps
+              // that encoding out of the JSX below.
+              const briefPhase: "idle" | "loading" | "failed" | "not-found" | "ready" =
+                brief === undefined
+                  ? "idle"
+                  : brief === null
+                    ? "loading"
+                    : !brief.ok
+                      ? "failed"
+                      : brief.found_request === false
+                        ? "not-found"
+                        : "ready";
               if (!open) return [cells];
               return [
                 cells,
@@ -242,6 +391,95 @@ function Section({
                       <p className="text-xs opacity-60">
                         No messages stored around this tip.
                       </p>
+                    )}
+                    {/* WHAT TO FILM. The button is the whole gate on cost —
+                        nothing is generated until someone asks. */}
+                    {ctx !== null && ctx.length > 0 && (
+                      <div className="mb-3">
+                        {/* ONE state, four renders. `undefined`/`null` as
+                            "never asked"/"in flight" reads as two unrelated
+                            nullables at the call site, so the phase is named
+                            once here and switched on once below. */}
+                        {briefPhase === "idle" && (
+                          <button
+                            onClick={() => void askBrief(r)}
+                            className="rounded border px-2 py-1 text-xs hover:bg-black/5"
+                            title="Read the thread and say what the voice note has to contain"
+                          >
+                            What to film?
+                          </button>
+                        )}
+                        {briefPhase === "loading" && (
+                          <p className="text-xs opacity-60">Reading the thread…</p>
+                        )}
+                        {briefPhase === "failed" && brief && (
+                          <p className="text-xs opacity-60">
+                            Couldn&rsquo;t summarise ({brief.reason || "unknown"}) &mdash;
+                            the thread is below.
+                          </p>
+                        )}
+                        {briefPhase === "not-found" && brief && (
+                          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                            <p className="text-xs font-semibold">
+                              His ask isn&rsquo;t in this excerpt
+                            </p>
+                            <p className="mt-1 text-xs opacity-80">
+                              {brief.summary ||
+                                "He never says what he wants in the messages we have."}{" "}
+                              Try &ldquo;Pull&rdquo; to fetch more of the thread from
+                              OnlyFans, or read it below.
+                            </p>
+                          </div>
+                        )}
+                        {briefPhase === "ready" && brief && (
+                          <div className="rounded border border-emerald-600/40 bg-emerald-600/5 px-3 py-2">
+                            <p className="text-xs font-semibold">
+                              Work order
+                              {/* From the DB. The model is never asked for a
+                                  figure — see the endpoint's docstring. */}
+                              {brief.paid_cents ? (
+                                <span className="ml-1 font-normal opacity-70">
+                                  · {money(brief.paid_cents)}
+                                  {(brief.order_count || 0) > 1
+                                    ? ` · ${brief.order_count} tips`
+                                    : ""}
+                                </span>
+                              ) : null}
+                            </p>
+                            {brief.summary && (
+                              <p className="mt-1 text-xs">{brief.summary}</p>
+                            )}
+                            {(brief.deliverables || []).length > 0 && (
+                              <ul className="mt-1 list-disc pl-4 text-xs">
+                                {(brief.deliverables || []).map((d, i) => (
+                                  <li key={i}>{d}</li>
+                                ))}
+                              </ul>
+                            )}
+                            {brief.say_by_name && (
+                              <p className="mt-1 text-xs">
+                                Say his name: <strong>{brief.say_by_name}</strong>
+                              </p>
+                            )}
+                            {(brief.uncertain || []).length > 0 && (
+                              <p className="mt-1 text-xs opacity-70">
+                                Unclear &mdash; your call: {(brief.uncertain || []).join("; ")}
+                              </p>
+                            )}
+                            <p className="mt-1 text-[11px] opacity-50">
+                              Generated from his messages. Check them below.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {ctx !== null && workOrderQuote(ctx) && (
+                      <blockquote
+                        className="mb-3 border-l-2 border-emerald-600/50 pl-3 text-xs italic opacity-90"
+                        title="His longest message here — verbatim, not summarised"
+                      >
+                        {workOrderQuote(ctx)}
+                      </blockquote>
                     )}
                     {ctx !== null && ctx.length > 0 && (
                       <div className="space-y-1.5">

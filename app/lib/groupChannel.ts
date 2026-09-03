@@ -1,5 +1,7 @@
 "use client";
 
+import { fanIdFromParam, sameUserId, type FanId } from "@/lib/fanId";
+
 /**
  * groupChannel — coordination layer for the /group tab.
  *
@@ -61,7 +63,7 @@ const SPAWN_DEFER_MS = 60;
  *  cover BroadcastChannel + a state-set round trip on a busy renderer. */
 const ADD_ACK_TIMEOUT_MS = 400;
 
-export interface GroupSlot { accountId: string; fanId: number }
+export interface GroupSlot { accountId: string; fanId: FanId }
 
 export interface GroupTabRegistry {
   tabId: string;
@@ -73,7 +75,7 @@ export interface GroupTabRegistry {
 }
 
 export type GroupChannelMessage =
-  | { type: "add"; tabId: string; reqId: string; accountId: string; fanId: number }
+  | { type: "add"; tabId: string; reqId: string; accountId: string; fanId: FanId }
   | { type: "add-ack"; tabId: string; reqId: string; ok: boolean }
   /** Replace the target tab's ENTIRE slot list (money rail's "open last 8
    *  buyers"). Unlike `add`, this is destructive by design: clicking the
@@ -114,7 +116,12 @@ export function readAllLiveGroupTabs(): GroupTabRegistry[] {
         const slots = parsed.slots.filter((s): s is GroupSlot =>
           !!s && typeof s === "object" &&
           typeof (s as GroupSlot).accountId === "string" &&
-          typeof (s as GroupSlot).fanId === "number",
+          // `=== "number"` here silently DROPPED every Fansly slot: those ids
+          // are string snowflakes, so the filter treated a valid group member
+          // as malformed and the tab quietly lost the chat. Accept both wire
+          // forms (see FanId), rejecting only an id that is neither.
+          (typeof (s as GroupSlot).fanId === "number"
+            || typeof (s as GroupSlot).fanId === "string"),
         );
         const createdAt = typeof parsed.createdAt === "number" && parsed.createdAt > 0
           ? parsed.createdAt
@@ -224,7 +231,7 @@ function genReqId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function spawnGroupTab(accountId: string, fanId: number, overflow: boolean): void {
+function spawnGroupTab(accountId: string, fanId: FanId, overflow: boolean): void {
   // spawnToken lets us pair the held Window ref with its eventual tabId
   // when the spawned tab broadcasts a `claim`. Without this we'd focus
   // the wrong tab on overflow.
@@ -256,9 +263,13 @@ export function parseSlotsParam(raw: string): GroupSlot[] {
     const idx = part.lastIndexOf(":");
     if (idx <= 0) continue;
     const accountId = decodeURIComponent(part.slice(0, idx));
-    const fanId = Number(part.slice(idx + 1));
-    if (!accountId || !Number.isFinite(fanId) || fanId <= 0) continue;
-    if (out.some((s) => s.accountId === accountId && s.fanId === fanId)) continue;
+    // `Number(...)` here truncated every Fansly slot to a ghost id (the
+    // encoder writes the id as text; this read it back as float64). Parse with
+    // the canonical helper, which also subsumes the old `> 0` check — it
+    // rejects anything that is not a positive integer id.
+    const fanId = fanIdFromParam(part.slice(idx + 1));
+    if (!accountId || fanId == null) continue;
+    if (out.some((s) => s.accountId === accountId && sameUserId(s.fanId, fanId))) continue;
     out.push({ accountId, fanId });
   }
   return out.slice(0, GROUP_SLOT_CAP);
@@ -321,7 +332,7 @@ export async function openGroupTabWithSlots(slots: GroupSlot[]): Promise<OpenGro
  *      tab seeded with just this fan. On cold-start, defer briefly so
  *      a competing source tab's spawn has time to register.
  */
-export async function openGroupTab(accountId: string, fanId: number): Promise<OpenGroupResult> {
+export async function openGroupTab(accountId: string, fanId: FanId): Promise<OpenGroupResult> {
   if (typeof window === "undefined") return { kind: "opened" };
 
   // Defensive re-entry guard: if the caller is itself inside /group.

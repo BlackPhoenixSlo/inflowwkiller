@@ -710,6 +710,12 @@ async def consider(account_id: str, fan, last_body: str | None, client, *,
     decided about — which, on a chatty thread, is every turn for a day."""
     if _off() or not enabled:
         return
+    if getattr(getattr(client, "pin_message", None), "fansly_unsupported", None):
+        # Fansly has no message pinning (the shim marks pin_message a no-op).
+        # Bail here, ABOVE the LLM rung: a judge call whose verdict can never be
+        # acted on is money spent on nothing, and the shim's no-op would then
+        # report "pinned" for a pin that does not exist.
+        return
     try:
         fan_id = int(getattr(fan, "fan_id", 0) or 0)
         if not fan_id or len(_clean(last_body)) < _PREFILTER_CHARS:

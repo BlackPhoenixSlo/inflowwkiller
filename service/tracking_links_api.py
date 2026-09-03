@@ -5,6 +5,12 @@ short `slug`; the PUBLIC endpoint `GET /t/{slug}` records one click and 302s to
 the `target_url`. Per-link analytics = clicks over time (subscriber / revenue
 attribution is a deliberate TODO — there's no reliable click→sub join yet).
 
+That TODO now has a design note: the operator asked for the collective SPEND of
+the fans a link brought in. A TrackingClick carries no fan-joinable identity
+(no cookie, no click token — just referer/UA/ip) and the fan never lands on OF
+from here, so it needs one of the three approaches in
+library/TRACKING_LINK_SPEND_PARKED.md. Parked, not forgotten.
+
 Routes:
   Public (share-token exempt in server.py):
     GET  /t/{slug}                                record click → 302 target_url

@@ -40,7 +40,9 @@ import {
   useCancelServerScheduled,
 } from "@/hooks/useServerScheduledSends";
 import { useEmployee } from "@/contexts/EmployeeContext";
-import { proxyImage, relay, type OFChatItem, type OFMessage, type OFUserMini } from "@/lib/relay";
+import { relay, type OFChatItem, type OFMessage, type OFUserMini } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { sameUserId, type FanId } from "@/lib/fanId";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
 import { perfPaintOnce } from "@/lib/perfLog";
 
@@ -55,7 +57,7 @@ import { PinnedBar, PinnedPopover, PinnedSidePanel } from "./PinnedPanel";
 
 export interface QuotedReply {
   /** OF message id we're quoting from. */
-  messageId: number;
+  messageId: number | string;
   /** Plain-text preview shown in the composer + prepended on send. */
   preview: string;
   /** Author name for the preview header — defaults to "fan" if absent. */
@@ -99,7 +101,9 @@ export function ChatSurface({
   accountId, fanId, chat, forceDrawerOpen = false, forcePinnedPanelOpen = false, onBack,
 }: {
   accountId: string;
-  fanId: number;
+  /** Number on OnlyFans, a string snowflake on Fansly — the id is passed
+   *  through as the wire sent it, never re-parsed (see `fanIdFromParam`). */
+  fanId: number | string;
   chat: OFChatItem;
   /** Force the FanDrawer to be pinned + open regardless of the user's
    *  "keep open by default" setting. Used by the standalone popout
@@ -447,7 +451,7 @@ export function ChatSurface({
       const newPages: Page[] = data.pages.map((p) => ({
         ...p,
         rows: p.rows.map((c) =>
-          (c.__accountId ?? "") === accountId && c.withUser.id === fanId
+          (c.__accountId ?? "") === accountId && sameUserId(c.withUser.id, fanId)
             ? { ...c, hasUnread: false, unreadMessagesCount: 0 }
             : c,
         ),
@@ -578,7 +582,7 @@ export function ChatSurface({
   // Idempotent on the backend (dupe-checks by message_id) so it's safe
   // to fire on every load — older pages picked up via loadOlder also
   // trigger this when handle.data changes.
-  const backfilledMsgIdsRef = useRef<Set<number>>(new Set());
+  const backfilledMsgIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!accountId || fanId == null) return;
     const messages = handle.data ?? [];
@@ -586,17 +590,20 @@ export function ChatSurface({
     if (!myId || messages.length === 0) return;
 
     const items: Array<{
-      message_id: number;
+      message_id: string;
       media_ids: number[];
       price_cents: number;
       was_purchased: boolean | null;
     }> = [];
     for (const m of messages) {
-      const mid = typeof m.id === "number" ? m.id : Number(m.id);
-      if (!Number.isFinite(mid) || mid <= 0) continue;
+      // Keyed as TEXT: a Fansly message id is a snowflake past 2^53, so
+      // Number() collapsed distinct messages onto one key and the dedupe set
+      // below then skipped real sends as "already backfilled".
+      const mid = String(m.id ?? "");
+      if (!/^\d+$/.test(mid) || /^0+$/.test(mid)) continue;
       // Only outgoing messages count — incoming ones come from the fan,
       // not from us, so they have no business in vault_sends.
-      if (m.fromUser?.id !== myId) continue;
+      if (!sameUserId(m.fromUser?.id, myId)) continue;
       const mediaIds = (m.media ?? [])
         .map((x) => (typeof x.id === "number" ? x.id : Number(x.id)))
         .filter((n) => Number.isFinite(n) && n > 0);
@@ -681,7 +688,7 @@ export function ChatSurface({
       if (!data?.pages) continue;
       for (const p of data.pages) {
         for (const c of p.rows) {
-          if ((c.__accountId ?? "") === accountId && c.withUser.id === fanId) {
+          if ((c.__accountId ?? "") === accountId && sameUserId(c.withUser.id, fanId)) {
             return c;
           }
         }
@@ -703,7 +710,7 @@ export function ChatSurface({
   function onQuoteReply(msg: OFMessage) {
     const preview = stripHtmlPreview(msg.text || "(media)", 140);
     setQuoted({
-      messageId: Number(msg.id),
+      messageId: msg.id,
       preview,
       authorName: msg.fromUser?.name || msg.fromUser?.username || "fan",
     });
@@ -1097,7 +1104,7 @@ export function ChatSurface({
           const replySnapshot = quoted
             ? (() => {
                 const orig = (handle.data ?? []).find(
-                  (m) => Number(m.id) === quoted.messageId,
+                  (m) => sameUserId(m.id, quoted.messageId),
                 );
                 if (!orig) {
                   return {
@@ -1107,7 +1114,7 @@ export function ChatSurface({
                   };
                 }
                 return {
-                  id: Number(orig.id),
+                  id: orig.id,
                   text: orig.text,
                   fromUser: orig.fromUser,
                   createdAt: orig.createdAt,
@@ -1184,7 +1191,7 @@ export function ChatSurface({
  *  tab is alive AND has room, the click pushes a slot into it. If the
  *  current group tab is full (8 slots), a fresh group tab is spawned
  *  with this one fan as its first slot. */
-function GroupChatButton({ accountId, fanId }: { accountId: string; fanId: number }) {
+function GroupChatButton({ accountId, fanId }: { accountId: string; fanId: FanId }) {
   const [flash, setFlash] = useState<null | "added" | "opened" | "focused">(null);
   const onClick = async () => {
     const res = await openGroupTab(accountId, fanId);

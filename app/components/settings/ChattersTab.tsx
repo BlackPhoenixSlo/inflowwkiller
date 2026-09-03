@@ -28,6 +28,7 @@ import { Button, Card } from "@/components/ui/primitives";
 import { relay, RelayError, type VaultListsResp } from "@/lib/relay";
 import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { useAccounts } from "@/hooks/useAccounts";
+import { type FanId } from "@/lib/fanId";
 
 interface ChatterRow {
   id: string;
@@ -321,7 +322,7 @@ function LinkCard({
 // "Limit …" toggle is ON, at least one selection is required to save.
 
 interface FolderGrant {
-  folder_id: number;
+  folder_id: FanId;
   folder_name: string | null;
 }
 
@@ -554,7 +555,7 @@ function FolderLimit({
     onChange(accountId, { limit: on, grants: on ? entry.grants : [] });
   }
 
-  function toggleFolder(id: number, name: string, on: boolean) {
+  function toggleFolder(id: FanId, name: string, on: boolean) {
     const next = on
       ? [...entry.grants.filter((g) => g.folder_id !== id), { folder_id: id, folder_name: name }]
       : entry.grants.filter((g) => g.folder_id !== id);

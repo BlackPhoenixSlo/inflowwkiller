@@ -24,12 +24,16 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { sameUserId } from "@/lib/fanId";
 import { cn } from "@/lib/utils";
 
 // Module-level mapping captured from the X-Img-Hash response header.
 // Shared across all MediaTile instances + chat renders, so /img/by-hash
 // gets re-used on subsequent paints without re-deriving the hash.
-const mediaIdToHash = new Map<number, string>();
+// Keyed by STRING id: Fansly media ids are snowflakes above JS's 2^53, and a
+// bundle's ids differ only in their last digits, so numeric keys collide and
+// five sibling tiles would share one hash (painting the same image 5x).
+const mediaIdToHash = new Map<string, string>();
 
 // Reserved skeleton box. The real per-image dimensions are NOT known on
 // first paint (they only land later with message_media dims / T-GRID), so
@@ -54,7 +58,7 @@ function rewriteToByHash(legacyUrl: string, hash: string): string {
 }
 
 interface MediaTileProps {
-  mediaId: number | null | undefined;
+  mediaId: number | string | null | undefined;
   proxiedUrl: string;         // already wrapped by proxyImage()
   eager: boolean;
   className?: string;
@@ -97,7 +101,7 @@ export function MediaTile({
         // beyond the relay's 1h TTL. Either way, re-fetching the legacy
         // /img?u= URL repopulates the hash and serves fresh bytes.
         if (allowFallback && (resp.status === 404 || resp.status === 410)) {
-          if (mediaId != null) mediaIdToHash.delete(mediaId);
+          if (mediaId != null) mediaIdToHash.delete(String(mediaId));
           await fetchOnce(proxiedUrl, false);
           return;
         }
@@ -105,7 +109,7 @@ export function MediaTile({
         return;
       }
       const hash = resp.headers.get("x-img-hash");
-      if (hash && mediaId != null) mediaIdToHash.set(mediaId, hash);
+      if (hash && mediaId != null) mediaIdToHash.set(String(mediaId), hash);
       const blob = await resp.blob();
       if (cancelled) return;
       createdBlobUrl = URL.createObjectURL(blob);
@@ -114,7 +118,7 @@ export function MediaTile({
 
     const start = async () => {
       try {
-        const knownHash = mediaId != null ? mediaIdToHash.get(mediaId) : undefined;
+        const knownHash = mediaId != null ? mediaIdToHash.get(String(mediaId)) : undefined;
         const initial = knownHash
           ? rewriteToByHash(proxiedUrl, knownHash)
           : proxiedUrl;
@@ -208,22 +212,23 @@ export function MediaTile({
  * IntersectionObserver path.
  */
 export function pickEagerMediaIds(
-  messages: { id: number | string; fromUser?: { id?: number }; media?: { id?: number }[] }[],
-  ownerUserId: number | null,
-): Set<number> {
-  const out = new Set<number>();
+  messages: { id: number | string; fromUser?: { id?: number | string };
+              media?: { id?: number | string }[] }[],
+  ownerUserId: number | string | null,
+): Set<string> {
+  const out = new Set<string>();
   let haveOut = false;
   let haveIn = false;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     const firstMediaId = m.media?.[0]?.id;
     if (firstMediaId == null) continue;
-    const isOutgoing = ownerUserId != null && m.fromUser?.id === ownerUserId;
+    const isOutgoing = sameUserId(m.fromUser?.id, ownerUserId);
     if (isOutgoing && !haveOut) {
-      out.add(firstMediaId);
+      out.add(String(firstMediaId));
       haveOut = true;
     } else if (!isOutgoing && !haveIn) {
-      out.add(firstMediaId);
+      out.add(String(firstMediaId));
       haveIn = true;
     }
     if (haveOut && haveIn) break;

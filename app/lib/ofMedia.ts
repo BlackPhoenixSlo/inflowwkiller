@@ -79,5 +79,10 @@ export function hasDescribableStill(media: OFMedia[] | undefined): boolean {
  *  by hand, in two files. One id → one URL belongs here with the rest of the
  *  OF-shape knowledge. */
 export function giphyUrl(giphyId: string): string {
+  // Fansly rides GIFs through KLIPY, not Giphy, and its ids aren't giphy ids —
+  // the shim puts a full renderable url in `giphyId` (see fansly_shim of_message
+  // / _klipy_to_giphy). Pass any http(s) value straight through; only a bare
+  // giphy id gets the media.giphy.com wrapper.
+  if (/^https?:\/\//i.test(giphyId)) return giphyId;
   return `https://media.giphy.com/media/${giphyId}/giphy.gif`;
 }

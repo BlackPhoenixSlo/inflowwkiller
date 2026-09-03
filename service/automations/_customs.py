@@ -159,6 +159,21 @@ SELL_MIN_SPEND_CENTS = ASK_MIN_CENTS
 # Only a DM tip. `tip_post`/`tip_stream` are generosity, not an order.
 ORDER_KINDS = ("tip",)
 
+# Transaction states that mean the money is REAL. Mirrors
+# `ai_chatter._tip_sum_since` deliberately — a tip is either an order everywhere
+# or nowhere. 'pending' counts: it is money in flight, and treating it as an
+# order is the safe direction, because the fan believes he ordered.
+#
+# ⚠️ THIS LIVES HERE, BESIDE `ORDER_KINDS`, BECAUSE THE QUEUE AND THE WATCH USED
+# TO DISAGREE ABOUT IT. `customs_watch` has always filtered on it; `customs_api`
+# never did, so a charged-back tip was excluded from MARKING a fan owed and
+# included in the AMOUNT displayed to the operator — work shown as paid for that
+# the platform had taken back. Prod carries 8 charged-back tips, three of them at
+# or above the order floor. Worse, a refunded $60 stacked onto a real $60 sums
+# past the floor in `orders_per_fan` and manufactures a $120 order that was never
+# paid at all. One spelling, imported by both, so they cannot drift again.
+SETTLED_STATUSES = ("cleared", "pending")
+
 
 def resolve_floor(min_cents) -> int:
     """The cents floor an account treats as an ORDER: the rule's `min_cents`
@@ -168,7 +183,7 @@ def resolve_floor(min_cents) -> int:
 
     Why the floor is PER ACCOUNT at all: what a $100 DM tip MEANS is an
     account-level fact, not a global one — on the male accounts it demonstrably
-    is an order (fan FAN_ID said so in as many words), while the female
+    is an order (fan 14673050 said so in as many words), while the female
     accounts took 5 of them last month that were almost certainly generosity.
     One constant cannot be right for both, and getting it wrong in the generous
     direction stops the bot selling to a good fan until a human notices."""
@@ -217,6 +232,58 @@ def orders_per_fan(rows, min_cents: int | None = None) -> dict[tuple, tuple]:
         if (anchor_at - at) <= timedelta(minutes=BURST_MINUTES):
             bursts[key] = (total + cents, anchor_at, anchor_msg)
     return {k: v for k, v in bursts.items() if v[0] >= floor}
+
+
+def bursts_per_fan(rows, min_cents: int | None = None) -> dict[tuple, list[tuple]]:
+    """(account, fan) → EVERY qualifying order, newest first, as a list of
+    (total_cents, anchor_at, anchor_msg_id). Same row shape and same burst rule
+    as `orders_per_fan`; the only difference is that it does not throw the older
+    orders away.
+
+    ⚠️ THIS IS A SIBLING OF `orders_per_fan`, NOT A REPLACEMENT, AND THAT IS
+    DELIBERATE. That function has three callers who want different things, and
+    one of them — `customs_watch.run` — uses its anchor as the DELIVERY CUTOFF:
+    the newest burst's newest tip, so a second order placed before the first
+    shipped extends the wait rather than being cleared by the first delivery.
+    Hand the watch a list and it must pick an anchor anyway, and picking the
+    oldest reintroduces exactly the false-clear that module was written to end.
+    There is also a test pinning the single-burst contract
+    (`test_customs_watch.case_an_order_is_the_burst_total_not_the_biggest_tip`).
+    So the counting function is a new one, and the marking path is untouched.
+
+    WHY IT EXISTS: `orders_per_fan` returns ONE order per fan, so a man who tips
+    $100 on Monday and $100 on Tuesday is shown as owing one $100 voice note.
+    The older burst hits neither branch of that loop and is dropped on the floor.
+    Worse, it has nowhere else to surface — `customs_api._unmarked` subtracts
+    fans who are already owed, so the second order appears on no list at all.
+    Measured on the laptop DB: 2 fans, $285 of paid-for work invisible.
+
+    The FLOOR is still tested on each burst TOTAL, for the reason
+    `orders_per_fan` documents at length: $60+$60 is a real $120 order, and
+    filtering transactions before summing understates it.
+
+    Callers must pass rows ordered `occurred_at DESC` — the burst walk depends
+    on it, exactly as `orders_per_fan` does."""
+    floor = resolve_floor(min_cents)
+    walk: dict[tuple, list[list]] = {}
+    for acct, fid, cents, at, msg_id in rows:
+        if fid is None or at is None:
+            continue
+        key = (acct, int(fid))
+        cents = int(cents or 0)
+        open_burst = walk[key][-1] if key in walk else None
+        # Still inside the burst we are accumulating? Add it on. Otherwise this
+        # row opens a NEW order — which is the whole point of this function.
+        if open_burst is not None and (open_burst[1] - at) <= timedelta(minutes=BURST_MINUTES):
+            open_burst[0] += cents
+            continue
+        walk.setdefault(key, []).append([cents, at, msg_id])
+    out: dict[tuple, list[tuple]] = {}
+    for key, bursts in walk.items():
+        kept = [(int(t), a, m) for t, a, m in bursts if t >= floor]
+        if kept:
+            out[key] = kept
+    return out
 
 
 # The price sentence spliced onto `_voice.CUSTOMS_CONDITIONS`, so every surface

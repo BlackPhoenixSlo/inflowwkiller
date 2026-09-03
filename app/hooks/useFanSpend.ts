@@ -21,6 +21,7 @@ import { useMemo } from "react";
 import { useQueries } from "@tanstack/react-query";
 
 import { relay, type OFChatItem } from "@/lib/relay";
+import { compareFanIds, type FanId } from "@/lib/fanId";
 
 export interface FanSpend {
   /** Lifetime total in cents. */
@@ -50,16 +51,18 @@ function chunk<T>(arr: T[], size: number): T[][] {
 
 export function useFanSpend(rows: OFChatItem[]): Map<string, FanSpend> {
   const groups = useMemo(() => {
-    const byAcct = new Map<string, Set<number>>();
+    const byAcct = new Map<string, Set<FanId>>();
     for (const r of rows) {
       const aid = r.__accountId;
       if (!aid) continue;
       if (!byAcct.has(aid)) byAcct.set(aid, new Set());
       byAcct.get(aid)!.add(r.withUser.id);
     }
-    const out: Array<{ accountId: string; ids: number[]; key: string }> = [];
+    const out: Array<{ accountId: string; ids: FanId[]; key: string }> = [];
     for (const [aid, idSet] of byAcct) {
-      const sorted = Array.from(idSet).sort((a, b) => a - b);
+      // Sorted so `c.join(",")` is a STABLE cache key for the same set of
+      // fans. Not `a - b`, which is NaN on a snowflake — see compareFanIds.
+      const sorted = Array.from(idSet).sort(compareFanIds);
       for (const c of chunk(sorted, CHUNK)) {
         out.push({ accountId: aid, ids: c, key: c.join(",") });
       }

@@ -24,7 +24,9 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 
 import { Button } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
-import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { type FanId } from "@/lib/fanId";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useReorder } from "@/hooks/useReorder";
 import { useSavedReplies } from "@/hooks/useSavedReplies";
@@ -90,7 +92,7 @@ export interface ComposerProps {
   /** When the composer is bound to a single fan (chat surface), passing
    *  fanId here unlocks the vault picker's per-fan badges + filter. Mass-
    *  send composers leave this null. */
-  fanId?: number | null;
+  fanId?: FanId | null;
   onSend: (args: SendArgs) => void | Promise<void>;
   disabled?: boolean;
   inflight?: number;
@@ -104,7 +106,7 @@ export interface ComposerProps {
   /** Quoted-reply context. When set, we render a preview chip above the
    *  textarea — the parent is responsible for prepending the quote text
    *  to the actual send body so the wire shape matches OF's expectations. */
-  quoted?: { messageId: number; preview: string; authorName: string } | null;
+  quoted?: { messageId: number | string; preview: string; authorName: string } | null;
   onClearQuoted?: () => void;
   /** Optional outbound ref for parents that need to drive the composer
    *  imperatively. The composer attaches a `ComposerApi` to `.current`
@@ -265,15 +267,16 @@ export function Composer({
     // to indicate progress (the scheduled ghost bubble shows it instead).
     // BOTH branches are server-side now: ≤15 min goes on our executor queue,
     // longer on OF's — either way it survives reload + every chatter sees it.
-    if (args.scheduledAt) {
-      const fireAt = new Date(args.scheduledAt).getTime();
-      const minsFromNow = Math.max(1, Math.round((fireAt - Date.now()) / 60_000));
-      if (fireAt - Date.now() <= 15 * 60 * 1000) {
-        showToast(`⏱ Scheduled · sending in ${minsFromNow} min (saved — survives reload)`);
-      } else {
-        showToast(`⏱ Queued on OF for ${new Date(args.scheduledAt).toLocaleString()}`);
-      }
-    }
+    // The scheduled toast is deferred until the enqueue actually SUCCEEDS (see
+    // below). It used to fire here, before the await — so a refused schedule
+    // (a Fansly PPV/media send the relay 400s) cleared the composer and
+    // announced "Scheduled ✓" for a message that no longer existed anywhere.
+    // A snapshot lets us hand the operator their message back if that happens.
+    const restore = {
+      text, price, priceOpen, attached, previewCount,
+      previewTouched: previewCountTouchedRef.current,
+      scheduleOpen, scheduleAt, taggedCreators, pickedGifs,
+    };
     setText("");
     setPrice("");
     setPriceOpen(false);
@@ -286,7 +289,36 @@ export function Composer({
     setPickedGifs([]);
     setGifPickerOpen(false);
     setQuickMenuOpen(false);
-    await onSend(args);
+    try {
+      await onSend(args);
+    } catch (err) {
+      // Only the scheduled paths reject up to here; an immediate send carries
+      // its own failure on the red bubble (with a retry), so it must not be
+      // double-reported or have its text pushed back into the composer.
+      if (!args.scheduledAt) throw err;
+      setText(restore.text);
+      setPrice(restore.price);
+      setPriceOpen(restore.priceOpen);
+      setAttached(restore.attached);
+      setPreviewCount(restore.previewCount);
+      previewCountTouchedRef.current = restore.previewTouched;
+      setScheduleOpen(restore.scheduleOpen);
+      setScheduleAt(restore.scheduleAt);
+      setTaggedCreators(restore.taggedCreators);
+      setPickedGifs(restore.pickedGifs);
+      const why = err instanceof Error && err.message ? err.message : "unknown error";
+      showToast(`⚠ Not scheduled — ${why}`);
+      return;
+    }
+    if (args.scheduledAt) {
+      const fireAt = new Date(args.scheduledAt).getTime();
+      const minsFromNow = Math.max(1, Math.round((fireAt - Date.now()) / 60_000));
+      if (fireAt - Date.now() <= 15 * 60 * 1000) {
+        showToast(`⏱ Scheduled · sending in ${minsFromNow} min (saved — survives reload)`);
+      } else {
+        showToast(`⏱ Queued on OF for ${new Date(args.scheduledAt).toLocaleString()}`);
+      }
+    }
     // A "Lines" pick that actually went out (non-empty text) is consumed so the
     // same question/tease is never offered again for this fan.
     const armedSlot = armedLineRef.current;
@@ -1065,7 +1097,7 @@ interface ScriptCursor {
  *  exists (handled in render). */
 function useScriptCursor(
   accountId: string | null,
-  fanId: number | null,
+  fanId: FanId | null,
 ): [ScriptCursor | null, (next: ScriptCursor | null) => void] {
   const storageKey = useMemo(
     () => (accountId && fanId != null ? `chatterly:scriptCursor:${accountId}:${fanId}` : null),

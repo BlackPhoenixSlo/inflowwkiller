@@ -21,7 +21,8 @@ import { Button, Card, Input } from "@/components/ui/primitives";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
-import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import {
   useFunnel,
   useFunnelMedia,

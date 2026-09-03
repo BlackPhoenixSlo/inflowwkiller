@@ -20,6 +20,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type OFMessage } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 const KEY = "scheduled-sends";
 
@@ -31,7 +32,7 @@ export interface ServerScheduledSend {
    *  it is not cancellable. Absent on responses from an older relay — treat a
    *  missing kind as `scheduled_send`, which is what that relay only ever sent. */
   kind?: "scheduled_send" | "ai_reply";
-  fan_id: number;
+  fan_id: FanId;
   run_at: string;        // ISO 8601 (UTC, "…Z")
   status: string;        // 'pending' | 'running'
   text: string;
@@ -45,12 +46,12 @@ interface ListResp {
   list?: ServerScheduledSend[];
 }
 
-export function scheduledSendsKey(accountId: string, fanId: number) {
+export function scheduledSendsKey(accountId: string, fanId: FanId) {
   return [KEY, accountId, fanId] as const;
 }
 
 /** Reader hook — ChatSurface calls this; empty array when nothing is queued. */
-export function useServerScheduledSends(accountId: string | null, fanId: number | null) {
+export function useServerScheduledSends(accountId: string | null, fanId: FanId | null) {
   return useQuery<ServerScheduledSend[]>({
     queryKey: scheduledSendsKey(accountId ?? "", fanId ?? 0),
     queryFn: async () => {
@@ -71,7 +72,7 @@ export function useServerScheduledSends(accountId: string | null, fanId: number 
 
 export function useCancelServerScheduled() {
   const qc = useQueryClient();
-  return useMutation<unknown, Error, { jobId: number; accountId: string; fanId: number }>({
+  return useMutation<unknown, Error, { jobId: number; accountId: string; fanId: FanId }>({
     mutationFn: ({ jobId, accountId }) =>
       relay.delete(`/api/of/v2/scheduled-sends/${jobId}`, { accountId }),
     // Optimistically drop the ghost so the cancel feels instant, then refetch.

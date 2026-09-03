@@ -36,6 +36,7 @@ import {
 } from "@/hooks/useRosterCounts";
 import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
+import { isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
 
 interface ChatMessagePayload {
   id: number;
@@ -63,12 +64,12 @@ interface ChatMessagePayload {
 interface ChatMessageEvent {
   api2_chat_message?: ChatMessagePayload;
   __account_id?: string;
-  __fan_id?: number;
+  __fan_id?: FanId;
 }
 
 export interface ChatTarget {
   accountId: string;
-  fanId: number;
+  fanId: FanId;
   isOutbound: boolean;
   msg: ChatMessagePayload;
   fromId: number;
@@ -89,11 +90,17 @@ export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
   const msg = e.api2_chat_message ?? null;
   const fromUser = msg?.fromUser ?? null;
   if (!accountId || !msg || !fromUser) return null;
-  const fromId = Number(fromUser.id);
-  if (!Number.isFinite(fromId)) return null;
-  const isOutbound = String(fromId) === accountId;
-  const fanId = isOutbound ? Number(e.__fan_id ?? msg.toUser?.id ?? NaN) : fromId;
-  if (!Number.isFinite(fanId)) return null;
+  // Keep ids EXACTLY as the wire sent them. These were `Number(...)`, which
+  // truncates a Fansly snowflake — and the truncated value then keyed every
+  // invalidation below (["messages"…], ["fan"…], ["of-user"…], scheduled
+  // sends) plus the `withUser.id` row match, so a realtime patch could never
+  // land on a Fansly chat. `Number.isFinite` is also the wrong validity test
+  // for an opaque id; presence is the only thing to check.
+  const fromId = fromUser.id;
+  if (!isValidFanId(fromId)) return null;
+  const isOutbound = sameUserId(fromId, accountId);
+  const fanId = isOutbound ? (e.__fan_id ?? msg.toUser?.id ?? null) : fromId;
+  if (!isValidFanId(fanId)) return null;
   return { accountId, fanId, isOutbound, msg, fromId };
 }
 
@@ -106,7 +113,7 @@ export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
 export function findFanChatRow(
   qc: QueryClient,
   accountId: string,
-  fanId: number,
+  fanId: FanId,
 ): OFChatItem | null {
   type Page = { rows: OFChatItem[]; hasMore: boolean };
   type Infinite = { pages: Page[]; pageParams: unknown[] };
@@ -117,7 +124,7 @@ export function findFanChatRow(
     if (!data?.pages?.length) continue;
     for (const p of data.pages) {
       for (const c of p.rows) {
-        if ((c.__accountId ?? "") === accountId && c.withUser?.id === fanId) {
+        if ((c.__accountId ?? "") === accountId && sameUserId(c.withUser?.id, fanId)) {
           const parsed = Date.parse(c.lastMessage?.createdAt ?? "");
           const ts = Number.isFinite(parsed) ? parsed : -Infinity;
           if (best === null || ts > bestAt) { best = c; bestAt = ts; }
@@ -160,7 +167,7 @@ export function rosterDeltaForEvent(args: {
  * never hit staleTime on their own) refetch immediately; inactive ones just
  * go stale and refetch on next mount.
  */
-function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: number) {
+function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: FanId) {
   // Local ledger — the chart ("PPV purchases by fan") + Sales row spine.
   void qc.invalidateQueries({ queryKey: ["fan-ppv-history", accountId, fanId] });
   // OF gallery enrichment — thumbnails/text for Sales + the Unsold list.
@@ -384,7 +391,7 @@ export function useInboxRealtime() {
           ...p,
           rows: p.rows.filter((c) => {
             if ((c.__accountId ?? "") !== accountId) return true;
-            if (c.withUser.id !== fanId) return true;
+            if (!sameUserId(c.withUser.id, fanId)) return true;
             existing = c;
             return false;
           }),
@@ -440,9 +447,9 @@ export function useInboxRealtime() {
     // server-side, so refetching here always reads the new row.
     const offTx = eventBus.on("transaction_recorded", (env: EventEnvelope) => {
       const accountId = env.__account_id ?? null;
-      const tx = env.transaction_recorded as { fan_id?: number } | undefined;
-      const fanId = Number(tx?.fan_id ?? NaN);
-      if (!accountId || !Number.isFinite(fanId)) return;
+      const tx = env.transaction_recorded as { fan_id?: FanId } | undefined;
+      const fanId = tx?.fan_id ?? null;
+      if (!accountId || !isValidFanId(fanId)) return;
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
       invalidateFanRevenue(qc, accountId, fanId);

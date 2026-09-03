@@ -22,13 +22,14 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type OFChatItem } from "@/lib/relay";
+import { sameUserId, type FanId } from "@/lib/fanId";
 import { useOFUser } from "@/hooks/useOFUser";
 import { useMassExclude } from "@/hooks/useMassExclude";
 import { useAllChatFolders, type ChatFolder } from "@/hooks/useChatFolders";
 
 interface Props {
   accountId: string;
-  fanId: number;
+  fanId: FanId;
   chat: OFChatItem;
   onClosed: () => void;
 }
@@ -347,7 +348,7 @@ function ToggleListsSubmenu({
   accountId, fanId, onFlash, onBack,
 }: {
   accountId: string;
-  fanId: number;
+  fanId: FanId;
   onFlash: (msg: string, ok: boolean) => void;
   onBack: () => void;
 }) {
@@ -369,7 +370,7 @@ function ToggleListsSubmenu({
   function isMember(f: ChatFolder): boolean {
     const idStr = String(f.id);
     if (override.has(idStr)) return !!override.get(idStr);
-    return (f.users ?? []).some((u) => Number(u.id) === fanId);
+    return (f.users ?? []).some((u) => sameUserId(u.id, fanId));
   }
 
   async function toggle(f: ChatFolder) {

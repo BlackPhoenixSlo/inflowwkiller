@@ -38,7 +38,8 @@ import {
   useToggleReplyOnSubscribe,
   useUpsertWelcome,
 } from "@/hooks/useTemplates";
-import { proxyImage, RelayError, type OFMessageTemplate, type SavedReply, type VaultMedia } from "@/lib/relay";
+import { RelayError, type OFMessageTemplate, type SavedReply, type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
 
 /** Pull OF's `error.message` out of the relay's wrapped 4xx/5xx body so

@@ -27,8 +27,10 @@ import { Library, ChevronRight, Check, Film, FolderOpen, Image as ImageIcon } fr
 import { Button } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
-import { proxyImage, type VaultList, type VaultMedia } from "@/lib/relay";
+import { type VaultList, type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { videoPosterFrames, isDrmOnlyVideo } from "@/components/chat/VaultPicker";
+import { type FanId } from "@/lib/fanId";
 
 type MediaType = "all" | "photo" | "video" | "gif";
 
@@ -58,7 +60,7 @@ export function VaultFolderPicker({
   // Selected folder NAMES (canonical-cased once matched to a live folder). Kept
   // as an array so order is stable and stale-but-stored names survive a save.
   const [selected, setSelected] = useState<string[]>([]);
-  const [expanded, setExpanded] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<FanId | null>(null);
 
   const listsQ = useVaultLists(accountId, open);
   const folders = useMemo<VaultList[]>(() => listsQ.data?.list ?? [], [listsQ.data]);

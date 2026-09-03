@@ -39,7 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
-from db.models import Chat, Fan, Message, Transaction
+from db.models import Chat, Fan, Message, Transaction, is_paid_ratchet
 from of_shapes import giphy_dm_id, has_video   # shared OF payload-shape readers
 from automations._common import source_self_heal_set
 import relay_cache
@@ -334,7 +334,11 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             index_elements=["account_id", "fan_id", "message_id"],
             set_={
                 "body": body,
-                "is_paid": is_paid,
+                # Same ratchet as the scrape upsert (automation_executor): a WS
+                # frame arriving after a purchase aged off the feed reports the
+                # message unpaid again, and an unconditional write here would
+                # undo a sale the other writer had already recorded.
+                "is_paid": is_paid_ratchet(is_paid),
                 "is_tip": is_tip,
                 "media_count": int(m.get("mediaCount") or 0),
                 "raw_json": raw,

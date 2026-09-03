@@ -72,3 +72,14 @@ def evict(account_id: str | None = None) -> None:
         _POOL.clear()
     else:
         _POOL.pop(account_id, None)
+    # Fansly accounts are pooled in fansly_backend, not here (their client is
+    # the shim, not an OFClient). Invalidation still has ONE home — this
+    # function — so a re-capture or proxy edit can't leave a stale shim behind
+    # for the lane that happens to call the other module. Imported lazily and
+    # guarded: a deployment without the sibling `fansly/` package has no Fansly
+    # pool to drop, and eviction must not fail because of it.
+    try:
+        import fansly_backend
+    except Exception:
+        return
+    fansly_backend.drop(account_id)

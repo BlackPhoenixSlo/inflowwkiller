@@ -267,7 +267,18 @@ export default function ScopeSwitcher() {
                   }}
                   className="flex-1 pr-3 py-2 flex items-center gap-2 text-left"
                 >
-                  <span className="truncate flex-1">{a.nickname || a.id}</span>
+                  <span className="truncate flex-1">{a.nickname || a.name || a.id}</span>
+                  {/* Platform chip — so a Fansly account reads as Fansly, not
+                      an anonymous id. OF accounts (the default) show no chip to
+                      keep the existing look unchanged. */}
+                  {a.platform === "fansly" && (
+                    <span
+                      className="text-[9px] font-semibold uppercase tracking-wide px-1 py-px rounded shrink-0 bg-[#1d9bf0]/15 text-[#1d9bf0]"
+                      title="Fansly account"
+                    >
+                      Fansly
+                    </span>
+                  )}
                   {/* A model whose OF session died still has a session FILE, so
                       it passes the has_session filter above and lists here
                       looking entirely normal — while every automation for it is

@@ -8,7 +8,7 @@
 import { useState } from "react";
 
 import { postPlainText, postThumbUrl, type OFPost } from "@/hooks/usePosts";
-import { proxyImage } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 
 function priceLabel(price: OFPost["price"]): string | null {
   const n = typeof price === "string" ? Number(price) : price ?? 0;

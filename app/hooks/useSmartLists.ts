@@ -12,6 +12,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 const KEY = "smart-lists";
 
@@ -44,7 +45,7 @@ export interface SmartPreview {
   count: number;
   total_fans: number;
   sample: Array<{
-    fan_id: number;
+    fan_id: FanId;
     name: string;
     lifetime_spend_cents: number;
     last_active_days: number | null;

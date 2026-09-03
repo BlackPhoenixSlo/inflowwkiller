@@ -17,7 +17,8 @@ import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { cn } from "@/lib/utils";
-import { proxyImage, relay, type TaggedFriendUser, type TaggedFriendUsersResp } from "@/lib/relay";
+import { relay, type TaggedFriendUser, type TaggedFriendUsersResp } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 
 const PAGE = 20;
 const DEBOUNCE_MS = 250;
