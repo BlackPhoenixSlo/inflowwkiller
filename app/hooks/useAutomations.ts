@@ -21,6 +21,7 @@ import {
 } from "@tanstack/react-query";
 
 import { relay, type RelayContext } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 const KEY = "automation-rules";
 const BG_CTX: RelayContext = { priority: "background" };
@@ -235,7 +236,7 @@ export function useAutomationPreview() {
     {
       account_id: string;
       kind: string;
-      fan_id?: number | null;
+      fan_id?: FanId | null;
       test_name?: string | null;
       /** send_welcome: run the real AI restyle so the preview matches what ships. */
       restyle?: boolean;

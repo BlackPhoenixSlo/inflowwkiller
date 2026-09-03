@@ -50,6 +50,11 @@ RUN pip install -r requirements.txt
 # (automation_executor, webhook_dispatch, funnels_api, the automations/ package)
 # has to be in the image, and an allowlist cannot keep up with that by hand.
 COPY service/ service/
+# The Fansly platform package. fansly_backend (imported at boot by
+# transaction_ingest and server) puts ../fansly on sys.path and imports
+# fansly_client from it; without this COPY the relay dies on ModuleNotFoundError.
+# Only the runtime modules are in the repo; captures, HARs and sessions never are.
+COPY fansly/ fansly/
 COPY web/ web/
 # The Infloww-skin frontend. server.py mounts it at /infloww from
 # HERE.parent/"ui-redesign"/"infloww-exact" — i.e. /app/ui-redesign/… — and the

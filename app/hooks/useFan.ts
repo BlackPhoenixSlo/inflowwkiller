@@ -14,8 +14,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type FanRecord, type FanUpdate, type OFUserMini } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
-export function useFan(accountId: string | null, fanId: number | null) {
+export function useFan(accountId: string | null, fanId: FanId | null) {
   const qc = useQueryClient();
   const queryKey = ["fan", accountId, fanId] as const;
 

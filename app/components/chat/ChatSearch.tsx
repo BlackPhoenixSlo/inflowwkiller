@@ -14,11 +14,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { relay, type OFMessage } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
 
 export interface ChatSearchProps {
   accountId: string;
-  fanId: number;
+  fanId: FanId;
   messages: OFMessage[];
   ownerUserId: number | null;
   hasOlder: boolean;

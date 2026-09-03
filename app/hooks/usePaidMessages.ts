@@ -17,6 +17,7 @@
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface PaidMessageFan {
   username: string | null;
@@ -26,7 +27,7 @@ export interface PaidMessageFan {
 
 export interface PaidMessageRow {
   account_id: string;
-  fan_id: number;
+  fan_id: FanId;
   message_id: number;
   fan: PaidMessageFan;
   body: string;
@@ -94,7 +95,7 @@ export interface UsePaidMessagesParams {
   /** Defaults to "out" backend-side; same reason. */
   direction?: MessageDirection;
   /** Exact filter on Message.fan_id (per-fan deep link). */
-  fan_id?: number | null;
+  fan_id?: FanId | null;
   fan_query?: string | null;
   limit?: number;
 }

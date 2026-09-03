@@ -17,6 +17,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface FanLine {
   /** one of q1|q2|q3|tease1|tease2|tease3 — the column to consume on send. */
@@ -31,7 +32,7 @@ export interface FanLines {
 
 export function useFanLines(
   accountId: string | null,
-  fanId: number | null,
+  fanId: FanId | null,
   enabled: boolean,
 ) {
   const qc = useQueryClient();

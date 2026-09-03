@@ -53,6 +53,8 @@ from attribution_backfill import attribute_orphans
 from cadence import boot_grace
 import client_pool
 from db.engine import engine, get_session
+import fansly_backend
+import fansly_revenue
 from db.models import (
     Account,
     AutomationRule,
@@ -640,6 +642,15 @@ async def _has_recent_post_txn(account_id: str, *, since: datetime) -> bool:
 
 
 async def _bump_lifetime(s, account_id: str, fan_id: int, amount_cents: int) -> None:
+    """Add `amount_cents` to this fan's lifetime spend, creating the row if
+    needed.
+
+    SHARED with the Fansly lane (fansly_revenue), which writes the same
+    `transactions` rows from a different source and must keep this rollup in
+    step. It lives here, next to the OF writer that has always called it,
+    rather than being duplicated there — a second copy is how the two lanes
+    would drift.
+    """
     fan = await s.get(Fan, (account_id, fan_id))
     if fan is None:
         # PPV-only / non-replying fans never trigger the WS-pump's inbound
@@ -1153,6 +1164,31 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
     next supervisor cycle. Returns
     {"rows_inserted": int, "rows_patched": int, "pages": int,
      "duration_ms": int, "error": str|None}."""
+    # PLATFORM SEAM. Everything below this line is OF's payouts ledger: a
+    # paginated walk over a dated window, with a fingerprint/promote writer and
+    # a backfill state machine. Fansly has no such ledger — its only
+    # creator-visible money signal is the purchases notification feed — so it
+    # gets its own lane rather than a Fansly `if` in each of those steps. Both
+    # lanes write the same `transactions` rows and return the same tick shape.
+    if fansly_backend.is_fansly(account_id):
+        t0 = time.monotonic()
+        # Under the SAME per-account lock the OF path uses. The Fansly writer
+        # dedups by SELECTing known provider ids and then inserting, which is
+        # only atomic while one tick at a time runs for an account — and the
+        # supervisor, the 30s fast poll and the admin /run endpoint can all
+        # target the same account. Two overlapping ticks could otherwise both
+        # miss the row and both insert it, double-counting a real sale. (The
+        # partial unique index would reject the second, but as an
+        # IntegrityError mid-tick, not as clean dedup.) This is the same
+        # reasoning run_fast_tick documents for the OF lane.
+        async with _tick_locks[account_id]:
+            r = await fansly_revenue.run_one_tick(account_id)
+        # The seam is where the translation to OF's tick dict belongs: `pages`
+        # and `rows_patched` are OF-ledger concepts the Fansly lane has no
+        # honest value for, and the clock is held here.
+        return {"rows_inserted": r.rows_inserted, "rows_patched": 0, "pages": 0,
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+                "error": r.error}
     lock = _tick_locks[account_id]
     async with lock:
         t0 = time.monotonic()
@@ -1458,6 +1494,20 @@ async def run_fast_tick(account_id: str) -> dict:
     first's committed row and patches instead. The OF fetch happens OUTSIDE the
     lock so a long backfill holding the lock only delays this account's writes,
     never the fetch of others."""
+    # PLATFORM SEAM, mirroring run_one_tick's. Without it a Fansly account
+    # fell straight through to `_client_for` -> no OFClient -> "no_session"
+    # every 30 seconds forever: a permanently dead path. That is not merely a
+    # wasted call — this loop exists so a SELLING automation learns about a
+    # payment in seconds rather than minutes (see _fast_poll_account_ids), and
+    # on Fansly the purchases feed IS the payment signal. Skipping it left
+    # Fansly sellers on the 5-minute supervisor cadence, still saying "waiting
+    # on your tip" to a fan who had already paid. The read is cheap here: one
+    # un-paginated page, already TTL-cached in the shim.
+    if fansly_backend.is_fansly(account_id):
+        async with _tick_locks[account_id]:
+            r = await fansly_revenue.run_one_tick(account_id)
+        return {"rows_inserted": r.rows_inserted, "rows_patched": 0,
+                "error": r.error}
     client = _client_for(account_id)
     if client is None:
         return {"rows_inserted": 0, "rows_patched": 0, "error": "no_session"}
@@ -1521,10 +1571,20 @@ async def start_fast_poll() -> None:
                     continue
                 try:
                     await run_fast_tick(aid)
-                except Exception:
-                    log.debug(
+                except Exception as e:
+                    # RECORD it, don't just whisper. This was `log.debug` and
+                    # nothing else, which was harmless while run_fast_tick
+                    # swallowed its own fetch errors into an error dict — the
+                    # only way here was a bug, not a dead session. The Fansly
+                    # lane raises on a feed failure by design (its silence is
+                    # unrecoverable lost sales), so an unrecorded catch here
+                    # meant a dead Fansly session failed 120 times an hour,
+                    # never incremented consecutive_failures, never paused,
+                    # and never showed on the admin dashboard.
+                    log.warning(
                         "ingest_tx_fast_cycle_account_failed account=%s",
                         aid, exc_info=True)
+                    await _record_failure(aid, e)
             elapsed = time.monotonic() - cycle_started
             await asyncio.sleep(max(_MIN_CYCLE_GAP_S, _FAST_TICK_INTERVAL_S - elapsed))
         except asyncio.CancelledError:
@@ -1577,8 +1637,8 @@ async def _online_account_ids() -> set[str]:
       • ADMINS (users.is_admin + last_seen_at) → EVERY account. An admin sees
         the whole roster in the UI, so scoping their tick to the accounts they
         happen to be listed against in `user_accounts` silently starves the
-        rest. That is not hypothetical: the graded vault had NO user_accounts row at
-        all and the graded vault's owner was offline, so neither account's ledger was
+        rest. That is not hypothetical: SofiaPaid had NO user_accounts row at
+        all and AriaPaid's owner was offline, so neither account's ledger was
         ever scanned — no `transactions` rows, an empty PPV chart on every one
         of their fans, and `fans.lifetime_spend_cents` frozen at 0 (which also
         starves the welcome_chatter_for_info "hand payers to humans" gate). Ownership is NOT

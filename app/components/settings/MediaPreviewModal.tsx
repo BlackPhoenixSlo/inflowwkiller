@@ -15,7 +15,8 @@
 
 import { useEffect, useState } from "react";
 
-import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import {
   isDrmOnlyVideo, progressiveVideoSrc, videoPosterFrames,
 } from "@/components/chat/VaultPicker";

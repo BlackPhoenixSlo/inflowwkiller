@@ -29,13 +29,14 @@ import {
   type PaidStatus,
 } from "@/hooks/usePaidMessages";
 import { cn } from "@/lib/utils";
+import type { FanId } from "@/lib/fanId";
 
 interface Props {
   from: string | null;
   to: string | null;
   /** Page-level URL state — when set, the row list filters to this fan
    *  and the filter strip shows the fan-id chip. */
-  fanId?: number | null;
+  fanId?: FanId | null;
   onClearFanId?: () => void;
 }
 

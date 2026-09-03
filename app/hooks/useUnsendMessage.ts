@@ -28,6 +28,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { dropSeedMessage } from "@/hooks/useChatMessagesLocal";
 import { relay, RelayError, type OFMessage } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface UnsendQueueInfo {
   id: number;
@@ -43,21 +44,26 @@ interface UnsendResp {
   queue?: UnsendQueueInfo | null;
 }
 
-export function useUnsendMessage(accountId: string | null, fanId: number | null) {
+export function useUnsendMessage(accountId: string | null, fanId: FanId | null) {
   const qc = useQueryClient();
   const queryKey = ["messages", accountId, fanId] as const;
 
   const unsendOne = useCallback(
     async (msg: OFMessage): Promise<UnsendResp | null> => {
       if (!accountId || fanId == null) return null;
-      const id = Number(msg.id);
-      if (!Number.isFinite(id) || id <= 0) return null;
+      // The id stays EXACTLY as the wire sent it. `Number(msg.id)` rounded a
+      // Fansly snowflake (951515634200489987 -> 951515634200490000) and that
+      // rounded value was then the target of a DELETE — at best a silent 404,
+      // at worst naming a different real message. A truncated id on a read
+      // path is a stale badge; on a destructive call it is data loss.
+      const id = String(msg.id ?? "");
+      if (!/^\d+$/.test(id) || /^0+$/.test(id)) return null;
 
       // Optimistic: snapshot prior state so we can restore on failure,
       // then drop the bubble from the cache.
       const prev = qc.getQueryData<OFMessage[]>(queryKey);
       qc.setQueryData<OFMessage[]>(queryKey, (curr = []) =>
-        curr.filter((m) => Number(m.id) !== id),
+        curr.filter((m) => String(m.id) !== id),
       );
 
       try {

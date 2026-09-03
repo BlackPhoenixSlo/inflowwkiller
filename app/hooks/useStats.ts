@@ -20,6 +20,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type RelayContext } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 const CACHE = {
   staleTime: 30_000,
@@ -218,7 +219,7 @@ export function usePerModel(from: string | null, to: string | null) {
 
 export interface UnattributedRecentRow {
   account_id: string;
-  fan_id: number | null;
+  fan_id: FanId | null;
   message_id: number | null;
   created_at: string | null;
   body: string;
@@ -358,7 +359,7 @@ export function useIngestResume() {
 export interface OrphanTipRow {
   id: number;
   account_id: string;
-  fan_id: number | null;
+  fan_id: FanId | null;
   kind: string;
   amount_cents: number;
   occurred_at: string | null;
@@ -430,7 +431,7 @@ export interface CandidateChatter {
 export interface SaleNeedingAttribution {
   id: number;
   account_id: string;
-  fan_id: number | null;
+  fan_id: FanId | null;
   kind: string;
   status: string;
   amount_cents: number;
@@ -608,7 +609,7 @@ export function useOfNewFans(
 export interface FanDataRow {
   account_id: string;
   fan_name: string;
-  fan_id: number;
+  fan_id: FanId;
   chat_id: number;
   nickname: string;
   short_bio: string;

@@ -252,7 +252,15 @@ def list_accounts() -> list[dict[str, Any]]:
             if not meta:
                 continue
         latest = (adir / "latest.json")
-        meta["has_session"] = latest.exists()
+        # A session exists if the OnlyFans pointer (latest.json) is present, OR
+        # this is a Fansly account whose session blob (fansly_session.json) is.
+        # Without the Fansly branch a freshly-connected Fansly account reads as
+        # "no session" and gets filtered out of the switcher / roster / inbox.
+        meta["has_session"] = latest.exists() or (adir / "fansly_session.json").exists()
+        # Normalize the additive fields so every row the UI switcher receives
+        # carries a platform + name, even accounts that predate them (→ OF).
+        meta.setdefault("platform", "onlyfans")
+        meta.setdefault("name", None)
         out.append(meta)
     out.sort(key=lambda m: m.get("last_used_at") or "", reverse=True)
     return out
@@ -343,9 +351,16 @@ def get_account(account_id: str) -> dict[str, Any] | None:
 def upsert_account(account_id: str, *,
                    nickname: str | None = None,
                    color: str | None = None,
-                   incogniton_profile_id: str | None = None) -> dict[str, Any]:
+                   incogniton_profile_id: str | None = None,
+                   platform: str | None = None,
+                   name: str | None = None) -> dict[str, Any]:
     """Create or update an account's metadata. Pass only the fields you want
-    to change — others are preserved."""
+    to change — others are preserved.
+
+    `platform` ("onlyfans" | "fansly") and `name` (the account's own display
+    name, distinct from the team-set `nickname`) are additive: existing accounts
+    with neither field read back as OnlyFans via `get_platform()`, so nothing
+    that predates them changes behavior."""
     existing = load_meta(account_id) or {}
     meta = {
         "id": account_id,
@@ -355,11 +370,22 @@ def upsert_account(account_id: str, *,
             incogniton_profile_id if incogniton_profile_id is not None
             else existing.get("incogniton_profile_id")
         ),
+        "platform": (platform if platform is not None
+                     else existing.get("platform") or "onlyfans"),
+        "name": name if name is not None else existing.get("name"),
         "created_at": existing.get("created_at") or _utc_now(),
         "last_used_at": existing.get("last_used_at"),
     }
     save_meta(account_id, meta)
     return meta
+
+
+def get_platform(account_id: str) -> str:
+    """The platform an account is on: "onlyfans" (the default for every account
+    that predates the field) or "fansly". This is the single switch the request
+    client + WS pump branch on."""
+    meta = load_meta(account_id) or {}
+    return meta.get("platform") or "onlyfans"
 
 
 def delete_account(account_id: str) -> bool:
@@ -392,9 +418,15 @@ def get_active_account_id() -> str | None:
     account that has a session (so a fresh install just works)."""
     with _lock:
         active = _read_active_unlocked()
-    latest = _account_path(active, "latest.json") if active else None
-    if latest is not None and latest.exists():
-        return active
+    # Recognize BOTH an OnlyFans session (latest.json) and a Fansly session
+    # (fansly_session.json); otherwise an active Fansly account looks
+    # session-less here and gets flipped to some other account below.
+    if active:
+        of_latest = _account_path(active, "latest.json")
+        fansly = _account_path(active, "fansly_session.json")
+        if (of_latest is not None and of_latest.exists()) or \
+           (fansly is not None and fansly.exists()):
+            return active
 
     # Fallback: most-recently-used account with a session
     candidates = [a for a in list_accounts() if a.get("has_session")]
@@ -450,6 +482,8 @@ def record_session(account_id: str, session_path: Path) -> None:
             "nickname": f"Account {account_id}",
             "color": _COLORS[abs(hash(account_id)) % len(_COLORS)],
             "incogniton_profile_id": None,
+            "platform": "onlyfans",
+            "name": None,
             "created_at": _utc_now(),
         }
         meta["last_used_at"] = _utc_now()

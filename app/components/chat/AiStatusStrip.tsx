@@ -13,8 +13,9 @@
 
 import { useAiStatus, type AiState, type AiStatus } from "@/hooks/useAiStatus";
 import { cn } from "@/lib/utils";
+import type { FanId } from "@/lib/fanId";
 
-type Props = { accountId: string; fanId: number };
+type Props = { accountId: string; fanId: FanId };
 
 const TONE: Record<AiState, string> = {
   active: "text-emerald-400",

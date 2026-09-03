@@ -13,6 +13,7 @@
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface TipsListFan {
   username: string | null;
@@ -23,7 +24,7 @@ export interface TipsListFan {
 export interface TipsListRow {
   transaction_id: number;
   account_id: string;
-  fan_id: number | null;
+  fan_id: FanId | null;
   fan: TipsListFan;
   amount_cents: number;
   occurred_at: string | null;

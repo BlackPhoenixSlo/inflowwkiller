@@ -25,6 +25,7 @@ import { useCallback, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { relay, RelayError, type OFChatItem, type OFMedia, type OFMessage, type SendMessageBody, type VaultMedia } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 import { parseSendFailure, type SendFailure } from "@/lib/sendFailure";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import {
@@ -40,8 +41,9 @@ import { scheduledSendsKey } from "./useServerScheduledSends";
 
 export interface UseSendMessageOpts {
   accountId: string | null;
-  fanId: number | null;
-  fromUserId?: number;
+  fanId: FanId | null;
+  /** Our own creator id — numeric on OF, a string snowflake on Fansly. */
+  fromUserId?: number | string;
   fromUserName?: string;
   hookHandle: ReturnType<typeof useChatMessages>;
 }
@@ -63,7 +65,7 @@ interface SendOpts {
   /** OF native quote-reply target id. Threaded into both the wire body
    *  and the optimistic bubble so the sender sees their reply context
    *  immediately. */
-  replyToMessageId?: number;
+  replyToMessageId?: number | string;
   /** Optimistic-only snapshot of the quoted message — used so the
    *  outgoing bubble can render a quote card before the server response
    *  comes back populated. */
@@ -114,7 +116,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
   const [inflight, setInflight] = useState(0);
 
   const doSend = useCallback(
-    async (tempId: number, body: SendMessageBody, capturedAccountId: string, capturedFanId: number) => {
+    async (tempId: number, body: SendMessageBody, capturedAccountId: string, capturedFanId: FanId) => {
       setInflight((n) => n + 1);
       try {
         const server = await relay.post<OFMessage>(
@@ -168,7 +170,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
   // Immediate-send path, extracted so the no-schedule case (and retry) can
   // call it without recursion gymnastics.
   const sendNow = useCallback(
-    async (input: SendOpts, capturedAccountId: string, capturedFanId: number) => {
+    async (input: SendOpts, capturedAccountId: string, capturedFanId: FanId) => {
       const attached = input.attached ?? [];
       const body: SendMessageBody = {
         text: input.text,
@@ -210,7 +212,11 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       // patchChatListAfterSend flips the row to us.
       const prior = rosterPriorFromRow(findFanChatRow(qc, capturedAccountId, capturedFanId));
       patchChatListAfterSend(qc, capturedAccountId, capturedFanId, {
-        fromUserId: fromUserId ?? Number(capturedAccountId),
+        // The raw account id, NOT Number(accountId): a Fansly snowflake is past
+        // 2^53, so parsing it yields a DIFFERENT id — the row would read as "the
+        // fan spoke last" and the yellow dot would come straight back on the
+        // thread we just answered.
+        fromUserId: fromUserId ?? capturedAccountId,
         fromUserName: fromUserName ?? "you",
         text: input.text,
         mediaCount: optimisticMedia.length,
@@ -274,7 +280,14 @@ export function useSendMessage(opts: UseSendMessageOpts) {
             // on next poll). Server is the source of truth from here on.
             qc.invalidateQueries({ queryKey: scheduledSendsKey(accountId, fanId) });
           } catch (err) {
+            // RETHROW. A scheduled send has no optimistic bubble to turn red —
+            // the only evidence it exists is the server-side ghost row. Swallowing
+            // here left the composer showing its "Scheduled ✓" toast over an empty
+            // textarea for a message the relay had REFUSED (a Fansly PPV/media
+            // schedule 400s), which is indistinguishable from success. The caller
+            // restores the composer and shows the real reason.
             console.warn("[schedule] near-term enqueue failed", err);
+            throw err;
           }
           return;
         }
@@ -300,7 +313,10 @@ export function useSendMessage(opts: UseSendMessageOpts) {
             { accountId, employeeId },
           );
         } catch (err) {
+          // Same contract as the near-term branch above: no bubble exists to
+          // carry the failure, so it must reach the composer.
           console.warn("[schedule] failed", err);
+          throw err;
         }
         return;
       }
@@ -366,7 +382,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
 function recordVaultSends(
   qc: ReturnType<typeof useQueryClient>,
   accountId: string,
-  fanId: number,
+  fanId: FanId,
   server: OFMessage,
   priceDollars: number,
 ): void {
@@ -410,8 +426,8 @@ function recordVaultSends(
 function patchChatListAfterSend(
   qc: ReturnType<typeof useQueryClient>,
   accountId: string,
-  fanId: number,
-  msg: { fromUserId: number; fromUserName: string; text: string; mediaCount: number; price: number },
+  fanId: FanId,
+  msg: { fromUserId: number | string; fromUserName: string; text: string; mediaCount: number; price: number },
 ): void {
   type Page = { rows: OFChatItem[]; hasMore: boolean };
   type Infinite = { pages: Page[]; pageParams: unknown[] };

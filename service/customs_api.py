@@ -25,6 +25,7 @@ renders even when there is nothing owed.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -33,6 +34,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+import llm_client
 from auth import assert_account_owned, clamp_account_filter
 from automations import _customs
 from db.engine import get_session
@@ -41,6 +43,33 @@ from db.models import Account, AutomationRule, Fan, Message, Transaction
 # How far back the REVIEW list reaches. A backlog to clear once, not a
 # permanent second queue.
 _REVIEW_DAYS = 60
+
+# How much thread the RECORDING BRIEF reads. Bigger than the Read pane's
+# defaults on purpose: the pane is anchored on a tip and is for a human who can
+# scroll, while the brief is anchored on the OLDEST outstanding order and has to
+# CONTAIN the message that placed it — a man describes what he wants ("naked gym
+# routine, health food") and tips afterwards, sometimes days and a hundred
+# messages before the tip that completes the order.
+#
+# `before` carries the weight, and that is the whole correction: the anchor is
+# the OLDEST outstanding tip, and the request is made BEFORE the money arrives
+# ("naked gym routine, health food" … then he tips). So the ask sits in the
+# run-up, behind the anchor, behind however much small talk happened in
+# between. `after` only has to cover the tips that followed and any clarifying
+# back-and-forth. These are COUNTS, not days — see `customs_context` on why a
+# time window is the wrong shape here.
+#
+# ⚠️ THESE WERE THE WRONG WAY ROUND IN THE FIRST CUT AND A TEST CAUGHT IT: with
+# before=60/after=140 a thread carrying 80 messages between the ask and the tip
+# returned 61 rows and did NOT contain the ask — the exact failure this was
+# written to fix, reproduced by the fix itself.
+_BRIEF_BEFORE = 160
+_BRIEF_AFTER = 40
+
+# How many of HIS lines reach the model. The window above decides what is
+# fetched; this decides what survives into the prompt, and the two have to agree
+# about which END matters — see the truncation note in `customs_brief`.
+_BRIEF_MAX_LINES = 60
 
 log = logging.getLogger("of-relay.customs_api")
 
@@ -53,6 +82,30 @@ router = APIRouter()
 # while the watch honors the rule's per-account `min_cents`, so on an account
 # with an override the review list may show bursts the watch deliberately
 # does not book (marked: False rows — a human decides).
+
+
+def _order_tips_q(*conditions):
+    """The canonical SELECT for "tips that may be ORDERS", plus `conditions`.
+
+    THE COLUMN TUPLE IS A CONTRACT, not a convenience: `_customs.orders_per_fan`
+    and `bursts_per_fan` both destructure exactly
+    `(account_id, fan_id, amount_cents, occurred_at, message_id)` in that order,
+    and both require `occurred_at DESC` because the burst walk assumes rows
+    arrive newest-first. Three call sites here were spelling that out by hand,
+    which is three chances to reorder a column or forget the sort.
+
+    It also carries the two filters that must never be omitted — DM tips only,
+    and SETTLED money only. The settled filter is exactly what `customs_api` was
+    missing while `customs_watch` had it, which showed refunded work as owed;
+    baking it into the shared selector is what stops a fourth query
+    reintroducing that bug."""
+    return (select(Transaction.account_id, Transaction.fan_id,
+                   Transaction.amount_cents, Transaction.occurred_at,
+                   Transaction.message_id)
+            .where(Transaction.kind.in_(_customs.ORDER_KINDS),
+                   Transaction.status.in_(_customs.SETTLED_STATUSES),
+                   *conditions)
+            .order_by(Transaction.occurred_at.desc()))
 
 
 def _chat_href(account_id: str, fan_id: int, msg_id) -> str:
@@ -88,21 +141,42 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
             return {"customs": [], "count": 0,
                     "untracked": await _untracked(allowed)}
 
-        # The tip that most likely bought it: newest qualifying tip from that
-        # fan. Shown so the operator can see WHAT was paid without leaving the
-        # page — a $100 and a $200 order are different pieces of work.
+        # The orders behind the debt, shown so the operator can see WHAT was paid
+        # without leaving the page — a $100 and a $200 order are different pieces
+        # of work, and two $100s are two voice notes.
         keys = {(r[0], int(r[1])) for r in owed}
-        tips = (await s.execute(
-            select(Transaction.account_id, Transaction.fan_id,
-                   Transaction.amount_cents, Transaction.occurred_at,
-                   Transaction.message_id)
-            .where(Transaction.kind.in_(_customs.ORDER_KINDS),
-                   # NO floor here — see _customs.orders_per_fan: a sub-floor tip
-                   # stacked onto a qualifying one is part of the same order.
-                   Transaction.account_id.in_({k[0] for k in keys}))
-            .order_by(Transaction.occurred_at.desc())
-        )).all()
-        newest = {k: v for k, v in _customs.orders_per_fan(tips).items() if k in keys}
+        # How far back to scan. The OLDEST debt on the board, minus a burst
+        # window so the tip that opened it cannot fall outside its own scan —
+        # `customs_owed_at` is stamped with the tip's time, not the sweep's.
+        # Floored at `_REVIEW_DAYS` so one ancient un-cleared row cannot drag the
+        # query back across all history. A debt older than the floor still shows;
+        # only the amount reconstruction is bounded, and it already falls back to
+        # `customs_owed_at` below when the scan comes up empty.
+        oldest = min((r[2] for r in owed if r[2] is not None), default=None)
+        floor_at = datetime.utcnow() - timedelta(days=_REVIEW_DAYS)
+        since = max(oldest - timedelta(minutes=_customs.BURST_MINUTES),
+                    floor_at) if oldest is not None else floor_at
+        # NO floor in SQL — see `_customs.orders_per_fan`: a sub-floor tip
+        # stacked onto a qualifying one is part of the same order, so the floor
+        # is a question about the burst TOTAL and is asked in Python.
+        #
+        # BOUNDED ON BOTH AXES. This used to pull every tip ever recorded on
+        # every account holding an owed fan, survivable only because
+        # `orders_per_fan` collapsed it to one tuple per fan. Counting ALL of a
+        # fan's orders makes an unbounded scan both slower and wrong — a whale's
+        # entire history would render as outstanding work.
+        tips = (await s.execute(_order_tips_q(
+            Transaction.account_id.in_({k[0] for k in keys}),
+            Transaction.fan_id.in_({k[1] for k in keys}),
+            Transaction.occurred_at >= since,
+        ))).all()
+        # EVERY unsettled order per fan, not just the newest — see
+        # `_customs.bursts_per_fan`. A man who tips $100 on Monday and $100 on
+        # Tuesday is owed two voice notes, and the second had no surface at all:
+        # `_unmarked` below subtracts fans who are already owed, so it could not
+        # appear there either.
+        all_bursts = {k: v for k, v in _customs.bursts_per_fan(tips).items()
+                      if k in keys}
 
         names = {a: (n or a) for a, n in (await s.execute(
             select(Account.id, Account.nickname)
@@ -111,7 +185,14 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
 
     out = []
     for acct, fid, owed_at, disp, uname, spend in owed:
-        cents, at, msg_id = newest.get((acct, int(fid)), (None, None, None))
+        bursts = all_bursts.get((acct, int(fid)), [])
+        # TOTAL across every outstanding order, and the ANCHOR stays the newest
+        # one — the operator opens the thread at the most recent thing he said,
+        # which is where the work order usually is. `order_count` is what makes
+        # the total legible: "$200" alone reads as one big custom, "$200 · 2
+        # tips" says two voice notes are owed.
+        cents = sum(b[0] for b in bursts) if bursts else None
+        at, msg_id = (bursts[0][1], bursts[0][2]) if bursts else (None, None)
         out.append({
             "account_id": acct,
             "account_name": names.get(acct, acct),
@@ -119,6 +200,12 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
             "marked": True,
             "display_name": disp or uname or f"fan #{fid}",
             "tip_cents": cents,
+            "order_count": len(bursts),
+            # Every order behind the total, newest first, so the pane can offer
+            # one "Read" per order rather than only per fan.
+            "orders": [{"cents": int(c), "at": a.isoformat() if a else None,
+                        "msg_id": int(m) if m else None}
+                       for c, a, m in bursts],
             # `customs_owed_at` is the ledger and therefore the authority on WHEN
             # he paid. The transaction scan is a nicety that tells the operator
             # how much; when it comes up empty (a tip older than its own lookback,
@@ -155,14 +242,9 @@ async def _unmarked(allowed: list[str] | None,
     second queue."""
     since = datetime.utcnow() - timedelta(days=_REVIEW_DAYS)
     async with get_session() as s:
-        q = (select(Transaction.account_id, Transaction.fan_id,
-                    Transaction.amount_cents, Transaction.occurred_at,
-                    Transaction.message_id)
-             .where(Transaction.kind.in_(_customs.ORDER_KINDS),
-                    # NO floor — _customs.orders_per_fan tests the burst TOTAL.
-                    Transaction.occurred_at >= since,
-                    Transaction.fan_id.is_not(None))
-             .order_by(Transaction.occurred_at.desc()))
+        # NO floor — `_customs.orders_per_fan` tests the burst TOTAL.
+        q = _order_tips_q(Transaction.occurred_at >= since,
+                          Transaction.fan_id.is_not(None))
         if allowed is not None:
             q = q.where(Transaction.account_id.in_(allowed))
         tips = (await s.execute(q)).all()
@@ -226,6 +308,11 @@ async def _untracked(allowed: list[str] | None) -> list[dict[str, Any]]:
                     func.max(Transaction.amount_cents))
              .where(Transaction.kind.in_(_customs.ORDER_KINDS),
                     Transaction.amount_cents >= _customs.MIN_CENTS,
+                    # Money that actually arrived. A charged-back tip is not
+                    # evidence that an account is taking custom orders, and
+                    # warning about it sends the operator to enable a watcher
+                    # for revenue that left again.
+                    Transaction.status.in_(_customs.SETTLED_STATUSES),
                     Transaction.occurred_at >= since)
              .group_by(Transaction.account_id))
         if allowed is not None:
@@ -256,8 +343,8 @@ async def customs_context(
     account_id: str = Query(...),
     fan_id: int = Query(...),
     at: str | None = Query(None, description="ISO anchor; default = his newest qualifying tip"),
-    before: int = Query(18, ge=1, le=60),
-    after: int = Query(6, ge=0, le=60),
+    before: int = Query(18, ge=1, le=250),
+    after: int = Query(6, ge=0, le=250),
 ) -> dict[str, Any]:
     """The conversation AROUND the tip — what was actually ordered.
 
@@ -300,6 +387,9 @@ async def customs_context(
                 select(func.max(Transaction.occurred_at))
                 .where(Transaction.account_id == str(account_id),
                        Transaction.fan_id == int(fan_id),
+                       # Anchoring on a charged-back tip points the operator at
+                       # a conversation about money that was taken back.
+                       Transaction.status.in_(_customs.SETTLED_STATUSES),
                        Transaction.kind.in_(_customs.ORDER_KINDS))
             )).scalar_one_or_none()
         if anchor_at is None:
@@ -343,6 +433,159 @@ async def customs_context(
 
     return {"anchor_at": anchor_at.isoformat(),
             "messages": [_row(r) for r in reversed(older)] + [_row(r) for r in newer]}
+
+
+class _BriefBody(BaseModel):
+    account_id: str
+    fan_id: int
+    at: str | None = None
+
+
+@router.post("/admin/customs/brief")
+async def customs_brief(body: _BriefBody = Body(...)) -> dict[str, Any]:
+    """A WORK ORDER for one owed custom: what to record, in the fan's terms.
+
+    The Read pane already shows the thread; this reads it FOR the operator and
+    says what the voice note has to contain. It exists because the answer is
+    usually spread across several messages ("25 back 25 front", a name to say, a
+    scenario) and reconstructing it means re-reading the thread every time
+    somebody picks the row up.
+
+    ⚠️ THE MODEL NEVER STATES AN AMOUNT, AND THAT IS THE WHOLE SAFETY ARGUMENT.
+    `transactions` knows exactly what was paid; a model asked to attribute
+    dollars to deliverables will invent a split, the operator will film to it,
+    and the recording is burned before anyone notices. So the money is passed IN
+    as ground truth, the schema has no field for it, and the prompt forbids
+    restating it. Deliverables come from the model; figures come from the DB.
+
+    ON CLICK ONLY, never on queue load — a per-row call for rows nobody opens is
+    money spent on nothing. Cheap model (`deepseek-v4-flash`), and every call is
+    capped and audited by `llm_client.chat` like any other.
+
+    Best-effort by construction: a missing key, a cap hit or a bad JSON body
+    returns `ok: false` with a reason rather than raising, because the raw thread
+    is rendered underneath and the operator is never blocked on this."""
+    assert_account_owned(body.account_id)
+
+    # Ground truth for the money, computed the same way the queue row is, so the
+    # brief and the row can never disagree about what he paid.
+    async with get_session() as s:
+        tips = (await s.execute(_order_tips_q(
+            Transaction.account_id == str(body.account_id),
+            Transaction.fan_id == int(body.fan_id),
+            Transaction.occurred_at >= datetime.utcnow()
+            - timedelta(days=_REVIEW_DAYS),
+        ))).all()
+    bursts = _customs.bursts_per_fan(tips).get(
+        (str(body.account_id), int(body.fan_id)), [])
+    paid_cents = sum(b[0] for b in bursts)
+
+    # THE WINDOW HAS TO REACH THE MESSAGE THAT PLACED THE ORDER, and that is
+    # older than the tip that paid for it — a man says "naked gym routine, health
+    # food" and tips afterwards. Anchoring on his NEWEST tip and reading back a
+    # fixed 50 was the bug the operator hit: on a chatty thread, or with a second
+    # order days later, the request falls outside the window and the brief
+    # confidently summarises the wrong conversation.
+    #
+    # So the span is anchored on the OLDEST outstanding order and runs to now.
+    # `customs_context` is count-based (see its docstring: a time window is empty
+    # on a slow thread and unbounded on a fast one), so this asks for everything
+    # after that anchor via `after`, and keeps a healthy `before` for the
+    # run-up in which the ask is usually made.
+    anchor_at = body.at or (bursts[-1][1].isoformat() if bursts else None)
+    ctx = await customs_context(account_id=body.account_id, fan_id=body.fan_id,
+                                at=anchor_at, before=_BRIEF_BEFORE,
+                                after=_BRIEF_AFTER)
+    msgs = ctx.get("messages") or []
+    if not msgs:
+        return {"ok": False, "reason": "no stored messages around this tip"}
+
+    # Only what he SAID. Our own sends are the sales pitch, not the order, and
+    # feeding them back invites the model to summarise our marketing copy.
+    said = [m["text"].strip() for m in msgs
+            if m.get("from_fan") and not m.get("is_tip") and (m.get("text") or "").strip()]
+    if not said:
+        return {"ok": False, "reason": "he never said what he wanted in this window"}
+
+    # ⚠️ KEEP THE OLDEST, NOT THE NEWEST. This was `said[-40:]` and it silently
+    # undid the whole window fix above: the span is deliberately weighted BEHIND
+    # the anchor because the request precedes the money, so the ask sits at the
+    # START of `said` and tail-truncation threw away the one message the brief
+    # exists to read. Verified on a seeded thread — 80 messages of small talk
+    # after the ask and the model never saw it.
+    #
+    # Both ends are kept when it does not fit: the opening carries the request,
+    # and the closing carries any late correction ("actually make it longer").
+    if len(said) <= _BRIEF_MAX_LINES:
+        lines = said
+    else:
+        head = _BRIEF_MAX_LINES * 2 // 3
+        lines = said[:head] + ["…"] + said[-(_BRIEF_MAX_LINES - head):]
+    transcript = "\n".join(f"- {t}" for t in lines)
+    orders_line = (
+        f"He has {len(bursts)} SEPARATE orders outstanding, so there are "
+        f"{len(bursts)} things to record, not one. Say so in the summary and "
+        "split the deliverables across them where his messages make the split "
+        "clear.\n" if len(bursts) > 1 else ""
+    )
+    system = (
+        "You read one fan's messages and write the RECORDING BRIEF for a voice "
+        "note he already paid for. Reply with JSON only: "
+        '{"summary": str, "deliverables": [str], "say_by_name": str|null, '
+        '"uncertain": [str], "found_request": bool}. '
+        "summary: one sentence, what to record. "
+        "deliverables: each distinct thing he asked for, in HIS words where "
+        "possible, shortest form that is still unambiguous. "
+        "say_by_name: a name he wants spoken, or null. "
+        "uncertain: anything genuinely ambiguous that the operator must decide. "
+        + orders_line +
+        "found_request: true ONLY if these messages actually contain him asking "
+        "for something specific. If he never says what he wants here — the "
+        "request was made earlier than this excerpt, or he only discussed price "
+        "— set it false, leave deliverables empty and say in summary that the "
+        "ask is not in this excerpt. A confident guess gets recorded and the "
+        "take is wasted, so silence is the correct answer when you cannot see "
+        "the request. "
+        "NEVER state, guess, split or total any dollar amount — the system "
+        "already knows what he paid and will show it. Do not invent anything he "
+        "did not ask for; an empty list is better than a plausible guess."
+    )
+    try:
+        res = await llm_client.chat(
+            model="deepseek-v4-flash",
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": transcript}],
+            purpose="customs_brief",
+            account_id=str(body.account_id),
+            fan_id=int(body.fan_id),
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        # `parsed` is llm_client's own json.loads of the content when
+        # response_format=json_object; fall back for a model that ignored it.
+        brief = res.parsed if isinstance(res.parsed, dict) else json.loads(res.content)
+    except Exception as exc:
+        log.warning("customs brief failed account=%s fan=%s: %s",
+                    body.account_id, body.fan_id, exc)
+        return {"ok": False, "reason": str(exc)}
+
+    return {
+        "ok": True,
+        # From the DB, never from the model.
+        "paid_cents": paid_cents,
+        "order_count": len(bursts),
+        # A model that cannot see the request must not be rendered as a work
+        # order — see the prompt. Default TRUE so a model that omits the field
+        # degrades to the old behaviour rather than blanking every brief.
+        "found_request": bool(brief.get("found_request", True)),
+        "summary": str(brief.get("summary") or "").strip(),
+        "deliverables": [str(x).strip() for x in (brief.get("deliverables") or [])
+                         if str(x).strip()][:10],
+        "say_by_name": (str(brief["say_by_name"]).strip()
+                        if brief.get("say_by_name") else None),
+        "uncertain": [str(x).strip() for x in (brief.get("uncertain") or [])
+                      if str(x).strip()][:5],
+    }
 
 
 class _ClearBody(BaseModel):

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -319,6 +320,55 @@ def _validate_pack_overrides(raw: Any) -> dict[str, list[str]]:
     return out
 
 
+# ── life-expense tip ask knobs (see automations/_life_tip.Settings) ──────────
+# key → the outer bounds a pair may sit in. Counts are HIS messages; days are days;
+# the dollar range is what she draws from when no amount is configured.
+_LIFE_TIP_PAIRS: dict[str, tuple[int, int]] = {
+    "life_tip_ask_every": (1, 500),
+    "life_tip_ask_every_tipped": (1, 500),
+    "life_tip_ask_retry": (1, 500),
+    "life_tip_ask_days": (1, 365),
+    "life_tip_ask_range_dollars": (1, 500),
+    # The BIG ask's own bands: a month rather than a week, and a range that has
+    # to reach a locksmith bill — hence the wider dollar ceiling.
+    "life_tip_big_days": (1, 365),
+    "life_tip_big_range_dollars": (1, 2000),
+}
+_LIFE_TIP_POOL_MAX = 80        # reasons per lane
+_LIFE_TIP_REASON_MAX = 60      # chars per reason
+_LIFE_TIP_EXTRA_MAX = 400      # chars of operator note
+
+
+def _validate_life_tip_pair(key: str, raw: Any, lo: int, hi: int) -> list[int] | None:
+    """None ⇒ drop the key (the shipped constant applies). Otherwise [a, b] ints
+    clamped into [lo, hi] with a ≤ b."""
+    if raw in (None, "", []):
+        return None
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        raise HTTPException(422, f"{key} must be [min, max]")
+    try:
+        a, b = int(raw[0]), int(raw[1])
+    except (TypeError, ValueError):
+        raise HTTPException(422, f"{key} must be two numbers")
+    a, b = max(lo, min(a, hi)), max(lo, min(b, hi))
+    if a > b:
+        raise HTTPException(422, f"{key}: min must not exceed max")
+    return [a, b]
+
+
+def _validate_life_tip_pool(key: str, raw: Any) -> list[str]:
+    """A list of short reasons; a string is split on newlines/commas (the textarea).
+    Empty ⇒ [] and the caller drops the key."""
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        raw = re.split(r"[\n,]", raw)
+    if not isinstance(raw, (list, tuple)):
+        raise HTTPException(422, f"{key} must be a list of short phrases")
+    return [str(x).strip()[:_LIFE_TIP_REASON_MAX]
+            for x in raw[:_LIFE_TIP_POOL_MAX] if str(x or "").strip()]
+
+
 # ── ai_chatter config (mirrors tip_reward_config_api) ────────────────────────
 
 def _validate_cfg(cfg: dict) -> dict:
@@ -334,6 +384,51 @@ def _validate_cfg(cfg: dict) -> dict:
     # loose on non-buyers would have saved a config the engine never sees.
     if "payers_only" in cfg:
         out["payers_only"] = bool(cfg["payers_only"])
+    # The life-expense tip ask (ships OFF — see ai_chatter._DEFAULTS). Named here
+    # because this validator DROPS any key it does not name. The amount is
+    # nullable on purpose: None means "she names a modest figure herself".
+    if "life_tip_ask_enabled" in cfg:
+        out["life_tip_ask_enabled"] = bool(cfg["life_tip_ask_enabled"])
+    if "life_tip_ask_amount_dollars" in cfg:
+        _amt = cfg["life_tip_ask_amount_dollars"]
+        out["life_tip_ask_amount_dollars"] = (
+            None if _amt in (None, "") else max(1, min(500, int(_amt))))
+    # Its knobs (one card in the tab). A pair is [lo, hi] ints with lo ≤ hi; a
+    # pool is a list of short strings (a newline/comma string is accepted from
+    # the textarea). Blank/empty → the key is DROPPED so the shipped constant
+    # applies — an operator clearing a box gets the default, not an empty pool.
+    for _k, (_lo, _hi) in _LIFE_TIP_PAIRS.items():
+        if _k in cfg:
+            _pair = _validate_life_tip_pair(_k, cfg[_k], _lo, _hi)
+            if _pair is not None:
+                out[_k] = _pair
+    for _k in ("life_tip_ask_reasons_her", "life_tip_ask_reasons_him"):
+        if _k in cfg:
+            _pool = _validate_life_tip_pool(_k, cfg[_k])
+            if _pool:
+                out[_k] = _pool
+    if "life_tip_ask_reasons_shown" in cfg and cfg["life_tip_ask_reasons_shown"] not in (None, ""):
+        try:
+            out["life_tip_ask_reasons_shown"] = max(1, min(12, int(cfg["life_tip_ask_reasons_shown"])))
+        except (TypeError, ValueError):
+            raise HTTPException(422, "life_tip_ask_reasons_shown must be a number")
+    if "life_tip_ask_extra" in cfg:
+        _x = str(cfg["life_tip_ask_extra"] or "").strip()[:_LIFE_TIP_EXTRA_MAX]
+        if _x:
+            out["life_tip_ask_extra"] = _x
+    # The BIG ask (ships OFF on its own switch — see ai_chatter._DEFAULTS). Same
+    # blank-drops-the-key discipline; its pairs are in _LIFE_TIP_PAIRS above.
+    if "life_tip_big_enabled" in cfg:
+        out["life_tip_big_enabled"] = bool(cfg["life_tip_big_enabled"])
+    for _k in ("life_tip_big_reasons_her", "life_tip_big_reasons_him"):
+        if _k in cfg:
+            _pool = _validate_life_tip_pool(_k, cfg[_k])
+            if _pool:
+                out[_k] = _pool
+    if "life_tip_big_extra" in cfg:
+        _x = str(cfg["life_tip_big_extra"] or "").strip()[:_LIFE_TIP_EXTRA_MAX]
+        if _x:
+            out["life_tip_big_extra"] = _x
     if "pivot_on_escalation" in cfg:
         out["pivot_on_escalation"] = bool(cfg["pivot_on_escalation"])
     if "unsend_expired_offer" in cfg:

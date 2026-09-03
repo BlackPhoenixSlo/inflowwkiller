@@ -30,6 +30,7 @@ import {
 
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
+import { compareFanIds, fanIdFromParam, type FanId } from "@/lib/fanId";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 import { useActiveAccounts } from "./useAccounts";
 import { useAllModelsInclude } from "./useAllModelsInclude";
@@ -98,8 +99,8 @@ async function enrichWithUsers(
   const ids = Array.from(new Set(chats.map((c) => c.withUser.id))).filter(Boolean);
   if (ids.length === 0) return chats;
 
-  const byId = new Map<number, {
-    id: number;
+  const byId = new Map<FanId, {
+    id: FanId;
     name?: string;
     username?: string;
     avatar?: string | null;
@@ -124,8 +125,12 @@ async function enrichWithUsers(
       }>;
     }>(`/admin/fans/${accountId}/by-ids?${qs.toString()}`);
     for (const [k, f] of Object.entries(local.fans || {})) {
-      const nid = Number(k);
-      if (!Number.isFinite(nid)) continue;
+      // The KEY as sent, not `Number(k)`. Truncating it here keyed the map by
+      // a rounded snowflake while `byId.has(...)` below looks it up with the
+      // untruncated wire id — so on Fansly pass-1 enrichment never hit and
+      // every fan fell through to the slower per-chunk OF fetch.
+      const nid = fanIdFromParam(k);
+      if (nid == null) continue;
       // Treat a row as "useful" only if it has at least a display name.
       // A bare row with just an id wouldn't save the OF round-trip.
       if (!f.name && !f.username) continue;
@@ -160,10 +165,10 @@ async function enrichWithUsers(
   // ── Pass 2: fill gaps from OF (background priority, sequential) ─────
   const missing = ids.filter((id) => !byId.has(id));
   if (missing.length > 0) {
-    const chunks: number[][] = [];
+    const chunks: FanId[][] = [];
     for (let i = 0; i < missing.length; i += 50) chunks.push(missing.slice(i, i + 50));
 
-    const fetchChunk = async (chunk: number[]) => {
+    const fetchChunk = async (chunk: FanId[]) => {
       const qs = new URLSearchParams();
       for (const id of chunk) qs.append("ids", String(id));
       qs.set("view", "m");
@@ -173,8 +178,8 @@ async function enrichWithUsers(
           { accountId, priority: "background" },
         );
         for (const [k, u] of Object.entries(resp || {})) {
-          const nid = Number(k);
-          if (!Number.isFinite(nid)) continue;
+          const nid = fanIdFromParam(k);
+          if (nid == null) continue;
           const profile = {
             id: nid,
             name: u.name,
@@ -236,7 +241,9 @@ function compareChats(a: OFChatItem, b: OFChatItem): number {
   const ta = a.lastMessage?.createdAt ?? "";
   const tb = b.lastMessage?.createdAt ?? "";
   if (ta && tb && ta !== tb) return tb.localeCompare(ta);
-  return (b.withUser?.id || 0) - (a.withUser?.id || 0);
+  // Descending by id, via the canonical comparator — never `b.id - a.id`,
+  // which is NaN on a Fansly string snowflake (see compareFanIds).
+  return compareFanIds(b.withUser?.id, a.withUser?.id);
 }
 
 interface ChatsPage {

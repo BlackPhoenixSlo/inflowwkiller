@@ -37,6 +37,55 @@ import ReengageBuyersTab from "@/components/settings/ReengageBuyersTab";
 import MakeRightTab from "@/components/settings/MakeRightTab";
 import type { AiChatterConfig } from "@/hooks/useCatalog";
 
+const LT_NUM = "w-16 rounded border border-border bg-bg px-1.5 py-0.5 text-sm";
+
+/** A [min, max] pair of small number boxes. `fallback` is what the engine uses
+ *  when the key is absent; the boxes show it so an untouched account reads true.
+ *  Order is fixed on blur (max pulled up to min), never while typing. */
+function PairInput({ value, fallback, min, max, prefix, onChange }: {
+  value: number[] | undefined; fallback: [number, number]; min: number; max: number;
+  prefix?: string; onChange: (v: number[]) => void;
+}) {
+  const lo = value?.[0] ?? fallback[0];
+  const hi = value?.[1] ?? fallback[1];
+  const clamp = (n: number) => Math.max(min, Math.min(max, Math.round(n)));
+  const fix = () => { if (lo > hi) onChange([lo, lo]); };
+  return (
+    <span className="inline-flex items-center gap-1">
+      {prefix}
+      <input type="number" min={min} max={max} className={LT_NUM} value={lo} onBlur={fix}
+        onChange={(e) => onChange([clamp(Number(e.target.value) || min), hi])} />
+      –{prefix}
+      <input type="number" min={min} max={max} className={LT_NUM} value={hi} onBlur={fix}
+        onChange={(e) => onChange([lo, clamp(Number(e.target.value) || min)])} />
+    </span>
+  );
+}
+
+/** One reason per line. Edited as free text and committed on blur, so a newline
+ *  mid-typing is not eaten by the list round-trip. An empty box commits [] and
+ *  the server drops the key — the shipped pool applies. */
+function ReasonsBox({ label, value, onCommit }: {
+  label: string; value: string[] | undefined; onCommit: (v: string[]) => void;
+}) {
+  const joined = (value ?? []).join("\n");
+  const [draft, setDraft] = useState(joined);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { if (!focused) setDraft(joined); }, [joined, focused]);
+  return (
+    <label className="block">
+      <span className="block mb-1">{label} — one per line</span>
+      <textarea className={`${INPUT} w-full h-28 font-mono text-xs`} value={draft} spellCheck={false}
+        onFocus={() => setFocused(true)}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          setFocused(false);
+          onCommit(draft.split(/[\n,]/).map((s) => s.trim()).filter(Boolean));
+        }} />
+    </label>
+  );
+}
+
 // Proven-spender cap floor: the two windows the UI edits, with the display/seed
 // defaults. THE in-file home for these numbers — the render maps over this table
 // (the same defaults live server-side in ai_chatter's config table).
@@ -305,6 +354,122 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
               </span>
             </span>
           </label>
+        </div>
+
+        {/* ── life-expense tip ask — the switch and EVERY knob, one card ── */}
+        <div className="rounded-md border border-border bg-bg-elev-1 px-3 py-2.5 space-y-2 text-sm">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={!!cfg.life_tip_ask_enabled}
+              onChange={(e) => set({ life_tip_ask_enabled: e.target.checked })} />
+            <span>
+              <span className="font-medium">Ask chatty fans for a little tip</span>
+              <span className="block text-fg-dim text-xs">
+                Every so many of his messages, and at least a few days apart, one ordinary reply
+                mentions something real the creator is paying for today and asks him to cover
+                it, right here in chat. Never on a selling turn, never with content attached.
+                Needs <b>Only chat fans who have bought before</b> OFF to reach fans who never
+                bought. Everything below is per account; clear a box to get the shipped value.
+              </span>
+            </span>
+          </label>
+          <div className="pl-6 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5 text-xs text-fg-dim">
+            <label className="flex items-center gap-2 flex-wrap">
+              Suggested amount $
+              <input type="number" min={1} max={500} className={LT_NUM}
+                value={cfg.life_tip_ask_amount_dollars ?? ""}
+                placeholder="creator picks"
+                onChange={(e) => set({ life_tip_ask_amount_dollars: e.target.value === "" ? null : Math.max(1, Math.round(Number(e.target.value) || 0)) })} />
+              <span>blank = the creator names one, from</span>
+              <PairInput value={cfg.life_tip_ask_range_dollars} fallback={[10, 40]} min={1} max={500} prefix="$"
+                onChange={(v) => set({ life_tip_ask_range_dollars: v })} />
+            </label>
+            <label className="flex items-center gap-2 flex-wrap">
+              Show the creator
+              <input type="number" min={1} max={12} className={LT_NUM}
+                value={cfg.life_tip_ask_reasons_shown ?? 6}
+                onChange={(e) => set({ life_tip_ask_reasons_shown: Math.max(1, Math.min(12, Math.round(Number(e.target.value) || 1))) })} />
+              reasons per ask (one that fits the chat gets picked)
+            </label>
+            <label className="flex items-center gap-2 flex-wrap">
+              Ask every
+              <PairInput value={cfg.life_tip_ask_every} fallback={[15, 25]} min={1} max={500}
+                onChange={(v) => set({ life_tip_ask_every: v })} />
+              of his messages
+            </label>
+            <label className="flex items-center gap-2 flex-wrap">
+              Once he has tipped since the last ask, every
+              <PairInput value={cfg.life_tip_ask_every_tipped} fallback={[20, 30]} min={1} max={500}
+                onChange={(v) => set({ life_tip_ask_every_tipped: v })} />
+            </label>
+            <label className="flex items-center gap-2 flex-wrap">
+              At least
+              <PairInput value={cfg.life_tip_ask_days} fallback={[3, 20]} min={1} max={365}
+                onChange={(v) => set({ life_tip_ask_days: v })} />
+              days apart (drawn so the middle is about a week)
+            </label>
+            <label className="flex items-center gap-2 flex-wrap">
+              If the reply forgot to ask, retry after
+              <PairInput value={cfg.life_tip_ask_retry} fallback={[3, 5]} min={1} max={500}
+                onChange={(v) => set({ life_tip_ask_retry: v })} />
+              of his messages
+            </label>
+          </div>
+          <div className="pl-6 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-fg-dim">
+            <ReasonsBox label="Things the creator is paying for (female account)" value={cfg.life_tip_ask_reasons_her}
+              onCommit={(v) => set({ life_tip_ask_reasons_her: v })} />
+            <ReasonsBox label="Things he is paying for (male account)" value={cfg.life_tip_ask_reasons_him}
+              onCommit={(v) => set({ life_tip_ask_reasons_him: v })} />
+          </div>
+          <label className="pl-6 flex items-center gap-2 text-xs text-fg-dim">
+            <span className="shrink-0">Extra note to the creator</span>
+            <input type="text" maxLength={400} className={`${INPUT} flex-1`}
+              value={cfg.life_tip_ask_extra ?? ""}
+              placeholder='e.g. "always blame the vet bill" — appended to the ask instructions on that turn'
+              onChange={(e) => set({ life_tip_ask_extra: e.target.value })} />
+          </label>
+
+          {/* ── the BIG ask: the same turn, the rarer and larger version ── */}
+          <div className="pl-6 pt-2 border-t border-border space-y-2">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={!!cfg.life_tip_big_enabled}
+                onChange={(e) => set({ life_tip_big_enabled: e.target.checked })} />
+              <span>
+                <span className="font-medium">Bigger ask — about once a month, only fans who have tipped</span>
+                <span className="block text-fg-dim text-xs">
+                  For a fan who has tipped at least once and is talking right now, one reply a
+                  month is about something that <b>hit the creator today</b> — locked out and a new key,
+                  a broken window, the car towed — for a real, bigger number the creator names.
+                  Needs the switch above ON. Never within a few days of the little ask.
+                </span>
+              </span>
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5 text-xs text-fg-dim">
+              <label className="flex items-center gap-2 flex-wrap">
+                The creator names one from
+                <PairInput value={cfg.life_tip_big_range_dollars} fallback={[100, 300]} min={1} max={2000} prefix="$"
+                  onChange={(v) => set({ life_tip_big_range_dollars: v })} />
+              </label>
+              <label className="flex items-center gap-2 flex-wrap">
+                At least
+                <PairInput value={cfg.life_tip_big_days} fallback={[25, 40]} min={1} max={365}
+                  onChange={(v) => set({ life_tip_big_days: v })} />
+                days apart (drawn so the middle is about a month)
+              </label>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-fg-dim">
+              <ReasonsBox label="What hit the creator today (female account)" value={cfg.life_tip_big_reasons_her}
+                onCommit={(v) => set({ life_tip_big_reasons_her: v })} />
+              <ReasonsBox label="What hit him today (male account)" value={cfg.life_tip_big_reasons_him}
+                onCommit={(v) => set({ life_tip_big_reasons_him: v })} />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-fg-dim">
+              <span className="shrink-0">Extra note to the creator</span>
+              <input type="text" maxLength={400} className={`${INPUT} flex-1`}
+                value={cfg.life_tip_big_extra ?? ""}
+                placeholder='e.g. "renting, so never a mortgage" — appended on the big-ask turn'
+                onChange={(e) => set({ life_tip_big_extra: e.target.value })} />
+            </label>
+          </div>
         </div>
 
         {/* ── old fans ── */}

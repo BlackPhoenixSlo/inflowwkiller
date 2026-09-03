@@ -32,6 +32,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 /** How long a cached read is trusted. Exported because FanDrawer's pre-edit
  *  refresh guards on the SAME window — the risk it closes exists precisely
@@ -92,7 +93,7 @@ export interface OFUser {
   [k: string]: unknown;
 }
 
-export function useOFUser(accountId: string, fanId: number) {
+export function useOFUser(accountId: string, fanId: FanId) {
   return useQuery<OFUser>({
     queryKey: ["of-user", accountId, fanId],
     enabled: !!accountId && !!fanId,

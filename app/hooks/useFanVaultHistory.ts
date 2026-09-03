@@ -18,6 +18,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface FanVaultEntry {
   send_count: number;
@@ -34,7 +35,7 @@ export interface FanVaultHistoryResp {
 
 export function useFanVaultHistory(
   accountId: string | null,
-  fanId: number | null,
+  fanId: FanId | null,
   enabled = true,
 ) {
   return useQuery<FanVaultHistoryResp>({
@@ -58,7 +59,7 @@ export function useFanVaultHistory(
 export function invalidateFanVaultHistory(
   qc: ReturnType<typeof useQueryClient>,
   accountId: string,
-  fanId: number,
+  fanId: FanId,
 ): void {
   qc.invalidateQueries({ queryKey: ["vault-history", accountId, fanId] });
 }

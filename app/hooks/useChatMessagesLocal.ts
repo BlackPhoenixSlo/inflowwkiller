@@ -33,6 +33,7 @@ import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { MASS_PLACEHOLDER_END, MASS_PLACEHOLDER_MIN, orderThread } from "@/hooks/useChatMessages";
 import { toUtcIso } from "@/hooks/useInboxRealtime";
 import { relay, type OFMessage } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 // Mass-send optimistic placeholders (service/attribution.py 5e15 band) are a
 // just-sent bridge, not history. A placeholder that outlived this window is a
@@ -44,7 +45,7 @@ const SEED_PLACEHOLDER_MAX_AGE_MS = 60 * 60_000;
 
 interface LocalMessageRow {
   account_id: string;
-  fan_id: number;
+  fan_id: FanId;
   message_id: number;
   direction: "in" | "out";
   sender_name: string | null;
@@ -67,7 +68,7 @@ interface LocalMessagesResp {
 /** Cache key for one chat's seed, minus the page size — pass it to a
  *  partial-match filter, or spread it and append `limit` for the query
  *  itself. Nobody outside this module should spell the prefix out. */
-export const seedKey = (accountId: string | null, fanId: number | null) =>
+export const seedKey = (accountId: string | null, fanId: FanId | null) =>
   ["messages-local-seed", accountId, fanId] as const;
 
 /** Drop one message from this chat's seed, every page size at once.
@@ -79,13 +80,15 @@ export const seedKey = (accountId: string | null, fanId: number | null) =>
 export function dropSeedMessage(
   qc: QueryClient,
   accountId: string | null,
-  fanId: number | null,
-  messageId: number,
+  fanId: FanId | null,
+  /** As text on the wire — a Fansly message id is a snowflake past 2^53, so
+   *  comparing it as a number drops the wrong row (or none). */
+  messageId: number | string,
 ): void {
   qc.setQueriesData<LocalMessagesResp>(
     { queryKey: seedKey(accountId, fanId) },
     (curr) => (curr
-      ? { ...curr, messages: curr.messages.filter((r) => Number(r.message_id) !== messageId) }
+      ? { ...curr, messages: curr.messages.filter((r) => String(r.message_id) !== String(messageId)) }
       : curr),
   );
 }
@@ -93,7 +96,7 @@ export function dropSeedMessage(
 export function useChatMessagesLocal(opts: {
   enabled?: boolean;
   accountId: string | null;
-  fanId: number | null;
+  fanId: FanId | null;
   limit?: number;
 }): { rows: OFMessage[]; isLoading: boolean } {
   const { enabled = true, accountId, fanId, limit = 30 } = opts;
@@ -138,7 +141,7 @@ export function useChatMessagesLocal(opts: {
  *  OF wait, never to an error surface. */
 export async function fetchOlderSeed(
   accountId: string | null,
-  fanId: number | null,
+  fanId: FanId | null,
   beforeId: number | null,
   limit = 30,
 ): Promise<OFMessage[]> {
@@ -186,7 +189,7 @@ export function mergeSeedIntoMessages(
 export function mapRows(
   raw: LocalMessageRow[],
   accountId: string | null,
-  fanId: number | null,
+  fanId: FanId | null,
   now: number = Date.now(),
 ): OFMessage[] {
   if (raw.length === 0 || !accountId || fanId == null) return [];
@@ -194,7 +197,9 @@ export function mapRows(
   // top-to-bottom (see useChatMessages.ts:89). Reverse here so the seed
   // matches the real query's ordering.
   const ascending = raw.slice().reverse();
-  const ownerId = Number(accountId);
+  // The account id as given — this becomes a synthesized `fromUser.id` on
+  // locally-seeded outbound rows, and Number() would truncate it on Fansly.
+  const ownerId: FanId = accountId;
   const out: OFMessage[] = [];
   for (const r of ascending) {
     // Optimistic placeholders never live in the local DB, but guard

@@ -51,7 +51,9 @@ import {
   sweepAbortedNote,
   useVaultSweep,
 } from "@/hooks/useVaultSweep";
-import { proxyImage, relay, type VaultList, type VaultMedia } from "@/lib/relay";
+import { relay, type VaultList, type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { type FanId } from "@/lib/fanId";
 import ImageLightbox from "@/components/vault/ImageLightbox";
 
 type MediaType = "all" | "photo" | "video" | "gif" | "audio";
@@ -117,7 +119,9 @@ export default function VaultManagePanel() {
   const qc = useQueryClient();
   const [accountId, setAccountId] = useState<string | null>(null);
   const [type, setType] = useState<MediaType>("all");
-  const [ofFolderId, setOfFolderId] = useState<number | null>(null); // OF folder (list id)
+  // FanId, not number: Fansly album ids are snowflakes above 2^53, and a
+  // narrowed one selects a DIFFERENT album. Media ids below stay number[].
+  const [ofFolderId, setOfFolderId] = useState<FanId | null>(null); // OF folder (list id)
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
   const [searchRaw, setSearchRaw] = useState("");
   const [query, setQuery] = useState("");
@@ -295,8 +299,13 @@ export default function VaultManagePanel() {
   const summaryReady = !summary.isLoading;
   const useLocal = cachedCount > 0;
   const usingFolder = ofFolderId != null;
+  // `listId` is the selected folder, NOT null: the live path is what serves an
+  // account with no mirror yet, and pinning it to null meant picking a folder
+  // filtered nothing away — the grid showed the WHOLE library under that
+  // folder's heading. The mirror path below has always scoped itself by
+  // `ofFolderId`; this gives the live one the same scope.
   const live = useVaultMedia({
-    accountId, type, listId: null, sort, query, enabled: summaryReady && !useLocal,
+    accountId, type, listId: ofFolderId, sort, query, enabled: summaryReady && !useLocal,
   });
   const mirror = useMirrorItems({
     accountId, type, query, sort, ofFolderId, enabled: useLocal,
@@ -356,6 +365,13 @@ export default function VaultManagePanel() {
     qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
     qc.invalidateQueries({ queryKey: ["vault-lists", accountId] });
     qc.invalidateQueries({ queryKey: ["vault-cache-summary", accountId] });
+    // The GRID's own key. Everything above refreshes the folder rail and the
+    // counts, so an add-to-folder made the sidebar say "2" while the tiles
+    // underneath still showed the pre-add page — the one thing the user is
+    // actually looking at was the one thing that never refetched. A prefix
+    // match covers every (type, listId, sort, query) combination, so the
+    // target album refreshes even while a different folder is on screen.
+    qc.invalidateQueries({ queryKey: ["vault-media", accountId] });
   }
 
   async function onCollect() {
@@ -420,7 +436,7 @@ export default function VaultManagePanel() {
     });
   }
 
-  async function addSelectedToFolder(listId: number) {
+  async function addSelectedToFolder(listId: FanId) {
     if (!accountId || selected.size === 0) return;
     setBusy("adding to OF…");
     try {
@@ -507,8 +523,9 @@ export default function VaultManagePanel() {
 
   // ── Folder management (real OF writes) ──────────────────────────
   const [customizeOrder, setCustomizeOrder] = useState(false);
-  const [localOrder, setLocalOrder] = useState<number[] | null>(null);
-  const [draggedId, setDraggedId] = useState<number | null>(null);
+  // Folder ids (the drag reorders FOLDERS), so FanId — see ofFolderId above.
+  const [localOrder, setLocalOrder] = useState<FanId[] | null>(null);
+  const [draggedId, setDraggedId] = useState<FanId | null>(null);
   async function onNewFolder() {
     if (!accountId) return;
     const name = window.prompt("New OF folder name:");
@@ -540,7 +557,7 @@ export default function VaultManagePanel() {
     setLocalOrder(null);
     setDraggedId(null);
   }
-  function onDragOverFolder(e: ReactDragEvent, overId: number) {
+  function onDragOverFolder(e: ReactDragEvent, overId: FanId) {
     e.preventDefault();
     if (draggedId == null || draggedId === overId || !localOrder) return;
     const arr = [...localOrder];
@@ -735,7 +752,14 @@ export default function VaultManagePanel() {
           </button>
           {folders.length > 0 && (
             <select
-              onChange={(e) => e.target.value && addSelectedToFolder(Number(e.target.value))}
+              // The album id stays EXACTLY as it came off the wire. This was
+              // `Number(e.target.value)`, and every Fansly album id is an
+              // 18-digit snowflake past 2^53 — the "asdf" album
+              // (951605470987055104) went out as 951605470987055100, an album
+              // that does not exist, so Fansly answered 500 'error getting
+              // album'. Creating a folder never hit this: create sends no
+              // existing id.
+              onChange={(e) => e.target.value && addSelectedToFolder(e.target.value)}
               defaultValue=""
               disabled={!!busy}
               className="px-2 py-1 rounded-md text-xs bg-bg-elev-1 border border-border"

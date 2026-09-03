@@ -62,7 +62,9 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { chatTabName, openChatTab } from "@/lib/chatPopout";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useRailSettings } from "@/hooks/useRailSettings";
-import { relay, proxyImage, type OFChatItem } from "@/lib/relay";
+import { relay, type OFChatItem } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { compareFanIds, type FanId, sameUserId } from "@/lib/fanId";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
 import { cn } from "@/lib/utils";
 import type { AttributionEntry, AttributionResponse } from "@/hooks/useChatAttribution";
@@ -174,16 +176,21 @@ export interface ReplyState {
  *  is null when a human chatter sent it. */
 export function lastOutboundOf(
   resp: AttributionResponse | undefined,
-): { messageId: number; automationKind: string | null } | null {
+): { messageId: FanId; automationKind: string | null } | null {
   const entries = Object.entries(resp?.by_msg_id ?? {});
   if (entries.length === 0) return null;
   // limit=1, but don't depend on that — take the highest id.
-  let best: { messageId: number; automationKind: string | null } | null = null;
+  //
+  // The id stays the exact key text. `Number(id)` rounded every Fansly
+  // snowflake (951605852249276416 -> ...400), and the rounded value was then
+  // `===`-compared against the wire's string id below — a comparison that is
+  // false for BOTH reasons at once, so `byBot` never fired on Fansly and the
+  // rail could not tell a bot's reply from a chatter's.
+  let best: { messageId: FanId; automationKind: string | null } | null = null;
   for (const [id, entry] of entries) {
-    const messageId = Number(id);
-    if (!Number.isFinite(messageId)) continue;
-    if (!best || messageId > best.messageId) {
-      best = { messageId, automationKind: (entry as AttributionEntry).automation_kind ?? null };
+    if (!/^\d+$/.test(id)) continue;
+    if (!best || compareFanIds(id, best.messageId) > 0) {
+      best = { messageId: id, automationKind: (entry as AttributionEntry).automation_kind ?? null };
     }
   }
   return best;
@@ -194,7 +201,7 @@ function msgTs(m?: { createdAt?: string } | null): number {
 }
 
 /** Derive the seen / owes-a-reply state for one fan. Mirrors the inbox's
- *  rule: `lastMessage.fromUser.id !== accountId` means the FAN spoke last
+ *  rule: a `lastMessage.fromUser.id` that isn't ours means the FAN spoke last
  *  and we owe them a reply (the orange dot), and `lastReadMessageId >=
  *  lastMessage.id` means they read what we sent (the blue ✓✓).
  *
@@ -214,7 +221,7 @@ export function replyStateOf(
   detail: OFChatItem | null,
   cached: OFChatItem | null,
   accountId: string,
-  lastOutbound: { messageId: number; automationKind: string | null } | null = null,
+  lastOutbound: { messageId: FanId; automationKind: string | null } | null = null,
 ): ReplyState | null {
   const dLm = detail?.lastMessage ?? null;
   const cLm = cached?.lastMessage ?? null;
@@ -224,9 +231,20 @@ export function replyStateOf(
   if (!lm) return null;
 
   // Receipts only move forward, so the higher of the two is the truth.
-  const lastRead = Math.max(detail?.lastReadMessageId ?? 0, cached?.lastReadMessageId ?? 0);
-  const myId = Number(accountId);
-  const outbound = lm.fromUser?.id != null && lm.fromUser.id === myId;
+  //
+  // Ordered with compareFanIds, NOT Math.max: a receipt id is a snowflake on
+  // Fansly, and Math.max forces it through float64 (…416 -> …400) before it is
+  // compared against the message id. Fansly sends no receipts yet, which is the
+  // only reason this never showed as a wrong ✓✓ — it would have the day they do.
+  const lastReadCandidates = [detail?.lastReadMessageId, cached?.lastReadMessageId]
+    .filter((v): v is NonNullable<typeof v> => v != null && String(v) !== "0");
+  const lastRead: FanId | null = lastReadCandidates.length
+    ? lastReadCandidates.reduce((a, b) => (compareFanIds(a, b) >= 0 ? a : b))
+    : null;
+  // String-normalized compare: a Fansly `fromUser.id` is a string snowflake,
+  // so `Number(accountId)` never matched it and every answered thread still
+  // reported "they spoke last" (orange dot).
+  const outbound = sameUserId(lm.fromUser?.id, accountId);
   const text = lm.text?.trim()
     ? stripHtmlPreview(lm.text, 60)
     : lm.mediaCount
@@ -246,13 +264,13 @@ export function replyStateOf(
     !stale &&
     lm.id != null &&
     lastOutbound != null &&
-    lastOutbound.messageId === lm.id &&
+    sameUserId(lastOutbound.messageId, lm.id) &&
     !!lastOutbound.automationKind;
 
   return {
     text,
     outbound,
-    seen: outbound && !stale && lastRead > 0 && lm.id != null && lastRead >= lm.id,
+    seen: outbound && !stale && lastRead != null && lm.id != null && compareFanIds(lastRead, lm.id) >= 0,
     unread: !outbound && ((cached?.unreadMessagesCount ?? detail?.unreadMessagesCount ?? 0) > 0
       || !!(cached?.hasUnread ?? detail?.hasUnread)),
     byBot,
@@ -640,7 +658,7 @@ function MoneyRailPanel({
     // pre-warms the lookahead, so expanding doesn't start from nothing.
     const want = (open ? settings.bigRows : settings.smallRows) + DETAIL_ROWS_LOOKAHEAD;
     const rows = merged.slice(0, Math.min(want, DETAIL_ROWS_MAX));
-    const out: { aid: string; fanId: number }[] = [];
+    const out: { aid: string; fanId: FanId }[] = [];
     const seen = new Set<string>();
     for (const m of rows) {
       const fanId = m.n.user?.id ?? m.n.fromUser?.id;
@@ -737,14 +755,22 @@ function MoneyRailPanel({
   const refreshedAtRef = useRef<Map<string, number>>(new Map());
   useEffect(() => {
     const now = Date.now();
-    for (const [key, st] of replyStates) {
-      if (!st.stale) continue;
+    // Iterate the TARGETS, not the string keys. The id is never reconstructed
+    // from text here: `detailTargets` already holds the exact `{aid, fanId}`
+    // the queries above were keyed with, so invalidation matches by
+    // construction on both platforms. Round-tripping through the `aid:fanId`
+    // string cannot do that — react-query hashes 12345 and "12345" to
+    // different keys, so parsing the half back with `Number()` missed every
+    // Fansly snowflake, and returning it as text missed every numeric
+    // OnlyFans id. Either way the stale-detail refresh silently never fired
+    // and the read-receipt tick + attribution dot stayed stale.
+    for (const { aid, fanId } of detailTargets) {
+      const key = `${aid}:${fanId}`;
+      const st = replyStates.get(key);
+      if (!st?.stale) continue;
       const last = refreshedAtRef.current.get(key) ?? 0;
       if (now - last < DETAIL_REFRESH_MIN_GAP_MS) continue;
       refreshedAtRef.current.set(key, now);
-      const sep = key.lastIndexOf(":");
-      const aid = key.slice(0, sep);
-      const fanId = Number(key.slice(sep + 1));
       void qc.invalidateQueries({ queryKey: ["chat-detail", aid, fanId] });
       // The attribution row for a just-sent message is written when OF echoes
       // it, so it lands a beat after the optimistic patch. Refetch it too, or
@@ -752,7 +778,7 @@ function MoneyRailPanel({
       // message and the dot never clears.
       void qc.invalidateQueries({ queryKey: ["money-rail-attrib", aid, fanId] });
     }
-  }, [replyStates, qc]);
+  }, [replyStates, detailTargets, qc]);
 
   // The newest GROUP_SLOT_CAP distinct payers, in the rail's own order
   // (most recent money first) — what the 👥 button seeds the group tab with.

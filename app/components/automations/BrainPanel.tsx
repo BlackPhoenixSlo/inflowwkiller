@@ -36,7 +36,8 @@ import {
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { WelcomeGifField } from "@/components/automations/WelcomeGifField";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
-import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import AudienceSection from "@/components/automations/AudienceSection";
 import FanProfilesSection from "@/components/automations/FanProfilesSection";
 import { clockOptions, localTimeAtOffset, localTimeIn, utcLabel, zoneOffsetNow }
@@ -707,7 +708,7 @@ export default function BrainPanel() {
             {/* HER CLOCK — one control, one stored number, and it is the one every
                 engine reads (rhythm.tz_offset_for). There used to be two: an IANA
                 zone here and a legacy offset behind it, the zone silently won, and
-                Dana ran three hours off — her welcome told new subscribers
+                Isabelle ran three hours off — her welcome told new subscribers
                 "it's Friday night in US" at 07:38 her time. The value of this
                 dropdown IS the stored offset, so what you pick is what a fan gets. */}
             <label className="block space-y-1">

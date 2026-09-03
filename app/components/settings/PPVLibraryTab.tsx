@@ -25,7 +25,7 @@ import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { useReorder } from "@/hooks/useReorder";
 import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
 import { cn } from "@/lib/utils";
-import { proxyImage } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { BroadcastAudiencePicker } from "@/components/audience/BroadcastAudiencePicker";
 import { DEFAULT_BROADCAST_LISTS } from "@/components/audience/fanLists";
 import {

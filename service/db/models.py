@@ -32,6 +32,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    case,
     Date,
     DateTime,
     Float,
@@ -1424,7 +1425,7 @@ class AccountAiConfig(Base):
     #
     # Why this exists as fields and not more prose: `persona` averaged 202-882
     # chars across live accounts while the style scaffolding around it ran ~5,000,
-    # and the gaps were exactly what fans probe. the graded vault's persona said "Born and
+    # and the gaps were exactly what fans probe. AriaFree's persona said "Born and
     # raised in Argentina" with NO city — so when a fan asked where she grew up the
     # model improvised, and a 966-turn thread walked Argentina → Chile → Córdoba
     # before the fan said "ya no creo nada". A named empty slot is what the enrich
@@ -1586,7 +1587,7 @@ class AccountAiConfig(Base):
     # True = the operator ticked "Always tag videos" on a COLLAB account: every
     # send attaching a vault VIDEO then carries the co-performer tag even when
     # the describe verdict reads it as solo — video describes are cut from
-    # stills and miss the POV partner, which is how blake/blake clips shipped
+    # stills and miss the POV partner, which is how Lucas1/Lucas2 clips shipped
     # untagged. The describe-verdict decision itself is never weakened by this.
     cotag_tag_videos: Mapped[bool | None] = mapped_column(Boolean)
     # The handle to tag, stored without the '@' (media_cotag folds it the way OF
@@ -3059,7 +3060,8 @@ class TrackingLink(Base):
     """Internal UTM / tracking link. A `slug` (globally unique) is served at the
     public GET /t/{slug}, which records one TrackingClick row and 302s to
     `target_url`. Analytics = COUNT(clicks) over time (subs/$ attribution is a
-    TODO — no reliable click→subscriber join exists yet)."""
+    TODO — no reliable click→subscriber join exists yet; what it would take is
+    written up in library/TRACKING_LINK_SPEND_PARKED.md)."""
     __tablename__ = "tracking_links"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -3137,3 +3139,29 @@ class PromoCampaign(Base):
     __table_args__ = (
         Index("ix_promo_campaigns_account", "account_id", "of_promo_id"),
     )
+
+
+def is_paid_ratchet(is_paid: bool | None):
+    """The upsert value for `messages.is_paid`: True, once set, never reverts.
+
+    Use this in EVERY `on_conflict_do_update` that writes is_paid. Writing the
+    scraped value directly is a silent revenue bug: `is_paid` is derived from
+    the platform's `isOpened`, and on Fansly that answer is recovered from the
+    purchases NOTIFICATION feed — one page, account-wide, which ages out. Once
+    the row scrolls off, an honest re-scrape reports the message unpaid again,
+    and an unconditional write erases a real sale.
+
+    That is not cosmetic: funnel_stats_api sums price_cents over is_paid rows
+    for revenue, and ownership.py gates "does he already own this" on it — so
+    a flipped-back row under-reports income AND re-offers bought content.
+
+    One-way is also correct on OnlyFans: neither platform exposes an
+    "un-purchase" signal on this path (purchase_notifications._flip_paid
+    already treats the flip as one-way), and the transactions ledger — not a
+    message scrape — is the money record. A free message still stores NULL.
+
+    Lives here, beside the column, because two writers already need it
+    (automation_executor's scrape upsert and event_transcoder's WS upsert) and
+    a third would otherwise reintroduce the bug by simply forgetting.
+    """
+    return case((Message.is_paid.is_(True), True), else_=is_paid)

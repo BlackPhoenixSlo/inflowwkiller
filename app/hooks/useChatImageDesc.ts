@@ -32,12 +32,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface ImageDescResponse {
   by_msg_id: Record<string, string>;
 }
 
-export function useChatImageDesc(accountId: string | null, fanId: number | null) {
+export function useChatImageDesc(accountId: string | null, fanId: FanId | null) {
   return useQuery<ImageDescResponse>({
     queryKey: ["msg-image-desc", accountId, fanId],
     enabled: !!accountId && fanId != null,
@@ -60,7 +61,7 @@ export function useChatImageDesc(accountId: string | null, fanId: number | null)
  *  has a NULL column forever, and a read the model got wrong needs a re-run.
  *  Patches the overlay cache in place on success so the caption updates without
  *  a refetch round-trip. */
-export function useDescribeImage(accountId: string | null, fanId: number | null) {
+export function useDescribeImage(accountId: string | null, fanId: FanId | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { messageId: number; force?: boolean }) => {

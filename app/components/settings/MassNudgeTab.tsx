@@ -16,7 +16,8 @@ import { Megaphone, Play, Rocket, Eye, ChevronDown, Plus, X, Image as ImageIcon 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { EditRuleJsonButton } from "@/components/automations/EditRuleJsonModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
-import { proxyImage, type VaultMedia } from "@/lib/relay";
+import { type VaultMedia } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useAutomationRules,

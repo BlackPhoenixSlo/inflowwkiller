@@ -20,7 +20,8 @@ import {
   VaultAiCaptionOverlay,
 } from "@/components/chat/VaultPicker";
 import { vaultTileThumb } from "@/hooks/useVaultCache";
-import { proxyImage, proxyScrubFrame, type VaultMedia } from "@/lib/relay";
+import { type VaultMedia } from "@/lib/relay";
+import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
 import { fmtDuration } from "@/lib/format";
 
 const SCRUB_FRAMES = 12;

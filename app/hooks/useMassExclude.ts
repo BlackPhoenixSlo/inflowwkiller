@@ -14,6 +14,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export type MassExcludeKind = "ppv" | "dm";
 
@@ -27,11 +28,11 @@ interface MassExcludeResp {
   of_list_id?: number | null;
 }
 
-function url(accountId: string, fanId: number, kind: MassExcludeKind) {
+function url(accountId: string, fanId: FanId, kind: MassExcludeKind) {
   return `/admin/do-not-mass?account_id=${encodeURIComponent(accountId)}&fan_id=${fanId}&kind=${kind}`;
 }
 
-export function useMassExclude(accountId: string, fanId: number, kind: MassExcludeKind) {
+export function useMassExclude(accountId: string, fanId: FanId, kind: MassExcludeKind) {
   const qc = useQueryClient();
   const key = ["mass-exclude", accountId, fanId, kind] as const;
 

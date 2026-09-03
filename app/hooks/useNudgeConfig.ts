@@ -14,6 +14,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type RelayContext } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 const KEY = "nudge-config";
 const BG_CTX: RelayContext = { priority: "background" };
@@ -105,7 +106,7 @@ export interface NudgePreviewMessage {
 }
 export interface NudgePreviewResult {
   account_id: string;
-  fan_id: number | null;
+  fan_id: FanId | null;
   slot: string;
   name: string;
   messages: NudgePreviewMessage[];
@@ -116,7 +117,7 @@ export function useNudgePreview() {
   return useMutation<
     NudgePreviewResult,
     Error,
-    { account_id: string; config: NudgeConfig; fan_id?: number | null; hour?: number | null }
+    { account_id: string; config: NudgeConfig; fan_id?: FanId | null; hour?: number | null }
   >({
     mutationFn: (vars) => relay.post(`/admin/nudge-config/preview`, vars),
   });

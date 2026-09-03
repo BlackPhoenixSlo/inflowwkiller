@@ -190,6 +190,24 @@ _migrate_proxy_bindings_to_accounts()
 
 app = FastAPI(title="OF Relay", version="0.1.0")
 
+
+# Fansly writes we haven't wired raise FanslyAPIError. _proxy() only maps
+# OFAPIError, so without this these surface as a generic 500 and the
+# "isn't wired for Fansly yet" message never reaches the UI. Map it to a 502
+# carrying the message. Registered defensively — Fansly may be absent.
+try:
+    import fansly_backend as _fansly_backend  # noqa: F401  (puts ../fansly on sys.path)
+    from fansly_client import FanslyAPIError as _FanslyAPIError
+
+    @app.exception_handler(_FanslyAPIError)
+    async def _fansly_api_error_handler(request, exc):  # noqa: ANN001
+        return JSONResponse(
+            status_code=502,
+            content={"ok": False, "error": "fansly", "detail": str(exc)},
+        )
+except Exception:
+    log.warning("FanslyAPIError handler not registered", exc_info=True)
+
 # Phase A: employees CRUD + audit log routes (read-only browse + admin).
 # Middleware registered below so every mutating call gets logged.
 app.include_router(_employees_router)
@@ -846,9 +864,10 @@ async def _periodic(
 
 
 async def _ws_pump_for_account(account_id: str) -> None:
-    """Run the OF WS pump for one account until cancelled. OFWebSocket has
-    its own reconnect-with-backoff loop, so this task is only torn down when
-    the account is removed or the server is shutting down."""
+    """Run the realtime WS pump for one account until cancelled. Both the OF
+    and Fansly sockets carry their own reconnect-with-backoff loop, so this
+    task is only torn down when the account is removed or the server is
+    shutting down."""
     from of_ws import OFWebSocket, register_pump, unregister_pump
     while True:
         try:
@@ -856,11 +875,24 @@ async def _ws_pump_for_account(account_id: str) -> None:
             meta = account_registry.get_account(account_id) or {}
             nickname = meta.get("nickname") or account_id
             color = meta.get("color")
-            ws = OFWebSocket(client)
+            # Seam 3 of 3 (HTTP client, automation client, WS pump). Fansly's
+            # socket is a different protocol end to end — wsv3, in-band auth,
+            # triple-encoded frames — but FanslyWebSocket presents the same
+            # interface and yields the same OF-shaped events, so everything
+            # below this branch is platform-blind.
+            platform = account_registry.get_platform(account_id)
+            if platform == "fansly":
+                from fansly_ws import FanslyWebSocket
+                ws = FanslyWebSocket(client)
+            else:
+                ws = OFWebSocket(client)
             # Publish this live pump so the automation layer can push outbound
-            # frames (e.g. the typing indicator) on the same socket.
+            # frames (e.g. the typing indicator) on the same socket. Both
+            # platforms share this registry, so `of_ws.emit_typing` finds a
+            # Fansly pump the same way (it routes typing over REST).
             register_pump(account_id, ws)
-            log.info("ws-pump[%s]: connecting to OF", nickname)
+            log.info("ws-pump[%s]: connecting to %s", nickname,
+                     "Fansly" if platform == "fansly" else "OF")
             try:
                 async for event in ws.events():
                     # Tag every event so multi-account subscribers can route.
@@ -1205,8 +1237,15 @@ def _load_client(account_id: str) -> OFClient:
 
     Pooling lives in client_pool; this is only the HTTP translation of the two
     ways a build can fail. Routes and automations share the one pool, so an
-    account has one client (and one cookie jar), not one per lane."""
+    account has one client (and one cookie jar), not one per lane.
+
+    Platform branch (additive): a Fansly account returns the OF-shaped shim
+    (fansly_backend → FanslyShimClient); OnlyFans accounts — the default for
+    every account without a `platform` — hit the unchanged client_pool."""
     try:
+        if account_registry.get_platform(account_id) == "fansly":
+            import fansly_backend
+            return fansly_backend.get_client(account_id)
         return client_pool.get(account_id)
     except FileNotFoundError as e:
         raise HTTPException(
@@ -1976,6 +2015,7 @@ _ALLOWED_CDN_SUFFIXES = (
     ".onlyfans.com",
     ".ofcdn.com",
     ".mycdn.dev",  # OF's media subdomains
+    ".fansly.com",  # Fansly media CDN (cdn3.fansly.com); Policy-signed, not ip-bound
 )
 
 # In-flight /img stream counters. Each active proxy_image generator
@@ -6790,10 +6830,59 @@ def of_stories_items(body: _StoriesItemsBody = Body(...)):
 # Scheduled / mass --------------------------------------------------
 
 @app.post("/api/of/v2/chats/{chat_id}/messages/scheduled")
-def of_schedule_message(chat_id: int, body: _ScheduleMessageBody = Body(...)):
-    """Schedule a single message for future delivery.
-    Under the hood: POST /api2/v2/messages/queue with userIds=[chat_id]."""
-    return _proxy(lambda: _get_client().schedule_message(
+async def of_schedule_message(chat_id: int, request: Request,
+                              body: _ScheduleMessageBody = Body(...)):
+    """Schedule a single message for future delivery (the frontend routes sends
+    >15 min out here; ≤15 min go to /scheduled-sends).
+
+    OF: POST /api2/v2/messages/queue with userIds=[chat_id]. Fansly has no
+    per-message server queue we can reach, and its shim has no `schedule_message`
+    — so a Fansly send >15 min out used to hit an AttributeError → 500 that the
+    frontend swallowed, silently dropping the message. Instead, ride the relay's
+    OWN executor queue (the same DB-backed `scheduled_jobs`/`scheduled_send` path
+    the ≤15-min route uses, fired through the shim's real `send_message`). The OF
+    path is untouched."""
+    account_id = _resolve_account_id(request)
+    if account_registry.get_platform(account_id) == "fansly":
+        # Apply the shim's OWN send rules AT SCHEDULE TIME. The executor
+        # forwards these kwargs verbatim, so anything send_message refuses
+        # would otherwise be accepted here and fail silently at fire time —
+        # hours later, with no operator feedback.
+        #
+        # Delegated, never re-implemented: these rules were briefly hand-copied
+        # into this branch and drifted within a day (the all-previews money
+        # check was added to the shim and not here, re-opening the exact
+        # deferred-failure hole this block exists to close). check_sendable is
+        # stateless precisely so this route can ask without a session.
+        from fansly_client import FanslyAPIError
+        from fansly_shim import check_sendable
+        try:
+            check_sendable(media_files=body.media_files, price=body.price,
+                           previews=body.previews, locked_text=body.locked_text)
+        except FanslyAPIError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        from employees import resolve_outbound_employee_id
+        from automation_executor import enqueue_job
+        employee_id = await resolve_outbound_employee_id(request, account_id)
+        run_at = _run_at_naive_utc(body.scheduled_date)
+        payload = {
+            "fan_id": chat_id,
+            "text": body.text,
+            "price": body.price,
+            "locked_text": body.locked_text,
+            "media_files": body.media_files,
+            "previews": body.previews,
+            "tagged_users": body.tagged_users,
+            "giphy_id": None,
+            "sent_by_employee_id": employee_id,
+            "send_purpose": "manual",
+        }
+        job_id = await enqueue_job(
+            account_id, "scheduled_send",
+            payload=payload, run_at=run_at, created_by_employee_id=employee_id,
+        )
+        return {"job_id": job_id, "fan_id": chat_id, "run_at": run_at.isoformat() + "Z"}
+    return await asyncio.to_thread(_proxy, lambda: _get_client().schedule_message(
         chat_id, text=body.text, scheduled_date=body.scheduled_date,
         price=body.price, locked_text=body.locked_text, media_files=body.media_files,
         previews=body.previews,
@@ -6834,6 +6923,18 @@ async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Bod
     employee id so the eventual bubble is attributed to them, then inserts a
     `scheduled_jobs` row the executor will fire at `run_at`."""
     account_id = _resolve_account_id(request)
+    # Same at-schedule-time rejection the >15-min Fansly path makes: the shim's
+    # send_message refuses PPV price and media attachments, and it does so at
+    # FIRE time — minutes later, into a retry loop the chatter never sees. Fail
+    # here, while they are still looking at the composer.
+    if account_registry.get_platform(account_id) == "fansly" and (
+            body.media_files or body.price > 0):
+        raise HTTPException(
+            status_code=400,
+            detail="Fansly scheduled sends support text and GIFs for now — "
+                   "PPV price and media attachments aren't wired on the Fansly "
+                   "path yet.",
+        )
     from employees import resolve_outbound_employee_id
     from automation_executor import enqueue_job
 
@@ -7704,6 +7805,78 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
         "user_id": c.user_id,
         "x_of_rev": c.x_of_rev,
     }
+
+
+class _FanslySessionBody(BaseModel):
+    """The Fansly session blob the login-capture extension copies to the
+    clipboard (see loginExtensionMulti/fansly_bridge.js)."""
+    token: str = Field(..., description="Fansly authorization token")
+    id: str | None = Field(None, description="fansly-session-id")
+    accountId: str = Field(..., description="the creator account id (ours)")
+    device_id: str | None = Field(None, description="fansly-client-id")
+    user_agent: str = Field(..., description="must match the capturing browser")
+    accept_language: str | None = None
+    check_key: str | None = None
+    nickname: str | None = Field(None, description="friendly label for the switcher")
+    make_active: bool = Field(True)
+
+
+@app.post("/admin/session/fansly")
+def bootstrap_fansly_session(body: _FanslySessionBody = Body(...)) -> dict[str, Any]:
+    """Register a Fansly account from a captured session blob.
+
+    The Fansly twin of /admin/session/bootstrap's paste-curl mode — but there
+    is no curl and no signing to derive: the session is a small JSON blob the
+    extension lifts out of the fansly.com tab. We persist it beside the OF
+    accounts, stamp the meta with platform="fansly" + the creator's display
+    name, then run the SAME sync+ownership-link the OF path runs so the account
+    shows up in the switcher and passes the isolation gate."""
+    import fansly_backend
+
+    account_id = str(body.accountId)
+    session = {
+        "token": body.token,
+        "id": body.id,
+        "accountId": account_id,
+        "device_id": body.device_id,
+        "user_agent": body.user_agent,
+        "accept_language": body.accept_language or "en-US,en;q=0.9",
+        "check_key": body.check_key,
+    }
+
+    # Write the session into the account dir (next to any OF cousins).
+    adir = account_registry.account_dir(account_id)
+    adir.mkdir(parents=True, exist_ok=True)
+    session_file = adir / fansly_backend.SESSION_FILENAME
+    session_file.write_text(json.dumps(session, indent=2) + "\n")
+    try:
+        session_file.chmod(0o600)
+    except OSError:
+        pass
+
+    # Evict any stale cached client, then resolve the creator's display name
+    # off a live me() so the switcher shows a name, not an id.
+    fansly_backend.drop(account_id)
+    name = None
+    try:
+        me = fansly_backend.get_client(account_id).me()
+        name = me.get("name") or me.get("username")
+    except Exception:
+        log.warning("fansly me() failed during setup for %s", account_id, exc_info=True)
+
+    account_registry.upsert_account(
+        account_id,
+        platform="fansly",
+        name=name,
+        nickname=body.nickname or name or f"Fansly {account_id}",
+    )
+    if body.make_active:
+        account_registry.set_active_account_id(account_id)
+
+    # Same ownership-link + SQL mirror the OF bootstrap runs.
+    _sync_and_link_after_bootstrap(account_id)
+
+    return {"ok": True, "account_id": account_id, "platform": "fansly", "name": name}
 
 
 @app.post("/admin/session/wipe-fresh-browser-buckets")

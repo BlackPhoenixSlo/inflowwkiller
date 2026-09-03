@@ -89,3 +89,11 @@ _sweep.md
 theOFchrackedextension/
 *.md
 !README.md
+
+# Fansly: runtime modules only. Captures hold live tokens and PII; sessions and
+# any json/har under the package are credential material.
+fansly/capture/
+fansly/sessions/
+fansly/**/*.har
+fansly/**/*.json
+fansly/**/*.png

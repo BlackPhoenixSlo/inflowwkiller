@@ -29,7 +29,8 @@ import { Users } from "lucide-react";
 
 import { useAccountAvatar, pickAvatarUrl } from "@/hooks/useAccountAvatar";
 import type { RosterCount } from "@/hooks/useRosterCounts";
-import { proxyImage, type AccountMeta } from "@/lib/relay";
+import { type AccountMeta } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
 
 /** One colored count pill. */

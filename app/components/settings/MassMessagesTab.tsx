@@ -29,7 +29,7 @@ import {
   useCreateRule,
   useUpdateRule,
 } from "@/hooks/useAutomations";
-import { proxyImage } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
 
 /** Name + cadence of the scheduled auto-unsend rule this tab manages (one

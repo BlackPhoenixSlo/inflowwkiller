@@ -16,15 +16,16 @@ import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { relay, type OFMessage } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
-export function useLikeMessage(accountId: string | null, fanId: number | null) {
+export function useLikeMessage(accountId: string | null, fanId: FanId | null) {
   const qc = useQueryClient();
   const queryKey = ["messages", accountId, fanId] as const;
 
   const patchLocal = useCallback(
-    (messageId: number, isLiked: boolean) => {
+    (messageId: string, isLiked: boolean) => {
       qc.setQueryData<OFMessage[]>(queryKey, (prev = []) =>
-        prev.map((m) => (Number(m.id) === messageId ? { ...m, isLiked } : m)),
+        prev.map((m) => (String(m.id) === messageId ? { ...m, isLiked } : m)),
       );
     },
     [qc, queryKey],
@@ -33,8 +34,10 @@ export function useLikeMessage(accountId: string | null, fanId: number | null) {
   const toggle = useCallback(
     async (msg: OFMessage) => {
       if (!accountId || fanId == null) return;
-      const id = Number(msg.id);
-      if (!Number.isFinite(id) || id <= 0) return; // optimistic / pseudo bubbles
+      // Exact, not Number(): a Fansly message id is a snowflake past 2^53,
+      // so a rounded value here would like a DIFFERENT message (or 404).
+      const id = String(msg.id ?? "");
+      if (!/^\d+$/.test(id) || /^0+$/.test(id)) return; // optimistic / pseudo bubbles
       const next = !msg.isLiked;
       patchLocal(id, next);
       try {

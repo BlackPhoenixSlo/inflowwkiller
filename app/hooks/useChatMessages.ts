@@ -28,6 +28,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { relay, type OFMessage, type OFMessagesResp } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 import type { SendFailure } from "@/lib/sendFailure";
 import { eventBus } from "@/lib/events";
 import { toUtcIso } from "@/hooks/useInboxRealtime";
@@ -70,14 +71,14 @@ export interface UseChatMessagesOpts {
   /** The model account that owns this chat. Required. */
   accountId: string | null;
   /** The fan's user id (== OF chat id). */
-  fanId: number | null;
+  fanId: FanId | null;
   /** Disable polling — used while the chat is closed. */
   enabled?: boolean;
 }
 
 /** Paint-attribution key for a thread. Exported so the rendering side and
  *  the fetching side can't drift apart on the format. */
-export function messagesPaintKey(accountId: string, fanId: number | null): string {
+export function messagesPaintKey(accountId: string, fanId: FanId | null): string {
   return `chat.messages:${accountId}:${fanId ?? ""}`;
 }
 

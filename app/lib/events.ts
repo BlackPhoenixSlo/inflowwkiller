@@ -13,7 +13,7 @@
  * the returned unsubscriber on unmount.
  */
 
-import { resolveShareToken } from "./relay";
+import { resolveShareToken } from "./shareToken";
 
 export type Scope = "all" | `model:${string}`;
 

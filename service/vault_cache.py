@@ -126,12 +126,55 @@ async def get(account_id: str, query_key: str) -> dict[str, Any] | None:
         return None
 
 
+def _is_empty_listing(payload: Any) -> bool:
+    """True when `payload` carries no rows — the thing `put` refuses to cache.
+
+    Conservative by construction: it returns True only for a payload whose
+    row-bearing key is present and empty (or an empty container outright). A
+    shape it doesn't recognise is NOT called empty, so an unfamiliar response
+    keeps its cache entry rather than silently losing memoisation."""
+    if payload is None:
+        return True
+    if isinstance(payload, (list, tuple)):
+        return len(payload) == 0
+    if isinstance(payload, dict):
+        for key in ("list", "items", "data"):
+            if key in payload:
+                rows = payload[key]
+                return isinstance(rows, (list, tuple, dict)) and len(rows) == 0
+    return False
+
+
 async def put(account_id: str, query_key: str, payload: Any) -> None:
     """Write-through cache. Upserts on the composite PK so re-fetching
     the same page just refreshes `fetched_at`.
 
     Never raises: the payload this memoises has already been fetched and is
-    on its way to the caller."""
+    on its way to the caller.
+
+    EMPTY LISTINGS ARE NOT CACHED. This is not a micro-optimisation, it is a
+    bug we shipped: on 2026-08-31 the Fansly vault reads were still returning
+    nothing, three `{"list": [], "hasMore": false}` rows landed here, and for
+    the next 24h the picker served them to a browser whose vault was by then
+    perfectly healthy — folders AND media both blank, with the shim, the
+    endpoints and the session all provably fine. A day-long outage caused
+    entirely by memoising a transient backend failure.
+
+    Caching "nothing" buys nothing: an empty listing is the cheapest possible
+    upstream fetch and the smallest possible payload, so the round-trip we
+    skip is the one worth least. Meanwhile it converts ANY upstream hiccup —
+    a half-migrated platform, an expired session, a rate-limit, a shim method
+    that isn't wired yet — into a silent TTL-long lie that self-heals just
+    slowly enough to be impossible to reproduce. A genuinely empty vault
+    simply re-asks and gets an honest empty answer.
+
+    Deliberately shape-agnostic: anything with a `list`/`items`/`data` key
+    that is empty, or an empty container, counts. Non-listing payloads are
+    unaffected."""
+    if _is_empty_listing(payload):
+        log.debug("vault_cache: refusing to memoise an EMPTY listing "
+                  "account=%s key=%s (see put.__doc__)", account_id, query_key)
+        return
     try:
         blob = json.dumps(payload, ensure_ascii=False, default=str)
     except (TypeError, ValueError) as e:

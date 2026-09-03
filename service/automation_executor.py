@@ -62,9 +62,11 @@ from db.models import (
     ScheduledJob,
     ScrapeHistory,
     SkipList,
+    is_paid_ratchet,
 )
 from of_client import OFAPIError, OFClient
 import client_pool  # the relay's one OFClient pool (fd discipline lives there)
+import accounts as account_registry  # platform lookup (OF vs Fansly) for _make_client
 from automation_registry import (register, get_automation, canonical_kind,
                                  kind_family, load_automation_plugins,
                                  failed_plugins)
@@ -923,11 +925,23 @@ async def _materialize_due_rules() -> int:
 
 
 def _make_client(account_id: str) -> OFClient:
-    """OFClient construction seam. Tests override this to inject a fake (no
-    network, no session files). Kept tiny so the override surface is one name.
+    """Client construction seam for the automation lane. Tests override this to
+    inject a fake (no network, no session files). Kept tiny so the override
+    surface is one name.
 
     Clients are pinned per account — see service/client_pool.py for why (an
-    OFClient per call was an fd per call, and it took the relay to EMFILE)."""
+    OFClient per call was an fd per call, and it took the relay to EMFILE).
+
+    Platform branch: mirrors server._load_client. A Fansly account gets the
+    OF-shaped shim; without this the executor built an OFClient for an account
+    that has no OF session, so every automation on a Fansly account — including
+    the `scheduled_send` that fires a chatter's deferred DM — died on
+    FileNotFoundError, retried, and left the ghost bubble reading "sending now…"
+    forever. The two lanes must resolve a client the same way or the HTTP routes
+    work while the executor silently does not."""
+    if account_registry.get_platform(account_id) == "fansly":
+        import fansly_backend
+        return fansly_backend.get_client(account_id)
     return client_pool.get(account_id)
 
 
@@ -978,7 +992,10 @@ async def _upsert_message(
             index_elements=["account_id", "fan_id", "message_id"],
             set_={
                 "body": body,
-                "is_paid": is_paid,
+                # True never reverts — see is_paid_ratchet. Writing `is_paid`
+                # straight through here erased real sales once a Fansly
+                # purchase aged off the notifications feed.
+                "is_paid": is_paid_ratchet(is_paid),
                 "is_tip": bool(m.get("isTip")),
                 "is_unsent": bool(m.get("isUnsent")),
                 "media_count": int(m.get("mediaCount") or 0),

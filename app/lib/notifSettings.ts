@@ -14,6 +14,7 @@
  */
 
 import { persistJSON, readJSON } from "./persist";
+import type { FanId } from "@/lib/fanId";
 
 export type NotifTypeKey =
   | "message"
@@ -144,7 +145,7 @@ export interface CachedNotification {
   type: string;
   typeKey: NotifTypeKey | null;
   user: {
-    id?: number;
+    id?: FanId;
     name?: string;
     username?: string;
     avatar?: string;

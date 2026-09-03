@@ -23,7 +23,7 @@ import { useState } from "react";
 import { Download } from "lucide-react";
 
 import { Button } from "@/components/ui/primitives";
-import { resolveShareToken } from "@/lib/relay";
+import { resolveShareToken } from "@/lib/shareToken";
 
 import {
   buildPaidMessagesQuery,

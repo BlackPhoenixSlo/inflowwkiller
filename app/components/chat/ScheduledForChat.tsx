@@ -16,11 +16,12 @@ import { useEffect, useRef, useState } from "react";
 
 import { useCancelScheduled, useScheduledMessages } from "@/hooks/useScheduledMessages";
 import { stripOFHtml } from "@/lib/ofHtml";
-import { proxyImage } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { type FanId } from "@/lib/fanId";
 
 export function ScheduledForChat({
   accountId, fanId,
-}: { accountId: string; fanId: number }) {
+}: { accountId: string; fanId: FanId }) {
   const { rows, queries } = useScheduledMessages([accountId]);
   const cancelM = useCancelScheduled();
   const [open, setOpen] = useState(false);

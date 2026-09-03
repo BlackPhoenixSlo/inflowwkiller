@@ -16,7 +16,9 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import { useSweepStatus } from "@/hooks/useVaultSweep";
-import { proxyImage, relay, type VaultMedia } from "@/lib/relay";
+import { relay, type VaultMedia } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
+import { proxyImage } from "@/lib/mediaUrl";
 
 // Lazy-load in small chunks on scroll (not all at once — 244 images loading
 // simultaneously is what made the grid slow). Infinite-scroll fetches the next
@@ -136,7 +138,7 @@ export async function savePackTriage(
 }
 
 /** Create a REAL OF vault folder (+ optionally add media). */
-export async function createOfFolder(accountId: string, name: string, mediaIds: number[] = []) {
+export async function createOfFolder(accountId: string, name: string, mediaIds: FanId[] = []) {
   return relay.post(
     `/admin/vault-ai/of-folders`,
     { account_id: accountId, name, media_ids: mediaIds },
@@ -145,25 +147,25 @@ export async function createOfFolder(accountId: string, name: string, mediaIds: 
 }
 
 /** Add media to a REAL OF folder (by OF list id). */
-export async function addToOfFolder(accountId: string, listId: number, mediaIds: number[]) {
+export async function addToOfFolder(accountId: string, listId: FanId, mediaIds: FanId[]) {
   return relay.post(
-    `/admin/vault-ai/of-folders/${listId}/add`,
+    `/admin/vault-ai/of-folders/${encodeURIComponent(String(listId))}/add`,
     { account_id: accountId, media_ids: mediaIds },
     { accountId },
   );
 }
 
-export async function renameOfFolder(accountId: string, listId: number, name: string) {
+export async function renameOfFolder(accountId: string, listId: FanId, name: string) {
   return relay.post(
-    `/admin/vault-ai/of-folders/${listId}/rename`,
+    `/admin/vault-ai/of-folders/${encodeURIComponent(String(listId))}/rename`,
     { account_id: accountId, name },
     { accountId },
   );
 }
 
-export async function deleteOfFolder(accountId: string, listId: number) {
+export async function deleteOfFolder(accountId: string, listId: FanId) {
   return relay.delete(
-    `/admin/vault-ai/of-folders/${listId}?account_id=${encodeURIComponent(accountId)}`,
+    `/admin/vault-ai/of-folders/${encodeURIComponent(String(listId))}?account_id=${encodeURIComponent(accountId)}`,
     { accountId },
   );
 }
@@ -171,7 +173,7 @@ export async function deleteOfFolder(accountId: string, listId: number) {
 /** Set OF folder-list order: {sort,order} or a manual {customOrder:[ids]}. */
 export async function sortOfFolders(
   accountId: string,
-  opts: { sort?: string; order?: string; customOrder?: number[] },
+  opts: { sort?: string; order?: string; customOrder?: FanId[] },
 ) {
   return relay.post(
     `/admin/vault-ai/of-folders/sort`,
@@ -181,7 +183,8 @@ export async function sortOfFolders(
 }
 
 export interface OfFolderMirror {
-  id: number;
+  /** Folder id — FanId, matching VaultList.id (Fansly albums are snowflakes). */
+  id: FanId;
   name: string;
   type: string;
   photosCount: number;
@@ -622,7 +625,7 @@ export async function searchOf(
 
 export async function reorderItems(
   accountId: string,
-  folderId: number | null,
+  folderId: FanId | null,
   order: { media_id: number; manual_order: number | null }[],
 ) {
   return relay.post(
@@ -686,7 +689,8 @@ export interface MirrorItemsOpts {
   query?: string;
   sort?: "newest" | "oldest";
   internalFolderId?: number | null;
-  ofFolderId?: number | null;
+  /** OF/Fansly folder id — FanId, since Fansly albums are snowflakes >2^53. */
+  ofFolderId?: FanId | null;
   enabled?: boolean;
 }
 

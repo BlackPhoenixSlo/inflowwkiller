@@ -20,7 +20,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { describeLoadError, proxyImage, type OFMedia, type OFMessage } from "@/lib/relay";
+import { describeLoadError, type OFMedia, type OFMessage } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { type FanId } from "@/lib/fanId";
 import { cn } from "@/lib/utils";
 import { giphyUrl } from "@/lib/ofMedia";
 import { blurImageClass, useBlurMode } from "@/hooks/useBlurMode";
@@ -40,7 +42,7 @@ export interface MessageListProps {
   accountId: string | null;    // for routing CDN urls through /img proxy
   /** Fan whose chat this is. Drives the per-tile BOUGHT/FREE/PAID badge
    *  overlay on sent message media (FanVaultHistory lookup is per-fan). */
-  fanId?: number | null;
+  fanId?: FanId | null;
   isLoading: boolean;
   isError: boolean;
   error?: Error | null;
@@ -322,11 +324,15 @@ export function MessageList(props: MessageListProps) {
   // id → message lookup for resolving `replyToMessageId` in O(1). Built once
   // per messages change instead of an O(n) `all.find` inside the render
   // flatMap (which was O(n²) across the whole list).
+  // STRING-keyed, not Number-keyed. A Fansly message id is a snowflake
+  // (~9.5e17) well past JS's 2^53, so `Number(id)` collapses distinct ids onto
+  // the same key and a quote-reply would resolve to the WRONG original. Same
+  // class as the media-id fix (OFMedia.id widened to number|string, consumers
+  // normalised to String()); OF ids are unaffected since String(n)===String(n).
   const byId = useMemo(() => {
-    const m = new Map<number, OFMessage>();
+    const m = new Map<string, OFMessage>();
     for (const msg of messages) {
-      const id = Number(msg.id);
-      if (Number.isFinite(id)) m.set(id, msg);
+      if (msg.id != null && String(msg.id) !== "") m.set(String(msg.id), msg);
     }
     return m;
   }, [messages]);
@@ -461,7 +467,7 @@ export function MessageList(props: MessageListProps) {
         // `replyToMessage` is already populated keeps the common path cheap.
         let replyTo = m.replyToMessage ?? null;
         if (!replyTo && m.replyToMessageId) {
-          const found = byId.get(m.replyToMessageId);
+          const found = byId.get(String(m.replyToMessageId));
           if (found) {
             replyTo = {
               id: Number(found.id),
@@ -566,7 +572,7 @@ function Bubble({
   isOutgoing: boolean;
   isOptimisticOutgoing: boolean;
   accountId: string | null;
-  fanId: number | null;
+  fanId: FanId | null;
   ownerUserId: number | null;
   onRetry: (tempId: number) => void;
   onCancelScheduled?: (tempId: number) => void;
@@ -575,11 +581,11 @@ function Bubble({
   onTogglePin?: (msg: OFMessage) => void;
   onUnsend?: (msg: OFMessage) => void;
   onSendReward?: (msg: OFMessage) => void;
-  onJumpTo?: (messageId: number) => void;
+  onJumpTo?: (messageId: number | string) => void;
   highlighted?: boolean;
   isRealOutgoing?: boolean;
   seenByPeer?: boolean;
-  eagerMediaIds: Set<number>;
+  eagerMediaIds: Set<string>;
   employeeLabel?: string | null;
   /** English translation of this bubble's text (null = none/failed/off).
    *  Only rendered when the detected language isn't already English. */
@@ -981,9 +987,9 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
   msg: OFMessage;
   locked: boolean;
   accountId: string | null;
-  fanId: number | null;
+  fanId: FanId | null;
   isOutgoing: boolean;
-  eagerMediaIds: Set<number>;
+  eagerMediaIds: Set<string>;
 }) {
   const items = msg.media ?? [];
   const [blurMode] = useBlurMode();
@@ -1018,7 +1024,8 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
   // the marks on the tiles are both driven from this one list, so they cannot
   // disagree; deriving the count from `msg.media.length` instead let the
   // footer claim "remove 1 of 4" over a row where nothing was marked.
-  const refusedHere = items.filter((m) => m.id != null && refusedIds.includes(m.id));
+  const sameId = (a: unknown, b: unknown) => a != null && b != null && String(a) === String(b);
+  const refusedHere = items.filter((m) => m.id != null && refusedIds.some((r) => sameId(r, m.id)));
   // THE COLLAPSED VIEW CARRIES THE REFUSED TILES. Expansion is the operator's
   // alone again — a plain boolean, default closed — because the question "may a
   // tile OF named be hidden?" is no longer answered by state at all: a refused
@@ -1045,7 +1052,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
   const indexed = items.map((m, i) => [m, i] as const);
   const visible = expanded
     ? indexed
-    : indexed.filter(([m, i]) => i < cap || (m.id != null && refusedIds.includes(m.id)));
+    : indexed.filter(([m, i]) => i < cap || (m.id != null && refusedIds.some((r) => sameId(r, m.id))));
   const hiddenCount = items.length - visible.length;
   // Click-to-zoom lightbox. Holds the index into `items` of the tile being
   // viewed full-res (null = closed) — taken from the pair above, never from the
@@ -1086,7 +1093,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
           // and then flashes one in when the async lookup lands. `isSuccess`
           // distinguishes "not loaded" from "confirmed not bought".
           const wasBought = fanVaultQ.isSuccess && fanEntry?.was_purchased === true;
-          const inPreviews = m.id != null && previewIds.includes(m.id);
+          const inPreviews = m.id != null && previewIds.some((pv) => sameId(pv, m.id));
           const showBadge = isOutgoing && (wasBought || isPPV);
           const badge = (
             showBadge ? (
@@ -1114,7 +1121,15 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
           // sentence, which talks about "media" without saying which — and a
           // bundle of near-identical thumbs is exactly where that fails the
           // operator (lib/sendFailure records what it cost on 2026-08-16).
-          const wasRefused = m.id != null && refusedIds.includes(m.id);
+          const wasRefused = m.id != null && refusedIds.some((r) => sameId(r, m.id));
+          // Fansly locked media reports price=0 (so message-level `locked` is
+          // false) but canView=false — treat per-media canView===false as
+          // locked → 🔒 tile, not a grey skeleton. Guard on !isOutgoing: OF
+          // media CAN carry canView:false, and message-level `locked` (l.655)
+          // deliberately exempts outgoing so a chatter always sees the PPV they
+          // sent — mirror that. Our own Fansly media is canView:true, so this
+          // costs nothing on Fansly. (§1d — no purchasing; §1e OF-regression fix.)
+          const mLocked = locked || (m.canView === false && !isOutgoing);
           // Everything painted ON the tile, as one node. The three branches
           // below differ in what they wrap, not in the chrome they carry, so
           // the chrome is composed once here — including the outline, which is
@@ -1136,7 +1151,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
               )}
             </>
           );
-          if (locked) {
+          if (mLocked) {
             // Generic lock placeholder (incoming, unpaid). Same box as a
             // loaded tile would claim — its real dims don't matter until the
             // fan unlocks it, so the fallback/aspect box is fine.
@@ -1165,7 +1180,7 @@ function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMediaIds }
               </div>
             );
           }
-          const isEager = m.id != null && eagerMediaIds.has(m.id);
+          const isEager = m.id != null && eagerMediaIds.has(String(m.id));
           return (
             <a
               key={m.id ?? i}

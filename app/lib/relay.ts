@@ -11,6 +11,9 @@
  * paths instead of having to inspect `.ok` themselves.
  */
 
+import type { FanId } from "@/lib/fanId";
+import { resolveShareToken } from "@/lib/shareToken";
+
 const RELAY_BASE = ""; // Next rewrites front the relay; same-origin.
 
 export class RelayError extends Error {
@@ -34,28 +37,6 @@ export interface RelayContext {
   priority?: "user" | "background";
 }
 
-/**
- * Read the share token from the URL or from a previously-stored localStorage
- * value. Mirrors the existing /ui/'s behavior so a user who pastes
- * `?t=...&...` once doesn't have to repeat it.
- */
-export function resolveShareToken(): string | null {
-  if (typeof window === "undefined") return null;
-  const fromUrl = new URLSearchParams(window.location.search).get("t");
-  if (fromUrl) {
-    try {
-      window.localStorage.setItem("chatterly:share_token", fromUrl);
-    } catch {
-      /* ignore quota / safari private */
-    }
-    return fromUrl;
-  }
-  try {
-    return window.localStorage.getItem("chatterly:share_token");
-  } catch {
-    return null;
-  }
-}
 
 function buildUrl(path: string, ctx?: RelayContext, opts?: { refresh?: boolean }): string {
   const url = new URL(path, RELAY_BASE || window.location.origin);
@@ -170,63 +151,6 @@ export async function request<T = unknown>(
   return parseResponse<T>(r);
 }
 
-/**
- * Wrap an OF CDN URL so it loads through the relay's `/img` proxy. We have
- * to do this because OF signs CDN URLs with `AWS:SourceIp=<egress IP>/32` —
- * the browser's IP doesn't match the account's proxy egress, so the image
- * 403s. `/img` tunnels the fetch via the right account's HTTP client.
- *
- * Returns the original URL if either `url` or `accountId` is missing.
- */
-export function proxyImage(url: string | null | undefined, accountId: string | null | undefined): string {
-  if (!url) return "";
-  // Browser-local URLs (blob:/data:) aren't fetchable through the relay
-  // — they're already in the browser, just pass them through.
-  if (url.startsWith("blob:") || url.startsWith("data:")) return url;
-  if (!accountId) return url;
-  const tok = resolveShareToken();
-  const params = new URLSearchParams();
-  params.set("u", url);
-  params.set("account_id", accountId);
-  if (tok) params.set("t", tok);
-  return `/img?${params.toString()}`;
-}
-
-/**
- * Build a URL for the i-th scrub frame (0..11) of a video. The relay
- * lazily extracts a 12-frame storyboard for each video on first hit;
- * subsequent fetches serve cached JPGs straight from disk. Returns ""
- * if we don't have everything we need to build the URL.
- *
- * Passing `duration` (seconds, from VaultMedia.duration which OF already
- * tells us in the vault listing) lets the relay skip its own ffprobe
- * step and start the extraction immediately.
- */
-export function proxyScrubFrame(
-  url: string | null | undefined,
-  accountId: string | null | undefined,
-  frameIdx: number,
-  duration?: number | null,
-  /** Per-hover session id. The cancel POST that fires on hover-end
-   *  carries the SAME id so the server can scope the abort to this
-   *  exact hover session — a delayed cancel from a previous hover of
-   *  the same video can't abort a freshly-started build. */
-  sessionId?: string | null,
-): string {
-  if (!url || !accountId) return "";
-  if (url.startsWith("blob:") || url.startsWith("data:")) return "";
-  const tok = resolveShareToken();
-  const params = new URLSearchParams();
-  params.set("u", url);
-  params.set("account_id", accountId);
-  params.set("i", String(frameIdx));
-  if (typeof duration === "number" && duration > 0) {
-    params.set("dur", String(duration));
-  }
-  if (sessionId) params.set("sid", sessionId);
-  if (tok) params.set("t", tok);
-  return `/img/scrub?${params.toString()}`;
-}
 
 export const relay = {
   /** `opts.refresh=true` appends `?refresh=1` to bust Stage C backend
@@ -295,6 +219,12 @@ export interface Employee {
 export interface AccountMeta {
   id: string;
   nickname?: string | null;
+  /** The creator's own display name on the platform (distinct from the
+   *  team-set `nickname`). Filled by the setup flow from a live me(). */
+  name?: string | null;
+  /** Which platform the account lives on: "onlyfans" (the default for every
+   *  account that predates the field) or "fansly". */
+  platform?: "onlyfans" | "fansly" | null;
   color?: string | null;
   incogniton_profile_id?: string | null;
   created_at?: string | null;
@@ -361,6 +291,16 @@ export interface BootstrapResponse {
   x_of_rev: string;
 }
 
+// Fansly session ingestion (POST /admin/session/fansly). Shape differs from
+// OnlyFans: no session_file / user_id / x_of_rev — the relay writes the blob,
+// probes me() for a display name, and stamps platform="fansly".
+export interface FanslySessionResponse {
+  ok: true;
+  account_id: string;
+  platform: "fansly";
+  name: string | null;
+}
+
 // ── OF chat / message shapes ────────────────────────────────────────
 // These mirror what OF returns through the relay. Optional fields stay
 // optional because OF's payloads vary by chat state. Keep field names
@@ -384,11 +324,20 @@ export interface OFMediaFiles {
   source?: OFMediaVariant | null;
 }
 export interface OFMedia {
-  id: number;
+  /** OF sends a numeric id; the Fansly path sends a STRING snowflake
+   *  (~9.5e17) — those exceed JS's 2^53 safe integer, and a bundle's
+   *  accountMedia ids differ only in their last digits, so parsed as
+   *  numbers they all collide. Compare with String(...) on both sides. */
+  id: number | string;
   type?: string;
   url?: string | null;
   files?: OFMediaFiles | null;
   hasError?: boolean;
+  /** Fansly per-media access: false = locked/unpurchased PPV (no signed URL),
+   *  so the tile renders a 🔒 placeholder instead of a broken/grey box. OF
+   *  media leaves this undefined; the message-level `locked`/`price` path is
+   *  unchanged there. */
+  canView?: boolean | null;
   /** Natural pixel dimensions of the media's source/full asset (NOT the
    *  square thumb). Populated lazily by the relay: from OF's REST
    *  `files`/`info` width/height on the live message fetch, the stored
@@ -399,8 +348,11 @@ export interface OFMedia {
   height?: number | null;
 }
 
+
 export interface OFUserMini {
-  id: number;
+  /** Numeric on OF, a string snowflake on Fansly (see `sameUserId`, and
+   *  `OFMedia.id` for the same story). Compare with `sameUserId`. */
+  id: number | string;
   name?: string;
   username?: string;
   avatar?: string | null;
@@ -465,12 +417,12 @@ export interface OFMessage {
   /** OF native quote-reply. Outgoing sends carry this through to OF's
    *  send body; incoming messages receive the field populated when the
    *  fan tapped "Reply" on one of our bubbles. */
-  replyToMessageId?: number;
+  replyToMessageId?: number | string;
   /** Embedded snapshot of the quoted message (text/from/createdAt). OF
    *  sometimes populates this on read, sometimes only the id — when only
    *  the id is present we look up the original from the local cache. */
   replyToMessage?: {
-    id: number;
+    id: number | string;
     text?: string;
     fromUser?: OFUserMini;
     createdAt?: string;
@@ -524,7 +476,13 @@ export interface OFMessage {
 
 export interface OFChatItem {
   id?: number;
-  withUser: OFUserMini & { id: number };
+  /** `& { id: number }` used to sit here, which narrowed `OFUserMini.id`
+   *  (already `number | string`) back to a number and hid the fact that every
+   *  Fansly fan id arrives as a STRING snowflake. That lie is what let
+   *  `Number(param)` into the popout and rounded a real fan id into a ghost —
+   *  see `fanIdFromParam`. The id is required here (a chat always has one),
+   *  but it keeps the union the wire actually sends. */
+  withUser: OFUserMini & { id: number | string };
   lastMessage?: {
     id: number;
     text?: string;
@@ -578,7 +536,7 @@ export interface AuditAction {
 
 export interface FanRecord {
   account_id: string;
-  fan_id: number;
+  fan_id: FanId;
   of_username: string | null;
   of_display_name: string | null;
   avatar_url: string | null;
@@ -701,7 +659,7 @@ export interface SendMessageBody {
   is_forward?: boolean;
   /** OF native quote-reply target id. When set, the receiver renders
    *  the quoted message as a card above this bubble (matches OF web). */
-  reply_to_message_id?: number;
+  reply_to_message_id?: number | string;
   /** OF user ids of creators to @-tag in this message. Source must be
    *  GET /api/of/v2/self/tagged-friend-users — OF 400s on ids that
    *  aren't on the caller's tagged-friend list. */
@@ -774,7 +732,13 @@ export interface VaultMediaResp {
 }
 
 export interface VaultList {
-  id: number;
+  /** OF sends a numeric id; the Fansly path sends a STRING snowflake (>2^53)
+   *  that round-trips back as `list_id`. Widened for the Fansly vault, as the
+   *  note here used to promise — a folder id is only ever compared and echoed
+   *  back, never arithmetic, and narrowing a snowflake to a JS number lands on
+   *  a DIFFERENT album. This is the FOLDER id: VaultManagePanel's media
+   *  selection state stays `number[]`, which is what widening was blocked on. */
+  id: FanId;
   type: "custom" | "media_stickers" | string;
   name: string;
   hasMedia: boolean;

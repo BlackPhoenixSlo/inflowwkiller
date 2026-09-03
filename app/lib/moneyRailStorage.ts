@@ -9,6 +9,7 @@
  */
 
 import { persistJSON, readJSON } from "./persist";
+import type { FanId } from "@/lib/fanId";
 
 // ── Settings (rows + which models) ───────────────────────────────────────
 // Deliberately NOT per-surface, unlike position: "watch 6 rows, for these
@@ -205,7 +206,7 @@ const SNAPSHOT_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 export const SNAPSHOT_MAX_ITEMS = 20;
 
 export interface NotificationUser {
-  id?: number;
+  id?: FanId;
   name?: string;
   username?: string;
   avatar?: string;

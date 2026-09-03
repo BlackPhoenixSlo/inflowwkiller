@@ -42,7 +42,9 @@ import {
 } from "@/hooks/useChatFolders";
 import { useScope } from "@/contexts/ScopeContext";
 import { cn, decodeHtmlEntities, fmtRelTime, interpretSubStatus } from "@/lib/utils";
-import { describeLoadError, proxyImage, relay, type OFChatItem, type OFMessage, type OFMessagesResp, type OFUserMini } from "@/lib/relay";
+import { describeLoadError, relay, type OFChatItem, type OFMessage, type OFMessagesResp, type OFUserMini } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import { type FanId, lastMessageFromFan, sameUserId } from "@/lib/fanId";
 
 /** Built-in OF chat filters — most are server-side filters supported
  *  by /chats. `owe-reply` is CLIENT-SIDE only: there's no OF filter for
@@ -71,7 +73,7 @@ if (typeof window !== "undefined" && !(window as unknown as { __chatlistBuildLog
 
 export interface ChatListSelection {
   accountId: string;
-  fanId: number;
+  fanId: FanId;
   chat: OFChatItem;
 }
 
@@ -122,7 +124,7 @@ export function ChatList({
   const PREFETCH_DWELL_MS = 120;
   const PREFETCH_PAGE_SIZE = 30;
   const PREFETCH_STALE_MS = 15_000;
-  const prefetchMessages = useCallback((aid: string, fid: number) => {
+  const prefetchMessages = useCallback((aid: string, fid: FanId) => {
     if (!aid || !fid) return;
     qc.prefetchQuery({
       queryKey: ["messages", aid, fid],
@@ -165,7 +167,7 @@ export function ChatList({
       staleTime: 60_000,
     }).catch(() => {});
   }, [qc]);
-  const scheduleRowPrefetch = useCallback((aid: string, fid: number) => {
+  const scheduleRowPrefetch = useCallback((aid: string, fid: FanId) => {
     if (prefetchTimerRef.current != null) window.clearTimeout(prefetchTimerRef.current);
     prefetchTimerRef.current = window.setTimeout(() => {
       prefetchTimerRef.current = null;
@@ -287,9 +289,7 @@ export function ChatList({
   const oweReplyActive = active.kind === "builtin" && active.key === "owe-reply";
   const isUnresponded = useCallback((c: OFChatItem) => {
     const accountId = c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
-    const myId = Number(accountId);
-    const lm = c.lastMessage;
-    return !!lm && lm.fromUser?.id != null && lm.fromUser.id !== myId;
+    return lastMessageFromFan(c, accountId);
   }, [scope]);
   // Creators WE restricted on OF (relay stamps withUser.isRestricted off its
   // durable of_restricted registry) never count as unread/owe-reply — we cut
@@ -502,7 +502,7 @@ export function ChatList({
   // that actually got marked. Mirrors useInboxRealtime's cache-shape walk
   // (InfiniteData { pages: [{ rows, hasMore }] }); skips caches that don't
   // hold the row. The trailing invalidate reconciles against OF either way.
-  const markRowRead = useCallback((accountId: string, fanId: number) => {
+  const markRowRead = useCallback((accountId: string, fanId: FanId) => {
     type Page = { rows: OFChatItem[]; hasMore: boolean };
     type Infinite = { pages: Page[]; pageParams: unknown[] };
     qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((cq) => {
@@ -512,7 +512,7 @@ export function ChatList({
       const newPages: Page[] = data.pages.map((p) => ({
         ...p,
         rows: p.rows.map((c) => {
-          if ((c.__accountId ?? "") !== accountId || c.withUser.id !== fanId) return c;
+          if ((c.__accountId ?? "") !== accountId || !sameUserId(c.withUser.id, fanId)) return c;
           if (!c.hasUnread && (c.unreadMessagesCount ?? 0) === 0) return c;
           touched = true;
           return { ...c, hasUnread: false, unreadMessagesCount: 0 };
@@ -1138,14 +1138,14 @@ export function ChatList({
                  *                          ("I owe a reply")
                  *   • Nothing            → we sent last; ball's in their court
                  *
-                 *  `accountId` is the model's OF user id (string);
-                 *  `lm.fromUser.id` is a number, so the numeric compare
-                 *  is the right one. */}
+                 *  `lastMessageFromFan` owns the compare so this dot and the
+                 *  "Owe reply" chip above can't drift. It is string-normalized:
+                 *  `fromUser.id` is numeric on OF but a string snowflake on
+                 *  Fansly, and the old `!== Number(accountId)` was true for
+                 *  EVERY Fansly row — the dot stuck on threads we had already
+                 *  answered. */}
               {(() => {
-                const lm = c.lastMessage;
-                const myId = Number(accountId);
-                const lastFromFan =
-                  !!lm && lm.fromUser?.id != null && lm.fromUser.id !== myId;
+                const lastFromFan = lastMessageFromFan(c, accountId);
                 const unreadCount = c.unreadMessagesCount ?? 0;
                 if (c.hasUnread || unreadCount > 0) {
                   return (
@@ -1345,13 +1345,14 @@ function FolderPicker({
 /** Tag the preview with "you:" when the last message came from us — this
  *  is huge for triage: at a glance you see whether the fan replied or is
  *  still waiting on us. The model account's id is the row's __accountId
- *  (which == that account's OF user id). */
+ *  (which == that account's own creator id). Same `sameUserId` compare the
+ *  yellow dot uses: this line said "you: ghj" while the dot beside it said
+ *  "awaiting your reply" on the very same Fansly row, because only one of
+ *  the two normalized the id. */
 function previewText(c: OFChatItem): string {
   const lm = c.lastMessage;
   if (!lm) return "";
-  const fromMe =
-    lm.fromUser?.id != null && c.__accountId != null &&
-    String(lm.fromUser.id) === c.__accountId;
+  const fromMe = sameUserId(lm.fromUser?.id, c.__accountId);
   const prefix = fromMe ? "you: " : "";
   // Quick visual cues so triage doesn't need opening every row:
   //   💰  tip       — money came in

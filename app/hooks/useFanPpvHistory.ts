@@ -18,6 +18,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 
 export interface PpvHistoryItem {
   transaction_id: number;
@@ -59,7 +60,7 @@ export interface PpvHistoryResp {
 
 export function useFanPpvHistory(
   accountId: string | null,
-  fanId: number | null,
+  fanId: FanId | null,
   limit = 12,
 ) {
   return useQuery<PpvHistoryResp>({

@@ -1,0 +1,16 @@
+# Never commit the captured screenshots or any credential/session material.
+*.png
+*.jpg
+*.jpeg
+*.har
+*.json
+sessions/
+secrets*
+
+# Python bytecode
+__pycache__/
+*.pyc
+.klipy_urls.json
+
+# CDP capture output (tokens, PII) — see capture/README.md
+capture/out/

@@ -106,6 +106,7 @@ from ._persona import (
 from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
 from . import _customs
+from . import _life_tip  # the life-expense tip ask: cadence + block (pure)
 from . import _objection  # which apology this turn owes him (regexes + the judge)
 from . import _voice
 from . import _openers  # the gen_info opener pool (the deepen phase)
@@ -237,7 +238,7 @@ def skip_reason_blocks(reason: str | None, *, engage_old_fans: bool) -> bool:
     ⚠️ IT EXISTS BECAUSE THE BADGE HAND-ROLLED A SECOND COPY AND DROPPED A CLAUSE.
     `fans.py` filtered `_GRADUATION_SKIPS` but not the engage_old_fans lift, so every
     fan carrying `old_fan_pre_ai` rendered "🚫 Skipped (old_fan_pre_ai)" while the
-    engine was happily engaging him — 96 fans on blake alone. Worse than the false
+    engine was happily engaging him — 96 fans on Lucas2 alone. Worse than the false
     label: the badge returns on its FIRST hit, so that phantom skip also made the true
     state (Human Rhythm's "On a break") unreachable for exactly those fans. An operator
     debugging a silent thread was shown a wrong reason AND denied the right one.
@@ -395,6 +396,37 @@ _DEFAULTS: dict = {
     # and PPVs start at $3, so no dollar line separates them, and the $12 one that
     # looks right admits 314 subscribers while rejecting 539 real buyers.
     "payers_only": True,
+    # The life-expense tip ask (2026-09-03): every 15-25 of his messages (20-30
+    # once he has tipped since the last ask) one ordinary reply asks him to spoil
+    # her with something real she is paying for today. Ships OFF. No content ever
+    # rides it — see _life_tip. Amount None → she names a modest figure herself.
+    "life_tip_ask_enabled": False,
+    "life_tip_ask_amount_dollars": None,
+    # Its knobs, all overridable per account from the one card in the AI Chatter
+    # tab. The values here ARE the module constants (`_life_tip.settings` reads
+    # them back; a malformed or empty one falls to the constant field by field),
+    # listed so the GET shows the operator what the shipped cadence is.
+    "life_tip_ask_every": list(_life_tip.BAND),
+    "life_tip_ask_every_tipped": list(_life_tip.BAND_TIPPED),
+    "life_tip_ask_retry": list(_life_tip.BAND_RETRY),
+    "life_tip_ask_days": list(_life_tip.DAYS_BAND),
+    "life_tip_ask_range_dollars": list(_life_tip.RANGE_DOLLARS),
+    "life_tip_ask_reasons_her": list(_life_tip.REASONS["her"]),
+    "life_tip_ask_reasons_him": list(_life_tip.REASONS["him"]),
+    "life_tip_ask_reasons_shown": _life_tip.REASONS_SHOWN,
+    "life_tip_ask_extra": "",
+    # The BIG ask (2026-09-03): once a month, ONLY for a fan who has tipped at
+    # least once, only inside a live thread, about something that HIT her today
+    # — locked out, a smashed window — for $100-300. Rides the same turn as the
+    # little ask and inherits every one of its safeties. Ships OFF on its own
+    # switch: an account with the little ask on has not thereby agreed to a $200
+    # line. No amount knob — the reason dictates the number.
+    "life_tip_big_enabled": False,
+    "life_tip_big_days": list(_life_tip.BIG_DAYS),
+    "life_tip_big_range_dollars": list(_life_tip.BIG_RANGE_DOLLARS),
+    "life_tip_big_reasons_her": list(_life_tip.BIG_REASONS["her"]),
+    "life_tip_big_reasons_him": list(_life_tip.BIG_REASONS["him"]),
+    "life_tip_big_extra": "",
     # PPV is the ONLY offer lane (2026-08-19 ruling). The old offer-mode
     # knob ("tip"|"ppv"|"both") and its tip-ask machinery were removed
     # structurally; a stored offer-mode key in an account config is ignored.
@@ -1702,6 +1734,15 @@ def _merge_lone_name_bubbles(parts: list[str], name: str) -> list[str]:
 def _unbacked_talk(p: str) -> bool:
     return bool(_PRICE_TALK_RE.search(p) or _SPECIFICS_RE.search(p))
 
+
+def _unbacked_talk_tip_ask(p: str) -> bool:
+    """The same floor on the life-tip-ask turn, where a bare price IS the ask
+    ("its like $35 😩 spoil me?") and must survive. A price beside content words
+    ("$50 unlocks everything") is still an invented offer, and numeric content
+    specifics ("15 pics") never had a place on this turn."""
+    return bool(_SPECIFICS_RE.search(p)) or (
+        bool(_PRICE_TALK_RE.search(p)) and bool(_life_tip.CONTENT_WORDS_RE.search(p)))
+
 # Watcher reaction when an unlock lands while the fan isn't mid-conversation —
 # static pool (no LLM dependency in the watcher); the bot reacts in full voice
 # the next time the fan actually speaks.
@@ -2072,7 +2113,7 @@ def _manifest_block(offerable: dict[int, CatalogItem],
     # ⚠️ THE ">>OFFER SENTENCE IS LOAD-BEARING AND WAS MISSING. This branch hands
     # the model TWO protocols — a catalogue with an >>OFFER id, and a permission to
     # sell a custom — and said nothing about how they interact. Live generation on
-    # Ava (2026-08-05): asked for a voice note, the model wrote "$150 and it's all
+    # Lexi (2026-08-05): asked for a voice note, the model wrote "$150 and it's all
     # yours babe" and appended `>>OFFER 236`. Item 236 on that account is a $200
     # VIDEO labelled "Custom / exclusive". The send path takes price and media from
     # the catalogue row (`ai_chatter.py` ~6287/6279, "the model never sets them"),
@@ -3261,7 +3302,7 @@ _ASK_BREAKPROOF_WINDOW = timedelta(minutes=30)
 
 
 class _Money(NamedTuple):
-    """What the THREAD says about money on one fan, as three instants.
+    """What the THREAD says about money on one fan, as four instants.
 
     Named fields rather than a positional tuple because this is read at eight
     sites and was widened once already: `[1]` and `[2]` next to each other are
@@ -3272,6 +3313,12 @@ class _Money(NamedTuple):
     ask: datetime | None = None    # newest unpaid priced outbound, still live
     paid: datetime | None = None   # newest priced outbound he UNLOCKED
     tip: datetime | None = None    # newest INBOUND tip
+    # OLDEST inbound tip — "has he ever tipped, and when did it start". The big
+    # life-tip ask anchors its month on this and never on `.tip`: anchoring on
+    # the newest tip restarts the clock with every tip, so a man who tips every
+    # two weeks would never reach a big ask. Last field, defaulted, so the eight
+    # existing read sites (all by name) are untouched.
+    first_tip: datetime | None = None
 
 
 #: "This fan has no money history." All three fields default to None, so the
@@ -3338,14 +3385,18 @@ async def _human_money_signals(
         )).all():
             out[int(fid)] = out.get(int(fid), _NO_MONEY)._replace(paid=ts)
         # Tips share NONE of `base`: they are inbound and unpriced. Their own where.
-        for fid, ts in (await s.execute(
-            select(Message.fan_id, func.max(Message.created_at))
+        # Newest AND oldest in one grouped pass: `.tip` is the little ask's anchor,
+        # `.first_tip` is the big one's eligibility and its cold-start anchor.
+        for fid, newest, oldest in (await s.execute(
+            select(Message.fan_id, func.max(Message.created_at),
+                   func.min(Message.created_at))
             .where(Message.account_id == str(account_id), Message.fan_id.in_(ids),
                    Message.direction == "in", Message.is_tip.is_(True),
                    Message.is_unsent.is_(False))
             .group_by(Message.fan_id)
         )).all():
-            out[int(fid)] = out.get(int(fid), _NO_MONEY)._replace(tip=ts)
+            out[int(fid)] = out.get(int(fid), _NO_MONEY)._replace(
+                tip=newest, first_tip=oldest)
     return out
 
 
@@ -4779,12 +4830,13 @@ _TURN_CONTENT_ASK = "content_ask"  # he asked to buy
 _TURN_ESCALATION = "escalation"    # he's leaning in, with something to sell
 _TURN_DARE = "dare"                # ask him for a picture — always a callback
 _TURN_HOT = "hot"                  # the sexting ladder
+_TURN_LIFE_TIP = "life_tip"        # the cadence tip ask rides this ordinary turn
 
 # The beats where a gif instead of words is the exact non-reaction they exist to
 # replace. On these the sticker protocol is withheld from the prompt entirely, rather
 # than generated and thrown away — a filter turns a bad reply into NO reply.
 _TURNS_NEEDING_WORDS = frozenset({_TURN_BRUSH_OFF, _TURN_RATE_PIC, _TURN_REACT_PIC,
-                                  _TURN_PIC_OFFER})
+                                  _TURN_PIC_OFFER, _TURN_LIFE_TIP})
 # The beats that spend the picture play's cooldown. A RATING spends it too: he sent
 # one, so daring him for one is asking for what he has already given — and an OFFER
 # spends it for the mirror reason: she has just told him to send one, so daring him
@@ -4821,7 +4873,11 @@ _TURNS_SPENDING_THE_DARE = frozenset({_TURN_DARE, _TURN_RATE_PIC, _TURN_PIC_OFFE
 #   fix nothing. The sale is not lost, only DEFERRED by one turn: once the picture
 #   lands, `_TURN_RATE_PIC` owns the reply and carries the close as its own step 5, at
 #   the warmest moment the thread ever reaches.
-_TURNS_NOT_SELLING = frozenset({_TURN_DARE, _TURN_PIC_OFFER})
+# _TURN_LIFE_TIP is here ON PURPOSE: the ask names a price of its own, and a PPV
+# beside it is the double-pay shape the 2026-07-23 rule exists for. Membership is
+# what clears `sell`, rejects a marker, blocks the pack plan and the forced ask,
+# and drops a priced teaser at the chokepoint — one rule, five sites, said once.
+_TURNS_NOT_SELLING = frozenset({_TURN_DARE, _TURN_PIC_OFFER, _TURN_LIFE_TIP})
 
 
 def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
@@ -4860,7 +4916,7 @@ def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
         # `CONTENT_ASK_RE` matches the bare substring "wanna see", with no reading of
         # who is offering what, so "You wanna see my cock?" already scored as
         # content_ask — a BUYING signal — and this branch would be dead code below it.
-        # Prod receipt (Dana FAN_ID, 2026-08-08 01:45:50): he offered, and the
+        # Prod receipt (Isabelle 326419277, 2026-08-08 01:45:50): he offered, and the
         # engine answered "u keep askn / dont u / tell me more about that highway life
         # first" with an $8 PPV stapled on. It thought HE was the one asking.
         #
@@ -4957,6 +5013,10 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
                     opener: "_openers.Opener | None" = None,
                     v: "_voice.VoiceBlocks" = _voice.HER,
                     custom_owed: bool = False,
+                    # The life-expense tip ask, "" on every turn but the armed one
+                    # (`_life_tip.prompt_block`). Appended last, beside the customs
+                    # block, for the same reason: "" must leave the prompt byte-equal.
+                    life_tip: str = "",
                     # TODAY's day, bound to the creator-local hour it is read at.
                     # Defaults to the empty `Day`, which renders "" everywhere — an
                     # account with no day log produces a byte-identical prompt.
@@ -5028,7 +5088,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # nudge above steers at "his job, a hobby, something going on in his life" —
     # the three fields a kink-forward fan is least likely to have filled.
     #
-    # Prod receipt (blake ACCOUNT_ID_3 / fan FAN_ID, 2026-08-09 04:29→04:52). He
+    # Prod receipt (Lucas2 7789837 / fan 106046461, 2026-08-09 04:29→04:52). He
     # wrote four sentences naming exactly what he wanted; his `hobbies` and
     # `occupation` were both "" and his `fetishes` was fully populated. With every
     # target of the nudge empty, the model reached for the only other thing in its
@@ -5089,6 +5149,12 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # this much cannot live in a paragraph the model is free to ignore.
     if hot_thread:
         ask = False
+    # Same discipline for the life-expense tip ask: the persona says "at most ONE
+    # question", and handed both a bio gap and the ask the model kept the bio
+    # question and dropped the ask (live run 2026-09-03: 8 of 32 replies). The ask
+    # IS this turn's one question; the gap waits a turn. Code, not prose.
+    if life_tip:
+        ask = False
     # Gentle mode (engaged old fans): an info question at most ~every
     # `ask_every` replies — 1/N per message, everything else stays pure convo.
     # The regular dice below still apply when the throttle lets an ask through.
@@ -5146,7 +5212,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     elif kind == _TURN_RATE_PIC:
         # HE JUST SENT A PICTURE. Rating it is the whole point of the vision layer and
         # it was the one thing never wired: the description reached the prompt, nothing
-        # ever told her to USE it. Prod thread FAN_ID is the receipt — he sent one,
+        # ever told her to USE it. Prod thread 581112404 is the receipt — he sent one,
         # asked "Is it what you thought?", and got "mmm it's deffinetly something" while
         # a paragraph describing exactly what he sent sat in the same row of the DB.
         #
@@ -5306,6 +5372,9 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             )
         presented = []
         ask = False
+    elif life_tip:
+        need_block = ("YOUR GOAL THIS MESSAGE: answer him, then the ask "
+                      "below. No get-to-know question this turn — it can wait.")
     elif opener is not None:
         # The gather is done, so this turn works in one gen_info opener — a question
         # mined from something he actually said — instead of the generic banter
@@ -5476,6 +5545,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
         # pins the >>OFFER token so a Spanish reply never leaks a translated marker.
         + _language.output_language_directive(lang)
         + _customs.prompt_block(custom_owed, v.voice)
+        + life_tip
     )
     # TIER B — what she has ALREADY told THIS fan. USER message (per-fan, never
     # prefix-cached) — same placement and reasoning as welcome_chatter_for_info's. ai_chatter
@@ -5877,6 +5947,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # sent — a better number on a worse decision. It rides the gate on purpose.
     pricing_on = gate_on and bool(cfg.get("smart_pricing_enabled"))
     rhythm_on = bool(cfg.get("rhythm_enabled"))
+    life_tip_on = bool(cfg.get("life_tip_ask_enabled"))
+    # The ask's knobs, parsed ONCE per run (account-level, like the curve below).
+    life_tip_s = _life_tip.settings(cfg)
+    # The BIG ask rides the same feature: its switch cannot arm an account that has
+    # not turned the life-tip ask on at all, because it is the same turn kind and
+    # the same set of safeties. Its own knobs are a separate dataclass.
+    big_on = life_tip_on and bool(cfg.get("life_tip_big_enabled"))
+    big_s = _life_tip.big_settings(cfg)
     rhythm_no_sleep = bool(cfg.get("rhythm_no_sleep"))
     # Parsed ONCE per run, not per fan: it is account-level config, and a malformed
     # curve should be one parse (→ None → the shipped bands) rather than a silent
@@ -6078,7 +6156,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # set on those accounts; a missed chargeback costs more.
     pp_on = _objection.judge_on(cfg)
     human_money = (await _human_money_signals(account_id, by_fan.keys(), datetime.utcnow())
-                   if (gate_on or rhythm_on or pp_on) else {})
+                   # `life_tip_on` reads `.tip` — the newest inbound tip is the
+                   # ask's anchor. Without it the map is {} and the loop would
+                   # count from the dawn of the thread on every rhythm-off account.
+                   if (gate_on or rhythm_on or pp_on or life_tip_on) else {})
     # gen_info profiles (bio / bullet notes / teases) → the prompt, so the AI knows
     # his story, not just his tags. Always loaded (personalization is not gated).
     profiles = await _load_profiles(account_id, by_fan.keys())
@@ -6283,6 +6364,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     hot_teaser_paid_tick = 0 # per-run budget on PAID hot teasers (shares _MAX_FORCED…)
     would_offer = 0          # dry-run: offers that would have been recorded
     unbacked_stripped = 0    # price-talk bubbles dropped (no offer behind them)
+    life_tip_asked = 0       # replies that carried the life-expense tip ask
     skipped_locked = 0
     skipped_cooldown = 0
     skipped_cadence = 0     # cadence: burst cap hit / post-purchase window lapsed
@@ -6404,6 +6486,27 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         sent_ok = True
                         if rhythm_cover:
                             cover_lines_sent += 1
+                        # A parked life-tip ask is spent the moment its replay
+                        # lands — same confirmed-send discipline as the live path.
+                        if payload.get("draft_life_tip"):
+                            _lt_text = " ".join(str(x) for x in
+                                                (payload.get("draft_parts") or []))
+                            # ⚠️ ONE `now` for both stamps here too — see the
+                            # confirmed-send path for what two clock reads break.
+                            if payload.get("draft_life_tip_big"):
+                                await set_fan_state(
+                                    account_id, fan_id, _life_tip.KEY_BIG,
+                                    _life_tip.stamp(now, landed=_life_tip.big_landed(
+                                        _lt_text, big_s)))
+                            # The little slot is stamped either way: a big ask IS an
+                            # ask, so the little clock restarts from it — see the
+                            # confirmed-send path for the whole argument.
+                            await set_fan_state(
+                                account_id, fan_id, _life_tip.KEY,
+                                _life_tip.stamp(now, landed=(
+                                    True if payload.get("draft_life_tip_big")
+                                    else _life_tip.landed(_lt_text))))
+                            life_tip_asked += 1
                     continue
             f = fans.get(fan_id) or Fan(account_id=str(account_id), fan_id=fan_id)
             # The account bundle narrowed to THIS fan. A custom is only offered to
@@ -6475,6 +6578,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             rate_pic_turn = False
             pic_offer_turn = False
             kind = ""
+            # Which of the two life-tip asks this turn carries, if it carries one.
+            # Initialised beside `kind` because the block, the payload and the two
+            # stamp sites all read it on every path, armed or not.
+            big = False
             # A HARD decline WINS over the poverty/companion brakes — always. Otherwise a
             # message that carries both a distress token and a chargeback ("im tapped out,
             # im disputing this charge and reporting you") hits detect_spend_regret first
@@ -6659,7 +6766,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # A TIP is money, and this is the ONLY place it reaches rhythm (the
                     # decide() twin below merges it too). `_context_of` must read a man
                     # who just tipped as a live sell — otherwise she walks out seconds
-                    # after he pays. Measured on 2026-08-09 on account ACCOUNT_ID_2: $5 tip
+                    # after he pays. Measured on 2026-08-09 on account 2024813: $5 tip
                     # at 21:37:27, ingested 21:37:31, step-out at 21:37:43. Deliberately
                     # NOT merged into `.paid` itself — see `_human_money_signals`.
                     last_paid_at=_newest(
@@ -7206,6 +7313,42 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # carve-out on a turn that bans it, which is the third way a price got onto
             # a dare. `kind` was already decided using the OLD sell.close, so the
             # content_ask/escalation rungs it could have won are unaffected.
+            # ── THE LIFE-EXPENSE TIP ASK takes an ORDINARY turn, and only one. Every
+            # other beat outranks it (a rating, a brush-off, a buy, the ladder), a
+            # paid-and-unsent custom mutes it (`_OWED_BLOCK` says "no tip ask"), and
+            # an unpaid PPV of ours or a live human ask on the table means money is
+            # already being asked for. Then the cadence: HIS messages since the last
+            # ask or tip, against a draw that is fixed per (fan, anchor). Decided here,
+            # BEFORE the `_TURNS_NOT_SELLING` clear below, so the membership does the
+            # rest — the prompt sells nothing on this turn and no price can attach.
+            if (life_tip_on and kind == "" and pending is None
+                    and not _customs.is_owed(f)
+                    and human_money.get(fan_id, _NO_MONEY).ask is None):
+                _lt_state = fan_state(f, _life_tip.KEY)
+                _lt_money = human_money.get(fan_id, _NO_MONEY)
+                _lt_tip = _lt_money.tip
+                # ── THE BIG ASK first, because it outranks the little one on the
+                # turn they share: a fan who is due a $100-300 line today must not
+                # spend the turn on a $35 one. It asks for more of him — he has
+                # tipped at least once, the thread is alive RIGHT NOW (his messages
+                # inside a 3-day window, not since an anchor that may be years old),
+                # a month since the last big ask, and no little ask within 3 days.
+                if big_on and _lt_money.first_tip is not None:
+                    _big_state = fan_state(f, _life_tip.KEY_BIG)
+                    _big_a = _life_tip.big_anchor(_big_state, _lt_money.first_tip)
+                    _big_n = await _fan_msgs_since(
+                        account_id, fan_id, _life_tip.big_live_since(_big_a, now))
+                    if _life_tip.big_due(fan_id, _big_state, _lt_money.first_tip,
+                                         n_live=_big_n, now=now,
+                                         little_at=_life_tip.asked_at(_lt_state),
+                                         s=big_s, retry=life_tip_s.retry):
+                        kind, big = _TURN_LIFE_TIP, True
+                if kind == "":
+                    _lt_n = await _fan_msgs_since(
+                        account_id, fan_id, _life_tip.anchor(_lt_state, _lt_tip))
+                    if _life_tip.due(fan_id, _lt_state, _lt_tip, n_since=_lt_n, now=now,
+                                     s=life_tip_s):
+                        kind = _TURN_LIFE_TIP
             if kind in _TURNS_NOT_SELLING:
                 sell = _NO_SELL
             buyer_facts = await _buyer_facts(account_id, fan_id)
@@ -7237,7 +7380,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # answer to a bot accusation — but refusing it AFTER generation turns a
             # sticker-only reply into SILENCE, which answers "You a real person?" with
             # nothing at all. That is a worse answer than the gif was. Seen on a replay
-            # of thread FAN_ID: the model returned "STICKER: eyeroll", the guard
+            # of thread 581112404: the model returned "STICKER: eyeroll", the guard
             # dropped it, `dropped_empty: 1`, and she never spoke.
             #
             # Same reasoning for the picture he just sent: a gif is precisely the
@@ -7253,7 +7396,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Gated AND rationed. `_questions_still_needed` only says the bio gaps
             # are filled; it does not say THIS turn wants a question. Without the
             # roll every reply to a gathered fan carries one, for ever.
-            if not _questions_still_needed(f, asked) and _openers.should_offer(
+            # Not on the tip-ask turn: an opener is a question too, and that turn
+            # already has its one (see `life_tip` in _build_messages).
+            if kind != _TURN_LIFE_TIP and not _questions_still_needed(f, asked) \
+                    and _openers.should_offer(
                     enabled=openers_on, rate=openers_rate,
                     seed=f"opener:{account_id}:{fan_id}:{c.last_body}"):
                 opener = _openers.next_for(f, profiles.get(fan_id),
@@ -7290,6 +7436,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                               shape=_shape,
                                               canon=canon,
                                               custom_owed=_customs.is_owed(f),
+                                              life_tip=(
+                                                  ""
+                                                  if kind != _TURN_LIFE_TIP else
+                                                  _life_tip.big_prompt_block(
+                                                      v.voice, seed=f"{fan_id}:{now.date()}",
+                                                      s=big_s)
+                                                  if big else
+                                                  _life_tip.prompt_block(
+                                                      cfg.get("life_tip_ask_amount_dollars"),
+                                                      v.voice, seed=f"{fan_id}:{now.date()}",
+                                                      s=life_tip_s)),
                                               opener=opener,
                                               sticker_mode=sticker_mode,
                                               style_on=style_on,
@@ -7861,6 +8018,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 _phantom = teaser is None and pending is None and _pack_plan is None
 
                 def _bad(p: str) -> bool:
+                    if kind == _TURN_LIFE_TIP:
+                        # The armed ask MAY name a price — that IS the ask.
+                        return _unbacked_talk_tip_ask(p) or (
+                            _phantom and bool(_DELIVERY_TALK_RE.search(p)))
                     return _unbacked_talk(p) or (_phantom
                                                  and bool(_DELIVERY_TALK_RE.search(p)))
                 priced = [p for p in parts if _bad(p)]
@@ -8033,7 +8194,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             and parts and c.last_in_at is not None):
                         _draft = {"draft_parts": list(parts),
                                   "draft_made_at": rnow.isoformat(),
-                                  "draft_inbound_at": c.last_in_at.isoformat()}
+                                  "draft_inbound_at": c.last_in_at.isoformat(),
+                                  # The replay sends before `kind` exists again, and
+                                  # the stamp keys off it — carried, or a parked ask
+                                  # goes out unspent and is asked twice.
+                                  "draft_life_tip": kind == _TURN_LIFE_TIP,
+                                  # …and WHICH ask, or the replay would stamp the
+                                  # little slot for a $200 line and leave the big
+                                  # month unspent.
+                                  "draft_life_tip_big": big}
                         drafts_stored += 1
                     await ax.enqueue_job(
                         account_id, _PURPOSE,
@@ -8379,6 +8548,34 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # has already given is the script tell the cooldown exists to prevent.
             if kind in _TURNS_SPENDING_THE_DARE:
                 await _bot_dare_mark(account_id, fan_id)
+            # The tip ask is spent on CONFIRMED send, like the dare. `landed` records
+            # whether the reply actually carried it; a miss retries on the short band.
+            if kind == _TURN_LIFE_TIP:
+                _lt_text = " ".join(parts)
+                # A BIG ask stamps BOTH slots, and the second one is the whole
+                # interaction between the two asks: a big ask IS an ask, so the
+                # little clock restarts from it (its anchor is "newer of last ask
+                # and last tip" and needs no code of its own to see this). The
+                # little slot is marked landed=True on purpose even when the big
+                # one missed — a missed big ask retries on the BIG slot's short
+                # band, not on both at once.
+                if big:
+                    # ⚠️ ONE `now` for BOTH stamps, never two utcnow() calls.
+                    # `_life_tip.big_due` skips its 3-day gap only while the little
+                    # stamp is not NEWER than the big one; two clock reads make it
+                    # microseconds newer and kill the miss-retry outright.
+                    _lt_landed = _life_tip.big_landed(_lt_text, big_s)
+                    await set_fan_state(account_id, fan_id, _life_tip.KEY_BIG,
+                                        _life_tip.stamp(now, landed=_lt_landed))
+                    await set_fan_state(account_id, fan_id, _life_tip.KEY,
+                                        _life_tip.stamp(now, landed=True))
+                else:
+                    _lt_landed = _life_tip.landed(_lt_text)
+                    await set_fan_state(account_id, fan_id, _life_tip.KEY,
+                                        _life_tip.stamp(now, landed=_lt_landed))
+                life_tip_asked += 1
+                log.info("ai_chatter life_tip asked account=%s fan=%s big=%s landed=%s",
+                         account_id, fan_id, big, _lt_landed)
             # Burn today's beat once the reply that was REQUIRED to carry it is
             # confirmed on the wire. Same discipline as the dare above: stamped on
             # CONFIRMED send, never on the decision, so a failed send leaves the beat
@@ -8555,6 +8752,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "hot_teasers_sent": hot_teasers_sent,
         "would_offer": would_offer,
         "unbacked_stripped": unbacked_stripped,
+        "life_tip_asked": life_tip_asked,
         **offer_stats,
         "old_fans_engaged": old_fans_engaged,
         "skipped_listed": skipped_listed,

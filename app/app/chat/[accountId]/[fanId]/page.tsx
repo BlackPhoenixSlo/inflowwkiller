@@ -19,6 +19,7 @@ import { ChatSurface } from "@/components/chat/ChatSurface";
 import { useAccountLabel } from "@/hooks/useAccounts";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { relay, type OFChatItem, type OFMessage, type OFUserMini } from "@/lib/relay";
+import { fanIdFromParam, sameUserId, type FanId } from "@/lib/fanId";
 
 interface UserListResp { [id: string]: OFUserMini & {
   avatarThumbs?: { c50?: string; c144?: string };
@@ -28,7 +29,21 @@ export default function ChatPopoutPage({
   params,
 }: { params: Promise<{ accountId: string; fanId: string }> }) {
   const { accountId, fanId: fanIdStr } = use(params);
-  const fanId = Number(fanIdStr);
+  // Keep the id EXACTLY as the URL spelled it. This was `Number(fanIdStr)`,
+  // which silently corrupted every Fansly fan: a snowflake exceeds JS's 2^53,
+  // so `Number("951404711209099264")` is 951404711209099300 — a fan id that
+  // does not exist. The popout then asked the relay for that ghost, which is
+  // why "↗ pop out" landed on an empty thread reading "Couldn't refresh:
+  // observe-only" while the inbox row it was opened from worked fine.
+  //
+  // The inbox never had the bug because it passes `chat.withUser.id` straight
+  // through from JSON, and the Fansly shim emits ids as STRINGS for exactly
+  // this reason. Parsing here was the one place that re-introduced the loss,
+  // so the popout's query keys ("messages"/"of-user"/"fan") also disagreed
+  // with the inbox's and split the cache. `fanIdFromParam` keeps OF's small
+  // numeric ids as numbers (their keys stay identical) and leaves anything
+  // too large for float64 as the exact string.
+  const fanId = useMemo(() => fanIdFromParam(fanIdStr), [fanIdStr]);
   const accountLabel = useAccountLabel(accountId);
 
   // Fetch the fan profile so the header shows a name/avatar instead of
@@ -43,14 +58,15 @@ export default function ChatPopoutPage({
       const u = resp?.[String(fanId)];
       if (!u) return null;
       return {
-        id: fanId,
+        // Non-null inside the queryFn: `enabled: fanId != null` gates it.
+        id: fanId as FanId,
         name: u.name,
         username: u.username,
         avatar: u.avatarThumbs?.c50 || u.avatarThumbs?.c144 || u.avatar || null,
         customNickname: u.customNickname ?? null,
       };
     },
-    enabled: Number.isFinite(fanId),
+    enabled: fanId != null,
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
@@ -97,14 +113,14 @@ export default function ChatPopoutPage({
       return;
     }
     if (maxId <= prev) return;
-    // accountId IS the creator's OF user id — fromUser.id !== that means
-    // the message came from the fan.
-    const myId = Number(accountId);
+    // accountId IS the creator's own id — a fromUser.id that is NOT it means
+    // the message came from the fan. Compared through sameUserId because the
+    // Fansly path sends string snowflakes where OF sends numbers.
     let bump = 0;
     for (const m of msgs) {
       const id = Number(m.id);
       if (!Number.isFinite(id) || id <= prev) continue;
-      if (m.fromUser?.id != null && m.fromUser.id !== myId) bump++;
+      if (m.fromUser?.id != null && !sameUserId(m.fromUser.id, accountId)) bump++;
     }
     lastMaxIdRef.current = maxId;
     if (bump > 0 && hidden) setUnreadHidden((n) => n + bump);
@@ -128,7 +144,7 @@ export default function ChatPopoutPage({
   const refreshFiredRef = useRef(false);
   useEffect(() => {
     if (isRestoring || refreshFiredRef.current) return;
-    if (!Number.isFinite(fanId)) return;
+    if (fanId == null) return;
     const url = new URL(window.location.href);
     if (url.searchParams.get("refresh") !== "media") return;
     refreshFiredRef.current = true;
@@ -155,7 +171,8 @@ export default function ChatPopoutPage({
   // recompute on every parent re-render.
   const chat: OFChatItem = useMemo(() => ({
     withUser: {
-      id: fanId,
+      // Only rendered past the `fanId == null` guard below, where this is set.
+      id: fanId as FanId,
       name: userQ.data?.name,
       username: userQ.data?.username,
       avatar: userQ.data?.avatar ?? null,
@@ -177,7 +194,7 @@ export default function ChatPopoutPage({
 
   // Guard AFTER every hook: an early return above any hook makes the hook
   // count differ between renders (React #310) if fanId turns valid in place.
-  if (!Number.isFinite(fanId)) {
+  if (fanId == null) {
     return (
       <div className="grid place-items-center h-chat text-sm text-err">
         Invalid fan id: {fanIdStr}

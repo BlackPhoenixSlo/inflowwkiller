@@ -27,7 +27,10 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
 import { MoneyRailRestoreButton } from "@/components/MoneyRail";
-import { relay, proxyImage } from "@/lib/relay";
+import { relay } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
+import type { FanId } from "@/lib/fanId";
+import type { NotificationUser } from "@/lib/moneyRailStorage";
 import {
   NOTIF_ARRIVED_EVENT,
   NOTIF_CLEARED_EVENT,
@@ -58,12 +61,6 @@ const FILTERS: Filter[] = [
   { id: "message",     label: "Messages",      type: "message"    },
 ];
 
-interface NotificationUser {
-  id?: number;
-  name?: string;
-  username?: string;
-  avatar?: string;
-}
 interface NotificationItem {
   id?: number | string;
   type?: string;
