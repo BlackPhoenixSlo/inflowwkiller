@@ -85,6 +85,20 @@ const WHALE: AiStatus = {
   },
 };
 
+/** Fan 7004 — paid ten minutes ago. Inside the post-purchase window there is no
+ *  ceiling at all, and the reason says so: it is not a whale's "unlimited". */
+const JUST_PAID: AiStatus = {
+  ...BASE, state: "active", label: "Active", detail: "The AI answers his next message",
+  cadence: {
+    ...BURST, tier: "post_purchase", used: 31,
+    daily: {
+      reason: "post_purchase", used: 31, quota: null, runway_left: null,
+      held: false, enforced: true, backoff_hours: null, dry_days: null,
+      ladder_hours: null, rung: null, free_at: null,
+    },
+  },
+};
+
 function draw(status: AiStatus): ReactElement {
   mockGet.mockResolvedValue(status);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -113,6 +127,31 @@ describe("AiStatusStrip — daily quota chip", () => {
     expect(el?.textContent).toBe("📅 runway 3 left");
     expect(el?.textContent).not.toContain("no daily cap");
     expect(el?.getAttribute("title")).toContain("3 more replies are owed before one applies");
+  });
+
+  it("names the post-purchase window instead of calling him a whale", async () => {
+    render(draw(JUST_PAID));
+    const el = await chip();
+    expect(el?.textContent).toBe("📅 no daily cap · just paid");
+    expect(el?.getAttribute("title")).toContain("post-purchase window");
+    expect(el?.getAttribute("title")).not.toContain("whale");
+  });
+
+  it("does not repeat the over-claim the badge dropped", async () => {
+    // The counter chip renders on EVERY counted fan, the held one included, and it
+    // carried "A purchase or a content ask lifts this immediately" — the sentence
+    // removed from `fan_status_copy.daily_quota_badge` for being false. A content ask
+    // lifts the ceiling only to the buying-signal floor, which a spend lift usually
+    // already clears, so a held fan was being shown a promise the gate would not keep.
+    // The two surfaces now say the same thing.
+    render(draw(HELD));
+    const el = await chip();
+    const title = el?.getAttribute("title") ?? "";
+    expect(title).not.toContain("A purchase or a content ask lifts this immediately");
+    expect(title).toContain("reopens his day");
+    expect(title).toContain("count restarts");
+    // …and it says what a content ask really buys, rather than promising a lift.
+    expect(title).toContain("buying-signal floor");
   });
 
   it("keeps the counter but does not retype the badge's sentence", async () => {

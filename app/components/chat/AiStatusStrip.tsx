@@ -141,7 +141,26 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
         `his runway is still being courted, not rationed.${shadow}`,
     };
   }
-  if (d.quota == null) {
+  // He paid inside the post-purchase window. The burst chip beside this one says
+  // "uncapped · post purchase"; this used to fall through to the whale sentence
+  // below — the right verdict with the wrong reason on it.
+  if (d.reason === "post_purchase") {
+    return {
+      text: "📅 no daily cap · just paid",
+      tone: "text-emerald-400/80",
+      title:
+        "He paid inside the post-purchase window, so no daily ceiling applies — the same " +
+        "uncapped window the burst cap gives him. A purchase also reopens his day: the " +
+        `count afterwards is replies since he paid, not since the day opened.${shadow}`,
+    };
+  }
+  // On the REASON first, not on `quota == null`. The verdict already names itself, and
+  // this was the last branch here re-deriving state from the numbers — the exact thing
+  // the docstring above forbids, and the reason `post_purchase` used to land on the
+  // whale sentence: it shares the null quota and nothing else. The `quota == null`
+  // half stays as a FLOOR, not as the test: an unlisted future verdict with no ceiling
+  // must not fall through to a counter that would print "31/null".
+  if (d.reason === "unlimited" || d.quota == null) {
     return {
       text: "📅 no daily cap",
       tone: "text-emerald-400/80",
@@ -192,7 +211,9 @@ function dailyChip(d: NonNullable<AiStatus["cadence"]["daily"]>): Chip | null {
     title:
       `${d.used} of ${d.quota} replies used in the current day, which opens on the ` +
       `account's own reply and closes after 12h of its silence.${rolled}${dry}${wait}${step}${why} ` +
-      `A purchase or a content ask lifts this immediately.${shadow}`,
+      `A purchase reopens his day on the spot — the count restarts from the moment ` +
+      `he pays. A content ask only lifts the CEILING to the buying-signal floor, ` +
+      `which does not always clear a spend lift.${shadow}`,
   };
 }
 
@@ -340,7 +361,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
       {data.break_proof && (
         <span
           className="text-fg-dim"
-          title="An ask went out in the last 30 min (or he just paid), so it can't wander off mid-sale. Past 30 min it's free to take a break again — and the next reply covers for it ('sorry was in the shower 🚿')."
+          title="An ask went out in the last 30 min, or he paid in the last hour, so the random 'she stepped away' break can't roll mid-sale. This shields the thread from Human Rhythm's breaks only — the daily ceiling is its own gate with its own chip. Past the window she's free to take a break again, and the next reply covers for it ('sorry was in the shower 🚿')."
         >
           🛡 can't wander off (30m)
         </span>

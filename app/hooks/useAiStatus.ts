@@ -17,12 +17,15 @@ export type AiState = "active" | "paused" | "companion" | "blocked" | "off";
 
 /**
  * The daily quota's verdict names, mirroring the `QUOTA_*` constants in
- * service/automations/_leash.py. Widened with `string` at the use site: the engine may
- * name a new outcome before the UI knows it, and an unlisted reason must fall back to
- * the plain counter, never blank the chip.
+ * service/automations/_leash.py. Widened at the use site with `string & {}` and NOT
+ * with a bare `string`: the engine may name a new outcome before the UI knows it, and
+ * an unlisted reason must fall back to the plain counter rather than blank the chip —
+ * but a bare `string` ABSORBS the union, which makes every member decorative. That is
+ * how `post_purchase` went missing here with nothing failing. `string & {}` keeps the
+ * literals in autocomplete and keeps this list load-bearing.
  */
 export type DailyReason =
-  | "held" | "runway" | "under_quota" | "unlimited"
+  | "held" | "runway" | "under_quota" | "unlimited" | "post_purchase"
   | "signal_lift" | "spend_lift" | "backoff_served" | "no_ladder" | "off";
 
 export type AiStatus = {
@@ -54,7 +57,7 @@ export type AiStatus = {
     daily?: {
       /** The gate's own verdict name — dispatch on THIS, never re-derive the state
        *  from the numbers. The exit order of `_quota_gate` is not the UI's to know. */
-      reason: DailyReason | string;
+      reason: DailyReason | (string & {});
       used: number;
       quota: number | null; // null = no ceiling reaches him (runway, or a whale)
       runway_left: number | null; // replies before the ceiling starts applying
