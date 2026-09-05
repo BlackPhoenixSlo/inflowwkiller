@@ -220,7 +220,7 @@ def daily_quota_badge(q: Any, *, enforced: bool, cad: dict[str, Any] | None = No
 
     TWO openings, because the badge carries a number that stops describing the hold that
     caused it. `q.used` is the CURRENT quota day's count; the hold was earned by what she
-    had spent when she went QUIET (`day_out_n_at_stop`, which never leaves `_quota_gate`).
+    had spent when she went QUIET (`spent`, a local of `_quota_gate` that never leaves it).
     The day tumbles, so it resets under a waiting fan — and the old copy printed the fresh
     count behind the words "Daily quota reached (0/25)" over a sentence that read "0
     replies sent to him in the last 24h", a badge contradicting itself in two lines. The
@@ -253,6 +253,8 @@ def daily_quota_badge(q: Any, *, enforced: bool, cad: dict[str, Any] | None = No
                  f"move it — then the thread opens again."
                  f"{_quiet_steps_sentence(ladder, rung, wait, recent_buyer=recent)}"
                  f" This slows the thread "
-                 f"down, it never stops it. A purchase or a content ask resumes it "
-                 f"immediately.",
+                 f"down, it never stops it. A purchase reopens his day on the spot — "
+                 f"the count restarts from the moment he pays, so he is answered on "
+                 f"the next tick — and inside the post-purchase window no ceiling "
+                 f"applies at all.",
                  _iso(free_at))

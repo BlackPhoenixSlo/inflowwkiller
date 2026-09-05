@@ -91,6 +91,7 @@ from . import (_ghost, _stepout, cat_stickers, pacing, rhythm, script_packs,
 # leash out of the engine that obeys it is the point of the split.
 from ._leash import (  # noqa: F401 — re-exported for fans.py / tests
     HOT_TIERS, QUOTA_BACKOFF_SERVED, QUOTA_HELD, QUOTA_NO_LADDER, QUOTA_OFF,
+    QUOTA_POST_PURCHASE,
     QUOTA_RUNWAY, QUOTA_SIGNAL_LIFT, QUOTA_SPEND_LIFT, QUOTA_UNDER, QUOTA_UNLIMITED,
     QUOTA_IDLE_RESET, QUOTA_WINDOW, SPEND_QUOTA_UNLIMITED, TIER_BASELINE,
     TIER_BUYING_SIGNAL, TIER_NO_SIGNAL, TIER_PIC_SENT, TIER_POST_PURCHASE,
@@ -1214,7 +1215,7 @@ class _Cand:
                  "day_out_n", "day_out_n_at_stop", "total_out_n", "first_at",
                  "her_last_at", "pic_sent", "last_in_desc", "last_in_desc_at",
                  "last_out_was_gif", "last_in_text", "first_in_at",
-                 "msg_ids", "reply_ctx", "in_run")
+                 "msg_ids", "reply_ctx", "in_run", "her_times")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -1302,7 +1303,10 @@ class _Cand:
         self.day_out_n_at_stop = 0  # …the same count as of HER LAST REPLY: the ration
                                  # that put her on a backoff rung. Unlike day_out_n it
                                  # cannot move while she is quiet, so it decides the
-                                 # WAIT while day_out_n decides the next ALLOWANCE
+                                 # WAIT while day_out_n decides the next ALLOWANCE.
+                                 # Both are the UNCUT day: `_leash._quota_gate` counts
+                                 # its own pair off `her_times` because a purchase
+                                 # reopens the day and only the gate holds `money_at`
         self.total_out_n = 0     # HER replies over the WHOLE thread (item 21c's
                                  # per-fan runway) — same REPLIES-not-bubbles unit,
                                  # never reset; only populated with day_window set
@@ -1312,6 +1316,13 @@ class _Cand:
         self.her_last_at: datetime | None = None # HER last reply (not a human's, not a
                                                  # bubble) — the clock the daily-quota
                                                  # backoff counts its silence from
+        # EVERY reply of hers, oldest first — the raw measurement the three counters
+        # above are just windows onto. Kept rather than discarded because the daily
+        # ceiling has to re-window it: a purchase REOPENS the quota day, and only
+        # `_quota_gate` knows where his newest money event is (see `_leash.
+        # _quota_gate`). Handing it the list rather than a pre-cut count is what
+        # keeps that rule in one place instead of two.
+        self.her_times: list[datetime] = []
 
     def add_message(self, direction: str, text: str, message_id: int) -> None:
         """Append one thread row. The ONE writer of both `messages` and `msg_ids`, so
@@ -1395,6 +1406,8 @@ async def _gather(account_id: str,
       `day_out_n`      (`day_window` set)       her replies in the current quota day,
                        which opens on a reply of hers and closes `day_window` later
                        or on her silence — the ceiling above the burst (item 21c).
+                       The UNCUT day: `_quota_gate` reopens it on his money itself,
+                       off `her_times`.
       `total_out_n`    (always)                 her replies over the whole thread —
                        the per-fan runway the daily ceiling waits out.
 
@@ -1447,10 +1460,11 @@ async def _gather(account_id: str,
     # Read as text, parse defensively, drop the bad row — never the account.
     async with get_session() as s:
         rows = (await s.execute(
-            # message_id goes LAST and must stay there: `_broadcast_bodies` reads
-            # `row[:6]` off these same rows, so anything inserted mid-list silently
-            # feeds it the wrong columns. It is an int — still no `raw_json` on this
-            # whole-account scan (see the docstring).
+            # The first six columns must stay where they are: `_broadcast_bodies`
+            # reads `row[:6]` off these same rows, so anything inserted mid-list
+            # silently feeds it the wrong columns — new columns go on the END. It is
+            # an int — still no `raw_json` on this whole-account scan (see the
+            # docstring).
             select(Message.fan_id, Message.direction, Message.body,
                    created_at_text(), Message.automation_kind, Message.mass_run_id,
                    Message.image_desc, Message.media_count, Message.message_id)
@@ -1601,6 +1615,11 @@ async def _gather(account_id: str,
     for fid, c in out.items():
         times = her_times.get(fid, ())
         c.total_out_n = len(times)          # the whole thread: his per-fan runway
+        # Kept, not discarded: the daily ceiling re-windows this list itself, because
+        # a purchase reopens the quota day and only `_quota_gate` knows where his
+        # newest money event is (§2.5). One measurement, and the rule that cuts it
+        # lives with the rule that reads it.
+        c.her_times = list(times)
 
         if gap is not None:
             # THE BURST — her replies since her own last silence longer than `gap`,
@@ -1639,6 +1658,15 @@ async def _gather(account_id: str,
             # talking (`times[-1]`) — the count that put her on a backoff rung. The
             # second cannot move while she is silent, so a day turning over mid-rung
             # hands back her allowance without cutting her wait short.
+            #
+            # Both are the UNCUT day, and that is the whole of what this pass owes
+            # anyone: a purchase REOPENS the quota day on top of it (§2.5), but that
+            # cut belongs to `_quota_gate`, which is the only place holding
+            # `money_at`. Deriving "his newest money event" here as well would put two
+            # formulas for one fact in two modules — the drift `_leash` was extracted
+            # to end — so the gate is handed `her_times` and re-windows it itself.
+            # These two therefore describe the day, and the GATE's `used` / `spent`
+            # are what actually ration her.
             c.day_out_n = quota_used(times, now, window=day_window)
             c.day_out_n_at_stop = (quota_used(times, times[-1], window=day_window)
                                    if times else 0)

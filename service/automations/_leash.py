@@ -30,11 +30,11 @@ from datetime import datetime, timedelta
 from random import Random
 from typing import NamedTuple, Protocol
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, func, or_, select, type_coerce
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
-from db.models import ContentOffer, Message, QuotaAudit, Transaction
+from db.models import ContentOffer, Message, QuotaAudit, Transaction, parse_ts
 
 from ._common import CONTENT_ASK_RE, ESCALATION_RE, recent_payer_fans
 
@@ -54,10 +54,15 @@ class LeashCand(Protocol):
     fan_id: int
     last_body: str
     session_out_n: int      # her replies in the CURRENT burst
-    day_out_n: int          # her replies in the current quota day (see `quota_used`)
-    day_out_n_at_stop: int  # …and what that count stood at when she last spoke: the
-                            # ration that put her on a rung, frozen while she serves it
     total_out_n: int        # her replies over the whole thread
+    her_times: list         # EVERY reply of hers, oldest first, as datetimes — the
+                            # MEASUREMENT rather than a count, because `_quota_gate`
+                            # has to re-window it from his newest money event (a
+                            # purchase reopens the day, §2.5) and only the gate is
+                            # given `money_at`. `_gather`'s own `day_out_n` /
+                            # `day_out_n_at_stop` are the UNCUT day and deliberately
+                            # not in this contract: a count derived on both sides of
+                            # the seam is a count that will eventually disagree.
     her_last_at: datetime | None
     first_at: datetime | None
     pic_sent: bool          # his MOST RECENT inbound carried media
@@ -147,21 +152,37 @@ def _cadence_gate(c: LeashCand, *, pending: ContentOffer | None, recent_payer: b
 async def _last_money_at(account_id: str, fan_ids) -> dict[int, datetime]:
     """{fan_id: newest money-event time} — the later of an inbound tip (is_tip, so
     the event time is created_at) and a PPV unlock (purchased_at). Drives the
-    post-purchase talk window (item 17). Fans with no money event are absent."""
+    post-purchase talk window (item 17) AND the quota day's reopen (`_quota_gate`,
+    §2.5), which is why there is exactly one of these. Fans with no money event are
+    absent.
+
+    Aggregated through `type_coerce(..., String)` for the same reason
+    `created_at_text()` exists: a single `purchased_at = ''` cell makes SQLAlchemy's
+    DateTime result processor raise `Invalid isoformat string: ''` and kills the
+    sweep for the WHOLE account — the 2026-07-22 failure. The emitted SQL is
+    byte-identical (no CAST), MAX still orders lexicographically, which for
+    ISO-8601 is chronological, and `''` sorts below every real stamp so it can only
+    ever lose. `parse_ts` then drops whatever came back unreadable.
+
+    `recent_payer_fans` (`_common.py`) needs no such guard: it compares the column in
+    SQL and never materialises it, so no result processor ever runs."""
     ids = [int(x) for x in fan_ids]
     if not ids:
         return {}
     async with get_session() as s:
         rows = (await s.execute(
             select(Message.fan_id,
-                   func.max(func.coalesce(Message.purchased_at, Message.created_at)))
+                   func.max(func.coalesce(
+                       type_coerce(Message.purchased_at, String),
+                       type_coerce(Message.created_at, String))))
             .where(Message.account_id == str(account_id),
                    Message.fan_id.in_(ids),
                    Message.is_unsent.is_(False),
                    or_(Message.is_tip.is_(True), Message.purchased_at.isnot(None)))
             .group_by(Message.fan_id)
         )).all()
-    return {int(fid): ts for fid, ts in rows if ts is not None}
+    return {int(fid): ts for fid, ts in ((int(f), parse_ts(v)) for f, v in rows)
+            if ts is not None}
 
 
 # ── Spend windows ───────────────────────────────────────────────────────────────
@@ -310,6 +331,9 @@ QUOTA_HELD = "held"                       # over quota, inside the backoff → s
 QUOTA_RUNWAY = "runway"                   # still inside his per-fan runway
 QUOTA_UNDER = "under_quota"               # simply hasn't used up the base ration
 QUOTA_UNLIMITED = "unlimited"             # whale, or no ceiling configured
+QUOTA_POST_PURCHASE = "post_purchase"     # he paid inside post_purchase_minutes: no
+                                          # ceiling — the same uncapped window the
+                                          # burst gate gives him
 QUOTA_SIGNAL_LIFT = "signal_lift"         # over the base ration; the buying-signal
                                           # floor is what set his ceiling
 QUOTA_SPEND_LIFT = "spend_lift"           # over the base ration; his SPEND is what
@@ -383,7 +407,9 @@ def quota_used(times, now: datetime, *, window: timedelta = QUOTA_WINDOW,
     owns that, and reads this function twice to keep the two questions apart.
 
     Pure, so the bot and the drawer share one number instead of two implementations of
-    it; the empty history and the closed day are the same answer, 0."""
+    it; the empty history and the closed day are the same answer, 0. WHICH replies go
+    in is the caller's call: `_quota_gate` passes only her replies since his newest
+    money event, because a purchase reopens the day (§2.5)."""
     def closed(at: datetime, opened: datetime, last: datetime) -> bool:
         """Is a day that opened at `opened` and last spoke at `last` over, as of `at`?"""
         return at - opened >= window and at - last >= idle
@@ -501,10 +527,47 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     of silence for spending. So the ladder is chosen before the rung is —
     `quota_recent_buyer` picks the short `quota_backoff_hours_recent_buyer` for anyone
     with money on the board inside `quota_recent_buyer_days`, and everyone else keeps
-    the long one."""
+    the long one.
+
+    And a purchase REOPENS THE DAY: `used` and `spent` are counted from `money_at`,
+    not from the day's own start, so buying buys a fresh ration — the only thing "a
+    purchase resumes it immediately" can mean for a gate that holds no state. Inside
+    `post_purchase_minutes` there is no ceiling at all (`QUOTA_POST_PURCHASE`, the
+    exit right after the runway). Both are argued in DAILY_QUOTA_21C.md §2.5."""
     if not cad.get("daily_quota_enabled"):
         return _Quota(reason=QUOTA_OFF)
-    used = int(c.day_out_n or 0)
+
+    # THE DAY REOPENS ON HIS MONEY (§2.5). Her replies at or before `money_at` are
+    # not the day's — he paid for them — so the whole gate counts over the tail after
+    # it. The hold IS a function of the count, so this is the only thing "a purchase
+    # resumes it immediately" can mean for a gate that holds no state. Cut HERE, off
+    # the same `money_at` the dry anchor and the after-sale bonus below already read,
+    # so "his newest money event" keeps ONE definition (`_last_money_at`) rather than
+    # growing a second one in `_gather`'s row scan. `total_out_n` is deliberately not
+    # cut: the runway is his lifetime, and a purchase does not un-spend it.
+    #
+    # `quota_used` is then asked at TWO instants, because the ceiling asks two things:
+    # what today's ration has left (`now`), and what she had spent when she stopped
+    # talking (her last reply, below) — the count that put her on a rung, which cannot
+    # move while she is silent. Each instant is asked of both lists, cut and uncut, for
+    # the `min` argued next. The window is `QUOTA_WINDOW`: the day is a property of the
+    # rule, not of the caller.
+    #
+    # And the cut is clamped with `min` against the UNCUT count, which is not belt-and-
+    # braces — it is the rule. `quota_used` walks a TUMBLING day, finding the day's
+    # boundaries from the OLDEST reply forward; dropping the head therefore re-anchors
+    # the tumble, and a day the full list had already CLOSED can be re-opened by the
+    # short list and counted again. Two replies is enough to show it: 26h ago and 20h
+    # ago with his money at 23h ago reads `used=0` uncut (the day opened 26h back and is
+    # over on both rules) and `used=1` cut (the lone 20h reply opens a brand-new day).
+    # Without the clamp a purchase RAISES the ration used and can create the very hold
+    # the badge promises it lifts — the feature inverted. A purchase may only ever LOWER
+    # the count, so take the smaller of the two readings and the rule is one-directional
+    # by construction rather than by an argument about window shapes that does not hold.
+    # Do NOT "simplify" the `min` away.
+    times = list(c.her_times or ())
+    cut = [t for t in times if t > money_at] if money_at is not None else times
+    used = min(quota_used(cut, now), quota_used(times, now))
 
     # The per-fan runway: she gets a deep chat before any ceiling applies. Counted in
     # HER replies over the life of the thread — not rows, which count both directions
@@ -514,6 +577,14 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     runway_left = max(free - int(c.total_out_n or 0), 0)
     if free > 0 and runway_left > 0:
         return _Quota(used=used, reason=QUOTA_RUNWAY, runway_left=runway_left)
+
+    # A man who paid inside `post_purchase_minutes` is UNCAPPED on the burst gate, and
+    # the ceiling above it has to say the same thing — the two chips read side by side
+    # and contradicted each other (§2.5). An EXIT, not a floor: the HOT floor below
+    # only raises the ceiling to `daily_quota_buying_signal`, which any decent spend
+    # lift has already passed, so a floor would not have reached this fan at all.
+    if tier == TIER_POST_PURCHASE:
+        return _Quota(used=used, reason=QUOTA_POST_PURCHASE, runway_left=runway_left)
 
     # Build the ceiling in named steps, remembering WHICH one set it. The ledger's
     # whole value is that attribution: "nobody was held" is worth very little if half
@@ -544,7 +615,14 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     #             is silent, so a fan whose day turns over mid-backoff keeps serving
     #             the rung he was given: the day resets his ALLOWANCE, never his wait.
     # They are equal until a day closes under him, which is exactly when it matters.
-    spent = int(c.day_out_n_at_stop or 0)
+    #
+    # Clamped against the uncut reading for the same reason `used` is, and it has to be
+    # BOTH: the re-anchored tumble can push `spent` past `quota` where the full list had
+    # it under, which walks the fan straight out of the `spent < quota` exit below and
+    # onto a rung he only earned by buying. Each list is read at its OWN last reply —
+    # the moment that list says she went quiet — and then the smaller wins.
+    spent = min(quota_used(cut, cut[-1]) if cut else 0,
+                quota_used(times, times[-1]) if times else 0)
     if spent < quota or c.her_last_at is None:
         # Only credit a lift when the base ration would NOT have covered him anyway.
         reason = lifted_by if used >= base else QUOTA_UNDER
@@ -564,6 +642,12 @@ def _quota_gate(c: LeashCand, *, spend_quota: int | None, money_at: datetime | N
     #
     # It is the argument the jitter below already makes, one step earlier: a wait
     # that re-rolls every sweep is not a wait. Both halves of it must hold still.
+    #
+    # `max(..., 0.0)` is load-bearing, not paranoia: `her_last_at` is NOT cut at
+    # `money_at`, so a fan who paid mid-hold has a last reply that PRECEDES his money
+    # and a raw streak that is negative. He reads as 0h dry — rung 0 — which is the
+    # right answer for a man who just paid, and he has usually already left by the
+    # `spent < quota` exit above anyway.
     anchor = money_at or c.first_at
     dry_h = (max((c.her_last_at - anchor).total_seconds() / 3600.0, 0.0)
              if anchor else 0.0)
