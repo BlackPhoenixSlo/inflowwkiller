@@ -26,6 +26,7 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 
 import UpsellerTab from "@/components/settings/UpsellerTab";
 import { relay } from "@/lib/relay";
+import { inFlowSave as sharedInFlowSave } from "@/test-utils";
 
 const relayGet = relay.get as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
@@ -49,10 +50,13 @@ function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
 }
 
-/** The tab renders the Save row twice — in-flow on desktop, sticky on a phone. */
+/** These cases mean the IN-FLOW Save, not the pinned twin at the bottom of the
+ *  viewport — both carry the same accessible name on purpose, so a name lookup
+ *  cannot tell them apart. The shared helper lives in app/test-utils.tsx. */
+const inFlowSave = () => sharedInFlowSave(/Save Upseller settings/i);
+
 async function save(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(
-    screen.getAllByRole("button", { name: /Save Upseller settings/i })[0]);
+  await user.click(inFlowSave());
   return (relayPut.mock.calls.at(-1)?.[1] as
     { config: Record<string, unknown> }).config;
 }

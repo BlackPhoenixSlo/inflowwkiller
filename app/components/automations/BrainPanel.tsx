@@ -32,6 +32,7 @@ import {
   useAutomationPreview,
   useWelcomePin,
   type AutomationPreviewResult,
+  type WelcomeRole,
 } from "@/hooks/useAutomations";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { WelcomeGifField } from "@/components/automations/WelcomeGifField";
@@ -56,6 +57,29 @@ const WELCOME_DEFAULT_EVERY_S = 300;
 // operator clearing the field saves "" (explicitly off).
 const WELCOME_QUESTION_DEFAULT = "what's yours?";
 
+// The four welcome bubble-shape knobs a brand-NEW rule ships with — ONE object,
+// read by both the no-rule seed (what the checkboxes show) and the create payload
+// (what the rule is actually born with). Those were two hand-written lists and
+// they had already drifted: the seed unticked `human_pace` / `stop_on_reply` while
+// the catalog, the sender and the existing-rule seed all default them ON, so an
+// operator opening Brain on an account with no welcome rule saw both boxes clear
+// and saving stamped `false` — the operator's on-by-default decision inverted for
+// every rule created from this panel, and only from this panel. Keep them here
+// together and the two sides cannot disagree again.
+//
+// ⚠️ These must stay in step with `automation_rules_api`'s send_welcome catalog
+// defaults and `send_welcome._on_unless_off`. `time_only` is on by default (the
+// short clock line); `skip_time_bubble` is off (a rule may not acquire it by
+// being saved).
+// (No `as const`: these seed `useState`, so literal types would pin each hook to
+// the one value it starts at and reject the operator ever changing the box.)
+const WELCOME_DEFAULTS = {
+  time_only: true,
+  skip_time_bubble: false,
+  human_pace: true,
+  stop_on_reply: true,
+};
+
 // send_followup's default per-step silence thresholds (hours) — mirrors
 // send_followup._STEP_THRESHOLDS_H {1:26, 2:64, 3:256}. Shown when the rule has
 // no payload.step_hours override yet.
@@ -72,6 +96,124 @@ const SLOT_LABEL: Record<string, string> = {
   evening: "Evening",
   night: "Night",
 };
+
+/** The three roles this panel names, typed against the wire vocabulary.
+ *
+ *  `WelcomeRole` comes from `useAutomations` — one list, shared with the response
+ *  type, and pinned to `pacing.WELCOME_ROLES` by a server-side test. The
+ *  annotation is what makes a typo here a compile error instead of a role that
+ *  silently never matches: this panel makes a DECISION on `gap` (the "Keep this
+ *  line" gate), not just a caption.
+ */
+const WELCOME_ROLE_OPENER: WelcomeRole = "opener";
+const WELCOME_ROLE_GAP: WelcomeRole = "gap";   // the activity / time-of-day line — what a pin replaces
+const WELCOME_ROLE_TAIL: WelcomeRole = "tail"; // the operator's question, word-for-word
+
+/** Where the ACTIVITY line sits in this preview, or -1 when it has none.
+ *
+ *  The one fact the "Keep this line" button and its handler both need. A pin
+ *  REPLACES the activity line, so the button exists exactly when the server
+ *  emitted a `gap` bubble — and that single fact is `time_only`,
+ *  `skip_time_bubble`, "no activity written for this slot" and "the question slid
+ *  into index 1" all at once.
+ *
+ *  It replaced five clauses and a hardcoded `bubbles[1]`, three of which read
+ *  LIVE form state (`welcomeTimeOnly` / `welcomeSkipTimeBubble` /
+ *  `welcomeQuestion`) against a preview from the last Preview click. Clearing the
+ *  question box after previewing made the button appear — which reads as "now you
+ *  can pin" — and pinned the QUESTION as the slot's activity line, so the fan
+ *  received it twice: once as the pin, once as the tail. `bubble_roles` cannot go
+ *  stale against the bubbles it describes, because it arrived with them.
+ *
+ *  EXPORTED for its own test, for the same reason `welcomePreviewCaption` is: it
+ *  is a decision about what the operator is allowed to store, and its failure
+ *  mode is silent.
+ */
+export function welcomeGapIndex(p: AutomationPreviewResult | null | undefined): number {
+  const roles = p?.bubble_roles;
+  if (!roles || !p?.bubbles || roles.length !== p.bubbles.length) return -1;
+  const i = roles.indexOf(WELCOME_ROLE_GAP);
+  // A role with no bubble behind it is not pinnable. `_compose_bubbles` keeps the
+  // two lists parallel through its blank filter, so this cannot fire today — it
+  // is the guard that makes that a checked fact rather than a remembered one.
+  return i >= 0 && p.bubbles[i] ? i : -1;
+}
+
+/** Which bubble the operator may KEEP for this slot, or -1 when none.
+ *
+ *  The whole "Keep this line" decision, in one place, for the button and its
+ *  handler both. Two facts, and NEITHER is live form state:
+ *
+ *    1. `welcomeGapIndex` — WHICH bubble is the activity line (the one a pin
+ *       replaces), from the roles that arrived with the bubbles.
+ *    2. `preview.pinnable` — whether that bubble is pinnable AT ALL, decided by
+ *       the server where the knobs are (`send_welcome.preview_compose`).
+ *
+ *  Fact 2 is a server bit and not a third clause here because the roles cannot
+ *  carry it: `time_only` composes a short CLOCK line into bubble 2 wearing the
+ *  same `gap` role an activity line wears. Gating on the role alone offered
+ *  "Keep this line" on a time-only preview and pinned the clock line — a pin that
+ *  never ships while the checkbox is on (`send_welcome._compose_bubbles` skips
+ *  the pin lookup under `time_only`), that the panel cannot un-pin (`pinned`
+ *  stays False, so the Unpin button never renders), and that becomes the slot's
+ *  permanent activity line the moment the checkbox comes off.
+ *
+ *  A response with no `pinnable` (one cached from before the field shipped)
+ *  yields -1: no button is the safe side of storing the wrong line.
+ */
+export function welcomePinIndex(p: AutomationPreviewResult | null | undefined): number {
+  return p?.pinnable ? welcomeGapIndex(p) : -1;
+}
+
+/** The welcome preview's "what a fan actually receives" caption.
+ *
+ *  This used to be POSITIONAL and inline: it always called `bubbles[1]` the
+ *  pinned/AI-restyled activity line, only ever called a THIRD bubble the question,
+ *  and rendered nothing at all when the burst was just a greeting + a GIF. Once
+ *  `skip_time_bubble` can remove bubble 2, index 1 IS the question — so the caption
+ *  is derived from the ROLES the server echoes (`bubble_roles`, one per bubble)
+ *  plus pinned / restyled / gif_id, instead of from how many bubbles came back.
+ *  Returns null when there is nothing worth captioning (a lone greeting, no GIF).
+ *
+ *  EXPORTED for its own test: it is the one place in this panel that tells the
+ *  operator what he is looking at, and its failure mode is a confident sentence
+ *  about a bubble that is not there.
+ */
+export function welcomePreviewCaption(p: AutomationPreviewResult): string | null {
+  const bubbles = p.bubbles ?? [];
+  // One role per composed bubble, echoed by the server. A response from before
+  // roles shipped carries none — fall back to "everything after the greeting is
+  // the time line", which is what the burst was before it could lose a bubble.
+  const roles =
+    p.bubble_roles?.length === bubbles.length && bubbles.length > 0
+      ? p.bubble_roles
+      : bubbles.map((_, i) => (i === 0 ? WELCOME_ROLE_OPENER : WELCOME_ROLE_GAP));
+  const total = bubbles.length + (p.gif_id ? 1 : 0);
+  if (total < 2) return null;
+  const parts: string[] = [];
+  // No time line at all. TWO shapes reach here and only one of them is a
+  // checkbox: `skip_time_bubble`, and a time-of-day slot the creator never
+  // filled in (the activity line composes to nothing). The old positional
+  // caption knew about the first and called the second one's QUESTION "the
+  // plain template — turn on AI restyle to preview the shipped line", which is
+  // advice to AI-rewrite the operator's own word-for-word question.
+  if (!roles.includes(WELCOME_ROLE_GAP)) parts.push("no time bubble — your greeting");
+  for (const role of roles) {
+    if (role === WELCOME_ROLE_GAP) {
+      parts.push(
+        p.pinned
+          ? "the time line is your pinned line (sends as-is)"
+          : p.restyled
+          ? "the time line is the AI-restyled line that ships (↻ Regenerate for another, or Keep this line to lock it in)"
+          : "the time line is the plain template (turn on AI restyle to preview the shipped line)",
+      );
+    } else if (role === WELCOME_ROLE_TAIL) {
+      parts.push("then your question, word-for-word");
+    }
+  }
+  if (p.gif_id) parts.push("then the GIF, on its own");
+  return `${total} bubbles · typing pauses between · ${parts.join(" · ")}`;
+}
 
 // Human label for each per-purpose model override (the raw keys come from the
 // API's PURPOSES). Unknown/future purposes fall back to their raw key.
@@ -186,7 +328,29 @@ export default function BrainPanel() {
   // Bubble 2 = the short clock line ("it's Thursday afternoon in US") instead of
   // the activity line. Lives on the rule's payload.time_only, like the follow-up's
   // with_image — so it saves with the Welcome section's own button.
-  const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(true);
+  const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(WELCOME_DEFAULTS.time_only);
+  // Drop bubble 2 altogether — greeting(+image) → question → GIF. Lives on the
+  // rule's payload.skip_time_bubble. Read `=== true` and defaulted OFF on BOTH
+  // sides, so a rule saved before this knob existed cannot acquire the behaviour
+  // by being re-saved (unlike time_only's `!== false`, which is why that one is
+  // always written).
+  const [welcomeSkipTimeBubble, setWelcomeSkipTimeBubble] = useState(
+    WELCOME_DEFAULTS.skip_time_bubble,
+  );
+  // Pace the burst like a person (quiet gaps before the bubbles) and welcome
+  // several fans at once. Lives on the rule's payload.human_pace. ⚠️ ON BY
+  // DEFAULT (operator, 2026-09-06): read `!== false`, matching the catalog default
+  // and the sender's `is not False`, so an existing rule that has never been
+  // re-saved is paced and the checkbox agrees with what actually ships. Turning it
+  // off writes an explicit `false` — which is why the key is ALWAYS written.
+  const [welcomeHumanPace, setWelcomeHumanPace] = useState(WELCOME_DEFAULTS.human_pace);
+  // Stop the welcome the moment he replies (she finishes the bubble she's
+  // typing, and the chat engine picks the turn up). Lives on the rule's
+  // payload.stop_on_reply; same ⚠️ ON-BY-DEFAULT `!== false` reading as
+  // human_pace above. Independent of pacing — it works on an unpaced burst too.
+  const [welcomeStopOnReply, setWelcomeStopOnReply] = useState(
+    WELCOME_DEFAULTS.stop_on_reply,
+  );
   // Bubble 3 = the operator's own question, sent WORD-FOR-WORD (no AI touch-up).
   // Lives on the rule's payload.question; "" = off (no third bubble).
   const [welcomeQuestion, setWelcomeQuestion] = useState(WELCOME_QUESTION_DEFAULT);
@@ -196,6 +360,7 @@ export default function BrainPanel() {
   const [welcomeMsg, setWelcomeMsg] = useState<string | null>(null);
   const [previewFan, setPreviewFan] = useState("");
   const [preview, setPreview] = useState<AutomationPreviewResult | null>(null);
+  const welcomePinIdx = welcomePinIndex(preview);
   // "" = the creator's current local slot; otherwise one of the 6 slot keys.
   const [previewSlot, setPreviewSlot] = useState("");
   // Show the REAL AI-restyled line (what actually ships) vs the plain template.
@@ -238,6 +403,9 @@ export default function BrainPanel() {
         Math.max(1, Math.round((welcomeRule.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
       );
       setWelcomeTimeOnly(welcomeRule.payload?.time_only !== false);
+      setWelcomeSkipTimeBubble(welcomeRule.payload?.skip_time_bubble === true);
+      setWelcomeHumanPace(welcomeRule.payload?.human_pace !== false);
+      setWelcomeStopOnReply(welcomeRule.payload?.stop_on_reply !== false);
       // Absent key (rule saved before the knob existed) → show the default, so
       // the next save stamps it — same migration path as time_only's `!== false`.
       // An explicit "" is the operator's own clear and stays cleared.
@@ -249,7 +417,12 @@ export default function BrainPanel() {
     } else {
       setWelcomeEnabled(false);
       setWelcomeMinutes(WELCOME_DEFAULT_EVERY_S / 60);
-      setWelcomeTimeOnly(true);
+      // From the SAME object the create payload below writes, so what the
+      // operator sees unticked is exactly what a fresh rule ships with.
+      setWelcomeTimeOnly(WELCOME_DEFAULTS.time_only);
+      setWelcomeSkipTimeBubble(WELCOME_DEFAULTS.skip_time_bubble);
+      setWelcomeHumanPace(WELCOME_DEFAULTS.human_pace);
+      setWelcomeStopOnReply(WELCOME_DEFAULTS.stop_on_reply);
       setWelcomeQuestion(WELCOME_QUESTION_DEFAULT);
       setWelcomeGifId("");
     }
@@ -421,6 +594,9 @@ export default function BrainPanel() {
           payload: {
             ...(welcomeRule.payload ?? {}),
             time_only: welcomeTimeOnly,
+            skip_time_bubble: welcomeSkipTimeBubble,
+            human_pace: welcomeHumanPace,
+            stop_on_reply: welcomeStopOnReply,
             question: welcomeQuestion.trim(),
             // Always written (even "") for the same reason as `question`: the
             // merge means omitting it could never CLEAR a GIF once picked.
@@ -434,7 +610,25 @@ export default function BrainPanel() {
           name: "Welcome new subscribers",
           every_seconds,
           is_enabled: welcomeEnabled,
-          payload: { time_only: welcomeTimeOnly, question: welcomeQuestion.trim(),
+          // The four shape knobs come from form state, and with no rule that
+          // state was seeded from WELCOME_DEFAULTS above — so an operator who
+          // saves without touching a box creates the rule those defaults
+          // describe, and one who does touch a box creates what he can see.
+          // That chain is the whole fix: there is no second hand-written list
+          // here to drift away from the seed.
+          payload: { time_only: welcomeTimeOnly,
+                     skip_time_bubble: welcomeSkipTimeBubble,
+                     human_pace: welcomeHumanPace,
+                     stop_on_reply: welcomeStopOnReply,
+                     // Written explicitly, though it matches the sender's own
+                     // read-default. This is a knob with no checkbox in the
+                     // panel, and following back is a PAYING call when the new
+                     // sub is themself a priced creator — a fresh rule must say
+                     // so in its payload rather than inherit it invisibly, so
+                     // the raw-JSON editor shows a key to turn off. The update
+                     // branch above preserves a hand-set `false` via the spread.
+                     follow_back: true,
+                     question: welcomeQuestion.trim(),
                      gif_id: welcomeGifId },
         });
       }
@@ -514,13 +708,19 @@ export default function BrainPanel() {
         restyle: previewRestyle,
         config: draftCfg,
         ignore_pin: ignorePin, // Regenerate bypasses the pin to sample a fresh one
-        // The checkbox is form state until Save, so the preview must carry it —
-        // otherwise ticking it and hitting Preview still shows the long line.
-        time_only: welcomeTimeOnly,
-        // Same story for the 3rd-bubble question: form state until Save.
-        question: welcomeQuestion.trim() || null,
-        // ...and the 4th-bubble GIF, so the preview shows the full burst.
-        gif_id: welcomeGifId || null,
+        // THE RULE PAYLOAD, exactly as `saveWelcome` would write it. Every knob
+        // here is form state until Save, so the preview has to carry it or
+        // ticking a box and hitting Preview shows the burst the OLD rule sends.
+        // Sent as ONE object, not a field per knob: the server reads it with the
+        // sender's own expressions, so a knob added to the rule reaches the
+        // preview without anyone having to remember five separate hops — one of
+        // which silently drops whatever it was not told about.
+        payload: {
+          time_only: welcomeTimeOnly,
+          skip_time_bubble: welcomeSkipTimeBubble,
+          question: welcomeQuestion.trim(),
+          gif_id: welcomeGifId,
+        },
       });
       setPreview(res);
     } catch (e) {
@@ -531,11 +731,16 @@ export default function BrainPanel() {
   // Pin the currently-previewed line for its slot → send_welcome sends exactly this
   // (weekday auto-refreshed) instead of re-rolling. Re-previews to reflect the pin.
   async function keepWelcomeLine() {
-    if (!accountId || !preview?.slot || !preview.bubbles?.[1]) return;
+    // WHICH bubble, and whether it may be pinned at all — one function, the same
+    // one the button is gated on (`welcomePinIndex`). Index 1 was a guess about a
+    // list whose length varies, and it guessed the QUESTION on a slot with no
+    // activity line written — pinning it made the fan receive the question twice.
+    const gapIdx = welcomePinIdx;
+    if (!accountId || !preview?.slot || gapIdx < 0 || !preview.bubbles?.[gapIdx]) return;
     const slot = preview.slot; // the concrete slot the shown line belongs to
     setWelcomeMsg(null);
     try {
-      await welcomePinM.mutateAsync({ account_id: accountId, slot, line: preview.bubbles[1] });
+      await welcomePinM.mutateAsync({ account_id: accountId, slot, line: preview.bubbles[gapIdx] });
       setPreviewSlot(slot);              // keep the dropdown in sync with what we pinned
       await runWelcomePreview(false, slot); // re-preview THAT slot (now shows the pin)
       setWelcomeMsg("Pinned — this line will send for that slot.");
@@ -559,6 +764,8 @@ export default function BrainPanel() {
   }
 
   const welcomeSaving = createWelcomeRule.isPending || updateWelcomeRule.isPending;
+  // Derived from the ECHOED flags, not from bubble positions — see the helper.
+  const previewCaption = preview ? welcomePreviewCaption(preview) : null;
 
   // Find-or-create the account's send_followup rule, writing the 3 step-delay
   // hours onto its payload.step_hours (merged over any existing payload knobs).
@@ -1083,12 +1290,19 @@ export default function BrainPanel() {
                 <span className="text-[11px] text-fg-dim">min</span>
               </label>
               <label
-                className="flex items-center gap-2 pb-1.5 text-sm text-fg"
+                className={cn(
+                  "flex items-center gap-2 pb-1.5 text-sm text-fg",
+                  // Gated child (house pattern): with the bubble dropped there is
+                  // nothing left for this checkbox to change, so it reads as
+                  // inert rather than as a setting that silently does nothing.
+                  welcomeSkipTimeBubble && "opacity-50 pointer-events-none",
+                )}
                 title="Second bubble says only the day, time of day and where the creator is — 'it's Thursday afternoon in US'. No activity line, so it's short. Overrides any pinned line while it's on."
               >
                 <input
                   type="checkbox"
                   checked={welcomeTimeOnly}
+                  disabled={welcomeSkipTimeBubble}
                   onChange={(e) => {
                     setWelcomeTimeOnly(e.target.checked);
                     setWelcomeMsg(null);
@@ -1097,8 +1311,78 @@ export default function BrainPanel() {
                 />
                 Short 2nd bubble (time &amp; place only)
               </label>
+              <label
+                className="flex items-center gap-2 pb-1.5 text-sm text-fg"
+                title="Send no time bubble at all: the greeting (with its picture), then your question, then the GIF. Outranks the short-bubble checkbox and any pinned line, and skips the AI rewrite with it — one less AI call per welcome."
+              >
+                <input
+                  type="checkbox"
+                  checked={welcomeSkipTimeBubble}
+                  onChange={(e) => {
+                    setWelcomeSkipTimeBubble(e.target.checked);
+                    setWelcomeMsg(null);
+                  }}
+                  className="accent-accent"
+                />
+                Skip the time bubble
+              </label>
+              <label
+                className="flex items-center gap-2 pb-1.5 text-sm text-fg"
+                title="Leave real gaps between the welcome bubbles — quiet at first (she hasn't started typing), then the typing bar — instead of firing all of them inside a minute. Several new subscribers are welcomed at the same time so the queue doesn't slow down. The 'send test' button is exempt and still lands instantly."
+              >
+                <input
+                  type="checkbox"
+                  checked={welcomeHumanPace}
+                  onChange={(e) => {
+                    setWelcomeHumanPace(e.target.checked);
+                    setWelcomeMsg(null);
+                  }}
+                  className="accent-accent"
+                />
+                Pace it like a person
+              </label>
+              <label
+                className="flex items-center gap-2 pb-1.5 text-sm text-fg"
+                title="If he answers while the welcome is still going out, the rest of it is dropped — no question, no GIF on top of his message. She still finishes the line she'd already started typing, and the chat bot picks the conversation up from there a couple of minutes later."
+              >
+                <input
+                  type="checkbox"
+                  checked={welcomeStopOnReply}
+                  onChange={(e) => {
+                    setWelcomeStopOnReply(e.target.checked);
+                    setWelcomeMsg(null);
+                  }}
+                  className="accent-accent"
+                />
+                Stop if he replies mid-welcome
+              </label>
             </div>
-            {welcomeTimeOnly && (
+            {welcomeStopOnReply && (
+              <p className="text-[10px] text-fg-dim">
+                The moment he writes something, the rest of the welcome is
+                cancelled — nothing lands on top of his message. A line she had
+                already started typing still goes out, and when that happens the
+                chat bot is asked to answer him instead, a couple of minutes
+                later. A tip on its own doesn’t stop it; a tip with a note does.
+              </p>
+            )}
+            {welcomeHumanPace && (
+              <p className="text-[10px] text-fg-dim">
+                The greeting waits while she “picks a picture”, the next line waits
+                again before the typing bar comes on, and the GIF gets its own beat —
+                a welcome lands over a couple of minutes instead of inside one. New
+                subscribers are welcomed several at a time so nobody waits in line,
+                and a test send from this panel stays instant.
+              </p>
+            )}
+            {welcomeSkipTimeBubble && (
+              <p className="text-[10px] text-fg-dim">
+                No 2nd bubble at all — the greeting (with its picture), then your
+                question, then the GIF. Pinned lines and the short-bubble option are
+                ignored while this is on, and the AI rewrite is skipped entirely.
+              </p>
+            )}
+            {welcomeTimeOnly && !welcomeSkipTimeBubble && (
               <p className="text-[10px] text-fg-dim">
                 Bubble 2 drops the activity — “it’s Thursday afternoon in US”, restyled
                 into the creator’s texting voice. Works on slots with no activity written, and
@@ -1190,15 +1474,23 @@ export default function BrainPanel() {
               >
                 {previewM.isPending ? "…" : "↻ Regenerate"}
               </Button>
-              {/* No pinning while the short bubble is on: a pin is an ACTIVITY line
-                  and time-only ignores pins, so the button would store something
-                  that never ships. Ditto when the question is the ONLY line after
-                  the greeting (a slot with no activity written): bubble 2 is then
-                  the verbatim question, and pinning it would store the question as
-                  the slot's activity line — the fan would get it twice. */}
-              {preview && preview.bubbles && preview.bubbles.length > 1 && !preview.pinned
-                && !welcomeTimeOnly
-                && !(welcomeQuestion.trim() && preview.bubbles.length === 2) && (
+              {/* A pin replaces the ACTIVITY line, so the button exists exactly
+                  when this preview HAS one the operator may keep — see
+                  `welcomePinIndex`. Both halves come off the preview response
+                  itself (`bubble_roles` for WHICH bubble, `pinnable` for whether
+                  it may be pinned), never off live form state.
+
+                  The five clauses it replaces read three LIVE form values
+                  (welcomeTimeOnly / welcomeSkipTimeBubble / welcomeQuestion)
+                  against a preview from the last Preview click. Clearing the
+                  question box after previewing made the button appear and pin the
+                  QUESTION as the slot's activity line — the fan then received it
+                  twice, once as the pin and once as the tail. Collapsing all five
+                  into "did the server emit a gap bubble" then went too far the
+                  other way: `time_only`'s CLOCK line wears the same `gap` role,
+                  so the button came back on a preview whose pin can never ship —
+                  which is why `pinnable` is now the server's bit, not ours. */}
+              {welcomePinIdx >= 0 && !preview?.pinned && (
                 <Button
                   size="sm"
                   variant="primary"
@@ -1279,19 +1571,8 @@ export default function BrainPanel() {
                           />
                         </p>
                       )}
-                      {preview.bubbles.length > 1 && (
-                        <div className="text-[10px] text-fg-dim">
-                          {`${preview.bubbles.length + (preview.gif_id ? 1 : 0)} bubbles · typing pauses between · ` +
-                            (preview.pinned
-                              ? "2nd line is your pinned line (sends as-is)"
-                              : preview.restyled
-                              ? "2nd line is the AI-restyled line that ships (↻ Regenerate for another, or Keep this line to lock it in)"
-                              : "2nd line is the plain template (turn on AI restyle to preview the shipped line)") +
-                            (preview.bubbles.length > 2
-                              ? " · then your question, word-for-word"
-                              : "") +
-                            (preview.gif_id ? " · then the GIF, on its own" : "")}
-                        </div>
+                      {previewCaption && (
+                        <div className="text-[10px] text-fg-dim">{previewCaption}</div>
                       )}
                     </div>
                   ) : (

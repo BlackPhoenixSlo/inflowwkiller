@@ -464,13 +464,25 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # Reaching here means direction == "in" (outbound returned early above).
     # Fire-and-forget on the running loop; on_inbound_message never raises, but
     # we guard the create_task too so a dispatch hiccup can't break the pump.
-    try:
-        from webhook_dispatch import on_inbound_message
-        asyncio.create_task(
-            on_inbound_message(aid_s, int(fan_id), int(message_id))
-        )
-    except Exception:
-        log.debug("webhook_dispatch hook failed", exc_info=True)
+    #
+    # ONE predicate, read twice: a non-tip media/gif DM belongs to the IMAGE lane
+    # below, and firing the words hook here as well is what made her reply
+    # photo-blind. `on_inbound_message` enqueues at run_at=now and never awaits the
+    # vision describe, so with delay_seconds=0 the chat engine's _gather ran ~1s
+    # after the photo with messages.image_desc still NULL — his line rendered
+    # EMPTY and she answered a blank. The image hook OWNS the words for these DMs
+    # now: it hands off to on_inbound_message after the describe (or, when the pic
+    # lane runs, tip_reward hands off after the picture). See
+    # webhook_dispatch.on_inbound_image and plans/image-reply/PLAN.md §D2.
+    is_media_dm = bool(media_ids or giphy_dm_id(m)) and not is_tip
+    if not is_media_dm:
+        try:
+            from webhook_dispatch import on_inbound_message
+            asyncio.create_task(
+                on_inbound_message(aid_s, int(fan_id), int(message_id))
+            )
+        except Exception:
+            log.debug("webhook_dispatch hook failed", exc_info=True)
 
     # tip_reward: a fan tip rides on this inbound message (isTip; $ in tipAmount,
     # captured as tip_cents — price is 0 for a tip). Kick the (gated) image-reward
@@ -496,7 +508,7 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # no picture, nothing for the AI to answer. We report WHAT arrived
     # (`has_media`); what that's worth — buying signal vs. joke — is the hook's
     # call, not ours.
-    elif (media_ids or giphy_dm_id(m)) and not is_tip:
+    elif is_media_dm:
         try:
             from webhook_dispatch import on_inbound_image
             asyncio.create_task(

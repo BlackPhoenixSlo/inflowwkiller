@@ -333,15 +333,26 @@ async def acquire_fan_lease(
     return got
 
 
-async def release_fan_lease(account_id: str, fan_id: int) -> None:
-    """Drop a fan's lease early (after the send completes)."""
+async def release_fan_lease(account_id: str, fan_id: int, *,
+                            holder: str | None = None) -> None:
+    """Drop a fan's lease early (after the send completes).
+
+    `holder` narrows the DELETE to a lease this kind actually owns. Without it the
+    delete is unconditional, and a short-lived holder whose TTL expired mid-send
+    would tear down the lease a DIFFERENT automation had since acquired — it would
+    then be the second sender in a fan's inbox in one beat, which is the exact
+    thing the lease exists to prevent. Default None keeps every pre-existing caller
+    byte-identical: they hold the 900s TTL and release inside it, so the narrowing
+    would be a no-op for them and is not worth the churn of retrofitting.
+    """
     async with get_session() as s:
-        await s.execute(
-            delete(FanLease).where(
-                FanLease.account_id == str(account_id),
-                FanLease.fan_id == int(fan_id),
-            )
+        stmt = delete(FanLease).where(
+            FanLease.account_id == str(account_id),
+            FanLease.fan_id == int(fan_id),
         )
+        if holder is not None:
+            stmt = stmt.where(FanLease.automation_kind == str(holder))
+        await s.execute(stmt)
 
 
 async def _sweep_expired_leases() -> int:

@@ -98,6 +98,16 @@ _INT_KNOBS = {
     # Daily quota (item 21c) — the ceiling above the burst cap. 0 anywhere means
     # "no ceiling from this knob", never "cap at zero".
     "daily_quota_replies": (0, _DAILY_QUOTA_MAX),
+    # The history window (plans/chat-window). Rows: how many of the newest thread
+    # rows the reply model reads — ceiling 100 because at ~13.6 tokens per rendered
+    # line even that is ~1,400 tokens of transcript, already the size of today's
+    # whole prompt. Hours: the recency bound measured from HIS newest line; 0 means
+    # "no ceiling from this knob" (plain N), per the house convention above, and 720
+    # is a month. Floor: the last-resort minimum the age cut may never go below — 0
+    # disables it and restores a floorless window.
+    "history_window_rows": (1, 100),
+    "history_window_hours": (0, 720),
+    "history_window_floor": (0, 100),
     "daily_quota_after_sale": (0, _DAILY_QUOTA_MAX),
     "daily_quota_buying_signal": (0, _DAILY_QUOTA_MAX),
     # Days since his last money event inside which a fan walks the SHORT backoff
@@ -443,6 +453,12 @@ def _validate_cfg(cfg: dict) -> dict:
     # turning it off in the UI would otherwise silently keep it on.
     if "reply_context_enabled" in cfg:
         out["reply_context_enabled"] = bool(cfg["reply_context_enabled"])
+    # The history window (ships OFF — see ai_chatter._DEFAULTS). Named here for the
+    # usual reason: this validator DROPS every key it does not name, so without this
+    # line the switch could never be turned on at all. Its three numbers live in
+    # _INT_KNOBS below, which clamps them.
+    if "history_window_enabled" in cfg:
+        out["history_window_enabled"] = bool(cfg["history_window_enabled"])
     # Prompt SHAPE (arm G) — three independent transforms, all default OFF. Same
     # reason again: unnamed keys are DROPPED here, so without these lines the flags
     # could never be turned ON at all and the rollout would look like a no-op.

@@ -70,6 +70,7 @@ from db.models import (
 from of_client import OFClient
 import ownership
 import purchase_notifications
+from tip_ledger import TIP_LEDGER_PREFIX
 
 log = logging.getLogger("of-relay.ingest_tx")
 
@@ -427,6 +428,33 @@ async def _select_ppv_link_candidate(
 # chronological slot no matter where this id sorts.
 _TIP_MSG_ID_BASE = 6_000_000_000_000_000
 
+# The BODY a ledger-derived tip row carries — the one definition, exported
+# because a second consumer has to recognise these rows and can only do it by
+# matching this exact string.
+#
+# ⚠️ send_welcome's `stop_on_reply` predicate EXCLUDES them: the operator's rule
+# is "dont stop on single tip only on text" (plans/welcome-pacing §C4), and a
+# bare tip is applause, not a conversational turn. Nobody TYPED this string — it
+# is our own bookkeeping wearing an inbound row. It used to live as a second
+# hand-copied literal over there with no import between the two files, so a
+# purely cosmetic edit here (a different emoji, "tipped" instead of "Sent a")
+# would have made every bare tip read as "he used words" and aborted every
+# welcome burst on one — the exact behaviour the operator vetoed — while every
+# suite stayed green, because the test carried its own third copy.
+# Defined in its own leaf module (`service/tip_ledger.py`) rather than here, and
+# imported at the top of this file: `automations/_common.py` has to RECOGNISE the
+# string, and `_common` is the base every automation imports — an edge from there
+# into this orchestrator drags the whole OF/Fansly client stack under the bottom
+# of the automation tree. The leaf explains itself.
+
+
+def tip_ledger_body(amount_cents: int) -> str:
+    """The inbound-row body for a chat tip that only exists in the ledger.
+
+    Callers that need to RECOGNISE such a row match `TIP_LEDGER_PREFIX` against
+    the start of the body; this is the only place that builds a whole one."""
+    return f"{TIP_LEDGER_PREFIX}{(amount_cents or 0) / 100:.2f} tip"
+
 
 async def _synthesize_tip_message(
     s,
@@ -459,8 +487,7 @@ async def _synthesize_tip_message(
     if tx.id is None:
         return
     synth_id = _TIP_MSG_ID_BASE + int(tx.id)
-    amount = (amount_cents or 0) / 100
-    body = f"💸 Sent a ${amount:.2f} tip"
+    body = tip_ledger_body(amount_cents or 0)
     stmt = sqlite_insert(Message).values(
         account_id=str(account_id),
         fan_id=int(fan_id),

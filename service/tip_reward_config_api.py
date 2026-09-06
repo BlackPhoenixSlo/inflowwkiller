@@ -275,6 +275,12 @@ def _validate(cfg: dict) -> dict:
                     raise HTTPException(422, f"{k} must be a number")
     if "caption" in cfg:
         out["caption"] = str(cfg["caption"] or "")[:_CAPTION_MAX]
+    # The human pause before a media reaction lands (pacing.picture_back_target).
+    # Named here or the checkbox is a dead switch: _validate builds a WHOLE new
+    # blob, so an unnamed key is DROPPED on every save and an operator's explicit
+    # False could never persist (the drop-hole this file's header warns about).
+    if "media_reply_pace_enabled" in cfg:
+        out["media_reply_pace_enabled"] = bool(cfg["media_reply_pace_enabled"])
     if "image_reply_caption" in cfg:
         out["image_reply_caption"] = str(cfg["image_reply_caption"] or "")[:_CAPTION_MAX]
     if "ask_template" in cfg:

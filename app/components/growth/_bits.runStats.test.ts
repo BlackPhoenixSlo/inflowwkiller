@@ -67,3 +67,27 @@ describe("runStatsChunks — dry-run reporting", () => {
     expect(s).toContain("8 candidates");
   });
 });
+
+describe("runStatsChunks — a live run that notified nobody", () => {
+  it("names the pinned window instead of letting it read as a quiet day", () => {
+    // `pool_exhausted` is the server's own bit (auto_follow._run_follow): the run
+    // walked its whole pool and notified nobody. It was emitted with no consumer
+    // at all, so the operator saw `followed 0 · 15 candidates` — the exact line a
+    // healthy quiet day prints.
+    const s = line({
+      action: "follow", dry_run: false, candidates: 15, followed: 0,
+      already_following: 15, pool_exhausted: true, errors: 0, cap: 3,
+    });
+    expect(s).toContain("whole pool checked, nobody new to notify");
+    expect(runStatsChunks({ pool_exhausted: true })[0]?.tone).toBe("warn");
+  });
+
+  it("stays quiet on a run that did notify someone", () => {
+    const s = line({
+      action: "follow", dry_run: false, candidates: 15, followed: 3,
+      already_following: 12, pool_exhausted: false, errors: 0, cap: 3,
+    });
+    expect(s).not.toContain("whole pool checked");
+    expect(line({ action: "follow", followed: 3 })).not.toContain("whole pool checked");
+  });
+});

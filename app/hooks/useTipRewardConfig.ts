@@ -43,6 +43,11 @@ export interface TipRewardConfig {
   image_reply_basis_cents?: number; // tier basis for the freebie (default 999 = "under $10")
   image_reply_cooldown_hours?: number; // per-fan throttle (also dedups webhook replays)
   image_reply_caption?: string; // optional caption ('' → media-only)
+  // The human pause before a media reaction lands: the pic is deferred to 30-90s
+  // after his photo (drawn per-photo) with the typing bar DARK — she is picking,
+  // not typing. DEFAULT ON server-side, so the UI must read it with `!== false`,
+  // not `!!`. Governs the tip-bundle lane too.
+  media_reply_pace_enabled?: boolean;
   // Flag 3: vision-describe the photo/gif/clip HE sends, so the AI can react to it
   // ("[he sent: …]"). DEFAULT ON server-side — an absent key means enabled, which
   // is why the UI must read it with `?? true`, not `!!`.

@@ -33,6 +33,9 @@ import {
   useSaveTipRewardConfig,
   type TipRewardConfig,
 } from "@/hooks/useTipRewardConfig";
+import StickySaveBar, {
+  RetryLoad, SaveRow, loadGateNote, type SaveControl,
+} from "@/components/settings/StickySaveBar";
 
 const INPUT =
   "bg-bg border border-border rounded-lg px-3 py-2 text-base md:text-sm focus:outline-none focus:border-accent";
@@ -89,6 +92,10 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   const [imageCloserEnabled, setImageCloserEnabled] = useState(false);
   const [imageReplyCooldown, setImageReplyCooldown] = useState(6);
   const [imageReplyCaption, setImageReplyCaption] = useState("");
+  // Default ON server-side (automations/tip_reward_config._DEFAULTS) — same rule
+  // as imageDescribeEnabled above: the initial state must agree with the server's
+  // default, or the tab renders "off" for a live behaviour and a save turns it off.
+  const [mediaReplyPace, setMediaReplyPace] = useState(true);
 
   // Hot-thread teaser (sent by the AI Seller when a thread goes hot).
   const [htEnabled, setHtEnabled] = useState(false);
@@ -138,6 +145,8 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
     setImageCloserEnabled(!!eff.image_closer_enabled);
     setImageReplyCooldown(eff.image_reply_cooldown_hours ?? 6);
     setImageReplyCaption(eff.image_reply_caption ?? "");
+    // `!== false`, not `!!` — defaults ON server-side (see the state above).
+    setMediaReplyPace(eff.media_reply_pace_enabled !== false);
     // `!== false`, not `!!` — this flag defaults ON server-side, and `eff` already
     // merges the endpoint's `defaults`. Same idiom as context_pick_enabled above;
     // re-stating the default here would be a second source of truth for it.
@@ -243,6 +252,7 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
       image_closer_enabled: imageCloserEnabled,
       image_reply_cooldown_hours: imageReplyCooldown,
       image_reply_caption: imageReplyCaption.trim(),
+      media_reply_pace_enabled: mediaReplyPace,
       image_describe_enabled: imageDescribeEnabled,
       image_describe_scope: imageDescribeScope,
       image_describe_prompt: imageDescribePrompt.trim(),
@@ -288,6 +298,51 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
   }
 
   const noFolders = tiers.every((t) => t.folders.length === 0);
+
+  /** The load gate. The early return above covers a config that is still
+   *  FETCHING, not one whose fetch FAILED — the tier forms then hold their
+   *  hardcoded fallbacks and a save would PUT those over the account's stored
+   *  blob. Its own named slot on the control below, so it stays visible.
+   *  `!!data`, not `data !== undefined`: a 200 with an empty body arrives as
+   *  `null`, and that un-seeded form is the whole point of the gate. No
+   *  `isSuccess` conjunct either — React Query only writes `data` from a
+   *  successful fetch, so it would add nothing but false negatives when a
+   *  background refetch fails over settings that loaded fine. `loadGateNote`
+   *  in StickySaveBar.tsx carries the long form. */
+  const configLoaded = !!cfgQ.data;
+  /** …said out loud. `loadGateNote` words each of the three states that gate
+   *  closes on honestly — in particular it does not claim these settings "never
+   *  loaded" when one background refetch failed over settings that did. */
+  const gateNote = loadGateNote(cfgQ);
+
+  /** THE tab's save control, built once and rendered twice — in the row below
+   *  (which pins itself under 768px) and in the desktop-only bar at the end of
+   *  the Card. One object, so the two cannot drift; the pinned twin used to be
+   *  `size="sm"` beside an `md` in-flow button for exactly that reason. */
+  const save: SaveControl = {
+    onSave: () => saveM.mutate(buildConfig()),
+    saving: saveM.isPending,
+    canSave: configLoaded,
+    saved: saveM.isSuccess,
+    error: saveM.isError ? (saveM.error?.message || "Save failed") : null,
+    gateNote,
+  };
+
+  /** "Saving this changes nothing" — shown by BOTH controls. An operator who
+   *  saves from the pinned bar is the one least likely to have scrolled to the
+   *  in-flow row, so hiding it there is hiding it from the person who needs it.
+   *  The Retry rides along for the same reason: without it a failed fetch has no
+   *  way out but a page reload. */
+  const rowExtras = (
+    <>
+      {enabled && noFolders && (
+        <span className="text-xs text-warn">
+          No folders set — nothing will send until you pick a vault folder.
+        </span>
+      )}
+      {gateNote && <RetryLoad q={cfgQ} />}
+    </>
+  );
 
   return (
     <Card className="p-5 space-y-4 max-w-2xl">
@@ -537,6 +592,29 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
               value={imageReplyCooldown} min={0} max={8760}
               onChange={(n) => { markDirty(); setImageReplyCooldown(n); }}
             />
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={mediaReplyPace}
+                onChange={(e) => {
+                  markDirty();
+                  setMediaReplyPace(e.target.checked);
+                }}
+              />
+              <span className="space-y-0.5">
+                <span className="block text-xs font-medium text-fg">
+                  Pause like a person before the pic lands
+                </span>
+                <span className="block text-[11px] text-fg-dim/70">
+                  30-90s from his photo, drawn fresh each time rather than a fixed
+                  delay — and she is <b>not</b> shown as typing while it runs,
+                  because she is picking a picture, not writing one. Off sends the
+                  instant the job is picked up. The same switch governs tip reward
+                  bundles.
+                </span>
+              </span>
+            </label>
             <label className="block space-y-1">
               <div className="text-xs font-medium text-fg">Caption (optional)</div>
               <input
@@ -985,23 +1063,13 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
         )}
       </Section>
 
-      {/* Save + feedback */}
-      <div className="flex items-center gap-3 flex-wrap sticky bottom-0 z-20 -mx-5 px-5 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] bg-panel/95 backdrop-blur border-t border-border rounded-b-2xl md:static md:z-auto md:mx-0 md:px-0 md:py-0 md:pt-1 md:pb-0 md:bg-transparent md:backdrop-blur-none md:border-t-0 md:rounded-b-none md:flex-nowrap">
-        <Button onClick={() => saveM.mutate(buildConfig())} disabled={saveM.isPending}>
-          {saveM.isPending ? "Saving…" : "Save"}
-        </Button>
-        {saveM.isSuccess && !saveM.isPending && (
-          <span className="text-xs text-emerald-500">Saved ✓</span>
-        )}
-        {saveM.isError && (
-          <span className="text-xs text-red-500">{saveM.error?.message || "Save failed"}</span>
-        )}
-        {enabled && noFolders && (
-          <span className="text-xs text-warn">
-            No folders set — nothing will send until you pick a vault folder.
-          </span>
-        )}
-      </div>
+      {/* Save + feedback. This row pins ITSELF below 768px (every sticky/paint
+       *  utility is undone at `md:`), which is why the shared bar at the bottom
+       *  of the Card is `pin="desktop-only"` — otherwise a phone would carry
+       *  two bars and a desktop none. */}
+      <SaveRow {...save} className="gap-3 sticky bottom-0 z-20 -mx-5 px-5 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] bg-panel/95 backdrop-blur border-t border-border rounded-b-2xl md:static md:z-auto md:mx-0 md:px-0 md:py-0 md:pt-1 md:pb-0 md:bg-transparent md:backdrop-blur-none md:border-t-0 md:rounded-b-none md:flex-nowrap">
+        {rowExtras}
+      </SaveRow>
 
       {/* Multi-select vault picker for the tip-request teaser pool. */}
       {trPicker && (
@@ -1060,6 +1128,14 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
           onConfirm={(folders) => setCvRung(cvPicker, { folders })}
         />
       )}
+      {/* Desktop-only pin: the Save row above (the one with `md:static` on it)
+       *  already pins below 768px, so this hands the pin to the width that
+       *  never had one. Same `save` object, same warning — an operator who
+       *  saves from here sees exactly what the in-flow row shows. This Card is
+       *  `p-5`, hence hostPadding 5. */}
+      <StickySaveBar {...save} pin="desktop-only" hostPadding={5}>
+        {rowExtras}
+      </StickySaveBar>
     </Card>
   );
 }

@@ -42,20 +42,19 @@ class _PreviewBody(BaseModel):
     # "Regenerate" sets this so a preview bypasses a pinned slot line to sample a
     # fresh candidate the operator can then keep in its place.
     ignore_pin: bool = False
-    # Mirror of the send_welcome rule's `time_only` knob so the preview shows the
-    # SHORT bubble 2 (day / time of day / location, no activity) the moment the
-    # checkbox is ticked — before the rule is saved.
-    time_only: bool = False
-    # Mirror of the rule's `question` knob: the operator's own question, appended
-    # word-for-word as the 3rd bubble — carried from the form so the preview shows
-    # the full burst before the rule is saved.
-    question: str | None = None
-    # Mirror of the rule's `gif_id` knob: the picked GIF shown as bubble 4 before
-    # the rule is saved. Unlike `time_only`/`question` it changes nothing the
-    # server composes — it is echoed back so the preview response carries the
-    # WHOLE send shape and the panel renders every bubble from one snapshot. See
-    # preview_compose's return for why that beats rendering it from form state.
-    gif_id: str | None = None
+    # THE RULE PAYLOAD the preview should compose against — the form's live,
+    # unsaved knobs (`time_only`, `skip_time_bubble`, `question`, `gif_id`, and
+    # anything added later), read on the far side with the SENDER's own
+    # expressions.
+    #
+    # ⚠️ One dict, not a field per knob, precisely BECAUSE Pydantic drops
+    # undeclared fields: a knob missing from this model used to reach
+    # preview_compose as its default, and the preview then quietly showed a burst
+    # nobody would receive — with nothing red anywhere. Four knobs had already
+    # been threaded through this model one at a time; the fifth would have been a
+    # coin flip. A dict cannot be forgotten. Precedent: the `config` passthrough
+    # right above, and mass_nudge's own preview on this same route.
+    payload: dict[str, Any] | None = None
 
 
 @router.post("/admin/automation-preview")
@@ -68,11 +67,10 @@ async def automation_preview(body: _PreviewBody = Body(...)) -> dict[str, Any]:
         from automations.send_welcome import preview_compose
         try:
             res = await preview_compose(
-                body.account_id, fan_id=body.fan_id, test_name=body.test_name,
+                body.account_id, body.payload,
+                fan_id=body.fan_id, test_name=body.test_name,
                 model=body.model, restyle=body.restyle, slot=body.slot,
                 config=body.config, ignore_pin=body.ignore_pin,
-                time_only=body.time_only, question=body.question,
-                gif_id=body.gif_id,
             )
         except LLMCapExceeded:
             # Belt-and-braces: preview_compose already degrades a capped restyle to

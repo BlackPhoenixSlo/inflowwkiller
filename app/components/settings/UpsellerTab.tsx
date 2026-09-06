@@ -17,7 +17,7 @@
  */
 
 import { useState } from "react";
-import { Save, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import { relay } from "@/lib/relay";
 import { Button, Card } from "@/components/ui/primitives";
@@ -31,6 +31,9 @@ import {
 import {
   ConfigLoadError, GuideCard, INPUT, ScriptPackCard, dollars, useSellerConfig,
 } from "@/components/settings/sellerShared";
+import StickySaveBar, {
+  SaveRow, type SaveControl,
+} from "@/components/settings/StickySaveBar";
 
 /** The recommended "sell hard + take over" preset — written on "Enable Upseller". */
 const RECOMMENDED: Partial<AiChatterConfig> = {
@@ -52,6 +55,29 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
   const cfgQ = useAiChatterConfig(accountId);
   const { cfg, set, saveCfg, saveCfgM, configLoaded, shippedPack, packText, setPackText,
     starterSingles, slotHelp } = useSellerConfig(accountId);
+  /** THE tab's save control, built once and rendered twice — in flow inside the
+   *  Card below, and again in the pinned bar at the bottom of the outer
+   *  container. One object means the gate, the label and the feedback cannot
+   *  drift apart; the earlier shape (a `disabled` boolean copied into each
+   *  render) is how a pinned Save on a sibling tab escaped its load gate.
+   *
+   *  `canSave` is `configLoaded`, and it is a DATA-LOSS guard, not a nicety:
+   *  `useSellerConfig` in sellerShared.tsx explains that a save on a config that
+   *  never arrived posts the two authoritative keys alone and REPLACES the
+   *  account's stored blob. */
+  const save: SaveControl = {
+    onSave: () => saveCfg(),
+    saving: saveCfgM.isPending,
+    canSave: configLoaded,
+    label: "Save Upseller settings",
+    size: "sm",
+    saved: saveCfgM.isSuccess,
+    error: saveCfgM.isError
+      ? `${saveCfgM.error?.message || "Save failed"} — nothing was stored.`
+      : null,
+  };
+  /** The same gate, for the tab's OTHER writer: the one-click preset button. */
+  const saveDisabled = saveCfgM.isPending || !configLoaded;
   const scriptsQ = useCatalogSingles(accountId);
   const saveSinglesM = useSaveSingles(accountId);
 
@@ -143,7 +169,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         <div className="rounded-md border border-accent/40 bg-accent/5 px-3 py-3 space-y-2">
           <div className="flex items-center gap-3 flex-wrap">
             <Button size="sm" variant={gateOn ? "secondary" : "primary"}
-              disabled={saveCfgM.isPending || !configLoaded}
+              disabled={saveDisabled}
               onClick={() => saveCfg(RECOMMENDED)}>
               <Sparkles size={14} className="mr-1" />
               {gateOn ? "Re-apply recommended" : "Enable Upseller (recommended)"}
@@ -153,12 +179,11 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
                 ? <span className="text-xs text-green-400">running the recommended setup ✓</span>
                 : <span className="text-xs text-amber-400">custom settings — click to reset to recommended</span>
             )}
-            {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
-            {saveCfgM.isError && (
-              <span className="text-xs text-red-500">
-                {saveCfgM.error?.message || "Save failed"} — nothing was stored.
-              </span>
-            )}
+            {/* Same mutation as the Save row below, so the same two words and
+             *  the same failure string — read off the tab's one `save` object
+             *  rather than spelled out a second time here. */}
+            {save.saved && <span className="text-xs text-emerald-500">Saved ✓</span>}
+            {save.error && <span className="text-xs text-red-500">{save.error}</span>}
           </div>
           <p className="max-md:hidden text-xs text-fg-dim leading-relaxed">
             One click turns on: <b>sell in the chat</b>, <b>smart pricing</b>, <b>full
@@ -695,34 +720,24 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
         </div>
         {/* Desktop keeps the in-flow Save row exactly where it was; on a phone
          *  it is ~2,000px down the scroll, so a sticky twin is appended as the
-         *  last child of the outer container below. */}
-        <div className="hidden md:flex items-center gap-2 flex-wrap border-t border-border pt-2">
-          <Button size="sm" disabled={saveCfgM.isPending || !configLoaded}
-            onClick={() => saveCfg()}>
-            <Save size={14} className="mr-1" /> Save Upseller settings
-          </Button>
-          {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
-          {saveCfgM.isError && (
-            <span className="text-xs text-red-500">
-              {saveCfgM.error?.message || "Save failed"} — nothing was stored.
-            </span>
-          )}
-        </div>
+         *  last child of the outer container below. Same `save` object, so the
+         *  two are the same control rendered in two places, not two controls. */}
+        <SaveRow {...save} className="hidden md:flex border-t border-border pt-2" />
       </Card>
 
-      {/* ── prewritten scaffolding: the creator's lines + starter pack ── */}
+      {/* ── prewritten scaffolding: the creator's lines + starter pack ──
+       *  Same `save` object as the two controls above: it is the same mutation
+       *  on the same blob (pack text rides in through `script_pack_overrides`),
+       *  so the gate and the failure copy are written once for the tab rather
+       *  than a third time here. Only the label differs, because this button
+       *  saves from a different place on the page. */}
       <ScriptPackCard
+        {...save}
+        label="Save lines"
         pack={shippedPack}
         help={slotHelp}
         text={packText}
         setText={(slot, v) => setPackText((t) => ({ ...t, [slot]: v }))}
-        onSave={() => saveCfg()}
-        saving={saveCfgM.isPending}
-        canSave={configLoaded}
-        saved={saveCfgM.isSuccess}
-        error={saveCfgM.isError
-          ? `${saveCfgM.error?.message || "Save failed"} — nothing was stored.`
-          : null}
       />
 
       <Card className="p-4 space-y-2">
@@ -744,23 +759,12 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
 
       <div className="md:mb-0"><GuideCard /></div>
 
-      {/* Phone-only sticky Save bar (`hidden` at >=768px, so desktop renders
-       *  nothing here — the in-flow row inside the Card above still owns it).
-       *  Sticky only pins while its own container is on screen, hence "last
-       *  child of the outer container". `-mx-4 px-4` bleeds to the host Card's
-       *  p-4 edges. */}
-      <div className="hidden max-md:flex sticky bottom-0 z-20 -mx-4 px-4 py-3 items-center gap-2 flex-wrap bg-panel/95 backdrop-blur border-t border-border pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
-        <Button size="sm" disabled={saveCfgM.isPending || !configLoaded}
-          onClick={() => saveCfg()}>
-          <Save size={14} className="mr-1" /> Save Upseller settings
-        </Button>
-        {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
-        {saveCfgM.isError && (
-          <span className="text-xs text-red-500">
-            {saveCfgM.error?.message || "Save failed"} — nothing was stored.
-          </span>
-        )}
-      </div>
+      {/* Pinned Save bar. Was `hidden max-md:flex` — phones only — while the
+       *  in-flow row inside the Card above (~2,000px up the scroll) was all a
+       *  desktop got. Now un-gated at every width; the in-flow row is untouched
+       *  and still there. Last child of the outer container because sticky only
+       *  pins while its own container is on screen. */}
+      <StickySaveBar {...save} />
 
       {/* Single-folder picker for the gather-close PPV. */}
       {gcPicker && (

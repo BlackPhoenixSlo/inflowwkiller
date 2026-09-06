@@ -45,8 +45,11 @@ banter (and, M3, selling).
 
 Config: account_ai_config.ai_chatter_config_json, shallow-merged over _DEFAULTS.
 Ships DISABLED. Payload knobs: dry_run, only_fan_ids (W7 fan-scope, gates still
-apply), force_ids (bypass gates — manual targeting), max_replies, model,
-history_tail.
+apply), force_ids (bypass gates — manual targeting), turn_handoff_ids (answer him
+even though WE spoke last, because the thing that spoke last was a send_welcome
+bubble that landed on top of his reply — the ONE gate force_ids does not open,
+plus the matching exemption in `_thread_moved_on`; plans/welcome-pacing §C3),
+max_replies, model, history_tail.
 
 Reuse: the carefully-tuned texting machinery is IMPORTED from welcome_chatter_for_info
 (bubble splitting, echo/lead-reaction dedupe, fact extract+fill, question
@@ -66,7 +69,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Literal, NamedTuple
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / lease / cooldown seams
@@ -136,6 +139,8 @@ from ._common import (
     ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF,
     load_voice_blocks,
     STYLE_MAX_BUBBLES,
+    admit_turn_handoff, inbound_is_words,                # the welcome turn handoff, §C3
+    welcome_window_after_outbound,
     apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction, coerce_ids,
     load_consistency_flags,
     hold_with_typing, apply_typo_throttle, is_qualifying_inbound,
@@ -149,6 +154,7 @@ from ._common import (
     content_payer_fans,
     quarantine_if_undeliverable, recent_payer_fans, resolve_fan_name, resolve_model,
     should_skip_muted_creator, skip_unreachable_fan, thread_heat, typing_delay_seconds,
+    TURN_NEUTRAL_KINDS, _REACTION_TAG,
 )
 from ._wordfilter import (  # compliance word filter
     banned_hit_summary, filter_banned, load_banned_words,
@@ -156,6 +162,10 @@ from ._wordfilter import (  # compliance word filter
 from ._clock import clock_block, clock_line
 from .fan_state import fan_state, set_fan_state
 from .tip_reward_config import image_describe_flags
+# The history window's rule, as a pure function. Its own module so the rule can be
+# unit-tested without a DB, a FakeOF and a patched LLM — and so nothing in it can
+# reach back into this one.
+from . import _history_window
 # Deliberate sibling reuse — keeps the texting voice byte-compatible with
 # welcome_chatter_for_info instead of forking 500 lines of tuned style machinery.
 from .welcome_chatter_for_info import (
@@ -470,6 +480,40 @@ _DEFAULTS: dict = {
     # (unreadable without the referent), and ~4/day quote a LIVE PPV — a man asking
     # about the locked item, which is the strongest buying signal we had been dropping.
     "reply_context_enabled": True,
+
+    # ── The HISTORY WINDOW (plans/chat-window). How much of the thread the reply
+    # model re-reads: the newest N rows, minus anything older than T hours before
+    # HIS newest inbound, but never fewer than FLOOR rows.
+    #
+    # SHIPS ON, fleet-wide, with no UI: the operator's call — the old flat 20 was
+    # starving every paying thread, so this is the new default behaviour rather
+    # than an opt-in experiment. There is no tab control; the three numbers below
+    # are the contract, and an account that wants the old prompt sets
+    # `history_window_enabled: False` in `ai_chatter_config_json` by hand.
+    #
+    # The OFF path is kept whole and tested (`case_off_is_byte_identical`): False
+    # leaves `_history_window.tail_for` uncalled and the slice at the shared
+    # `_HISTORY_TAIL` (20) it has always been — the prompt is byte-identical to
+    # what shipped before this feature. That is the rollback, and it is one key.
+    #
+    # Why each number, when it IS on:
+    #   rows 40   — the operator's own figure ("all 40 chats"). Paying threads run
+    #               far longer than 20 (median 113 on the densest account), so the
+    #               old flat 20 cut her off mid-conversation.
+    #   hours 12  — the recency bound, measured from HIS newest line, not the wall
+    #               clock (rhythm defers her reply up to 6 h; a wall-clock anchor
+    #               could drop the very line she is answering). 12 trims the
+    #               day-old reach-back a bare 40 would recite while still leaving
+    #               ~34 rows on an average paid reply; 6 h was measured to deliver
+    #               FEWER rows than today on most replies, which is a regression.
+    #   floor 6   — the last-resort guarantee. The age cut is allowed to make a
+    #               returning fan's prompt SMALL (that is the point: she should not
+    #               recite yesterday at him) but never empty. Bounded by the thread
+    #               itself: a 3-row thread yields 3.
+    "history_window_enabled": True,
+    "history_window_rows": _history_window.DEFAULT_ROWS,
+    "history_window_hours": _history_window.DEFAULT_HOURS,
+    "history_window_floor": _history_window.DEFAULT_FLOOR,
 
     # ── Prompt SHAPE (arm G). Three independent transforms over the assembled prompt.
     # ON by default (2026-08-13, operator call): apply to every account unless one
@@ -1230,8 +1274,9 @@ class _Cand:
                  "day_out_n", "day_out_n_at_stop", "total_out_n", "first_at",
                  "her_last_at", "pic_sent", "last_in_desc", "last_in_desc_at",
                  "last_out_was_gif", "last_in_text", "first_in_at",
-                 "msg_ids", "reply_ctx", "in_run", "her_times",
-                 "last_in_mid")
+                 "msg_ids", "msg_at", "reply_ctx", "in_run", "her_times",
+                 "last_in_mid", "out_since_in_all_welcome", "pic_back_at",
+                 "bound_to_pic", "last_worded_in")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -1275,6 +1320,48 @@ class _Cand:
         # OUR OWN describer wrote. A gif he sends is a dead-end reaction, which is the
         # one turn a pause is safe on; it must not read as a question.
         self.last_in_text = ""
+        # HIS newest inbound THAT USED WORDS. Deliberately a second field and not a
+        # narrowing of `last_in_text`, which has five other readers on this lane and
+        # honestly means "his newest inbound text". The handoff needs the other
+        # question — the words `send_welcome._newest_worded_inbound` decided were
+        # talked over — and a caption-less photo or the ledger poll's bare-tip row
+        # lands NEWER than them without being speech. Written under
+        # `_common.inbound_is_words`, on the RAW body, so the definition is the same
+        # one on both engines and the same one the SQL runs. ONE reader:
+        # `admit_turn_handoff`.
+        self.last_worded_in = ""
+        # Since his newest inbound, has EVERY non-broadcast outbound been a
+        # send_welcome bubble? Read by ONE thing: the turn-handoff admission in
+        # run() (plans/welcome-pacing §C3). send_welcome enqueues that job because
+        # one of its bubbles finished landing on top of his reply; by the time it
+        # runs (~3 min later) a human or another automation may have answered him,
+        # and then this is False and the job is a no-op instead of a second voice.
+        # Broadcasts stay transparent here for the same reason they are
+        # transparent to the turn gate: a blast is not an answer.
+        self.out_since_in_all_welcome = False
+        # WHEN the newest TURN-NEUTRAL outbound landed (`TURN_NEUTRAL_KINDS` — a
+        # freebie answering his photo, a bundle answering his tip), or None. Set on
+        # such a row; cleared by every inbound and by every send that DID answer him
+        # (`answers_him`), so it only ever means "the last thing on this thread is a
+        # reaction of ours to something he did, and it is still unanswered in words".
+        # ITS ONE CONSUMER is `bound_to_pic` below, decided per fan in `run()`'s
+        # candidate loop and read in its send loop: a reaction this fresh
+        # (inside `_BUBBLE_WINDOW`) means her words are BUBBLE 1 of a reply whose
+        # bubble 0 was the picture, so rhythm's reply-start sampler is skipped and
+        # pacing's measured inter-bubble gap holds instead (plans/image-reply D4).
+        # That is why this is a TIMESTAMP and not a bool: the binding is a question
+        # about how long ago, and the answer decays.
+        self.pic_back_at: "datetime | None" = None
+        # …and the DECIDED form of that question, for THIS fan, on THIS sweep:
+        # was the reaction above still inside `_BUBBLE_WINDOW` when the candidate
+        # loop looked? A per-fan fact, so it lives on the candidate and not in
+        # `run()`'s flat local scope — the candidate loop and the send loop are two
+        # sibling `for`s over one 3,400-line function, and a bare local written in
+        # the first is read in the second as whatever the LAST fan left behind.
+        # Every other per-fan value crossing that gap is a slot here or a fan-keyed
+        # dict; this one is no different. Default False so a hand-built `_Cand`
+        # (the tests, the status endpoint) reads the unbound answer.
+        self.bound_to_pic = False
         # HIS first message on this thread — the warm-up clock. Deliberately not
         # `first_at` (the oldest row of ANY direction): that is our own welcome, and
         # the conversation does not start until he answers it.
@@ -1286,6 +1373,15 @@ class _Cand:
         # the fan-run scan, the tests that hand-build a _Cand) is untouched; both
         # lists have exactly one writer, `add_message`, so they cannot drift.
         self.msg_ids: list[int] = []
+        # WHEN each row landed (naive UTC), parallel to `messages` and `msg_ids`,
+        # `None` for a NULL created_at. Written by the SAME single writer for the
+        # same reason the ids are: three lists that must be traversed in step are
+        # only safe while exactly one function appends to all three. Read by the
+        # history window (`_history_window.tail_for`) to drop rows older than T
+        # before his newest line; every other `_gather` consumer gets it for free
+        # and ignores it. Zero extra I/O — `_gather` has already parsed this value
+        # to place the row on the thread's timeline.
+        self.msg_at: "list[datetime | None]" = []
         # HIS NEWEST inbound message id — the one the reply this tick is
         # answering. `msg_ids` already carries it, but only BOTH directions
         # interleaved, so a reader wanting "the message id of what he just
@@ -1350,11 +1446,16 @@ class _Cand:
         # keeps that rule in one place instead of two.
         self.her_times: list[datetime] = []
 
-    def add_message(self, direction: str, text: str, message_id: int) -> None:
-        """Append one thread row. The ONE writer of both `messages` and `msg_ids`, so
-        a future `continue` in _gather cannot desync them behind our back."""
+    def add_message(self, direction: str, text: str, message_id: int,
+                    created_at: "datetime | None" = None) -> None:
+        """Append one thread row. The ONE writer of `messages`, `msg_ids` AND
+        `msg_at`, so a future `continue` in _gather cannot desync them behind our
+        back. `created_at` defaults to None so a caller that predates the history
+        window still produces three lists of equal length (the window then
+        degrades to today's flat slice rather than mis-measuring)."""
         self.messages.append((direction, text))
         self.msg_ids.append(int(message_id))
+        self.msg_at.append(created_at)
         if direction == "in":
             self.last_in_mid = int(message_id)
 
@@ -1519,7 +1620,15 @@ async def _gather(account_id: str,
         if c.first_at is None and created_at is not None:
             c.first_at = created_at
         text = _history_text(direction, body, image_desc)
-        c.add_message(direction, text, message_id)
+        # A REACTION of ours — the freebie answering his photo, the bundle answering
+        # his tip — reaches the wire with the caption as its body, and that caption
+        # defaults to "". So it renders as an EMPTY history line and the model cannot
+        # tell she already sent him something (and would offer it again). Name what
+        # she sent, in the same shape `_history_text` names what HE sent.
+        if direction == "out" and automation_kind in TURN_NEUTRAL_KINDS:
+            tag = _REACTION_TAG[automation_kind]
+            text = f"{text} {tag}" if text else tag
+        c.add_message(direction, text, message_id, created_at)
         # Did WE broadcast this row? Read ONCE — the turn gate here, `hers` below and
         # the human clock all key off it, and each used to re-derive its own answer
         # from the same three columns. `mass_run_id` alone is NOT the question: a
@@ -1527,17 +1636,32 @@ async def _gather(account_id: str,
         # thing that catches it.
         broadcast = (mass_run_id is not None
                      or (automation_kind is None and body in broadcast_bodies))
-        # A broadcast does not take the turn. It stays in `messages` — she must know
-        # what she just sent him — but it must not move `last_dir`/`last_body`. A
-        # ppv_send / funnel blast landing on top of his message made the turn gate
-        # below read "we spoke last", and the reply he was owed was dropped: measured
-        # ~4/day across the roster over 14 days, on fans who had JUST messaged. Her
-        # own 1:1 sends (ai_chatter / ai_upseller) never carry a mass_run_id, so a
-        # real reply of hers still closes the turn and she cannot talk over her own
-        # open offer. `last_body` moves with `last_dir` or the reply path's intent
-        # detectors (content-ask / escalation / decline / haggle) would be reading her
-        # own PPV caption instead of his message.
-        if not broadcast:
+        # …and is it a REACTION rather than an answer? `image_reply` / `tip_reward`
+        # go out within seconds of HIS action, carry an automation_kind (so they are
+        # never `broadcast`) and say nothing — see TURN_NEUTRAL_KINDS.
+        turn_neutral = direction == "out" and automation_kind in TURN_NEUTRAL_KINDS
+        # THE one predicate for "this row took the turn". Every consumer that asks
+        # the question reads THIS, never the two flags separately: a row visible to
+        # `last_dir` but invisible to `in_run`, or vice versa, is a half-state — the
+        # thread then means two different things to two pieces of the same gate, and
+        # which one wins depends on evaluation order. One name, one answer.
+        answers_him = not broadcast and not turn_neutral
+        # Neither a broadcast NOR a reaction takes the turn. Both stay in `messages`
+        # — she must know what she just sent him — but neither may move
+        # `last_dir`/`last_body`. A ppv_send / funnel blast landing on top of his
+        # message made the turn gate below read "we spoke last", and the reply he was
+        # owed was dropped: measured ~4/day across the roster over 14 days, on fans
+        # who had JUST messaged. The reaction lane is the same failure from the other
+        # side and hits the fans most likely to trigger it: `image_reply` fires on his
+        # photo within seconds (11.9s and 36.2s on the incident thread), lands NEWER
+        # than his message, and silenced the words that were the whole point of
+        # answering a picture. Her own 1:1 sends (ai_chatter / ai_upseller) never
+        # carry a mass_run_id and are not reactions, so a real reply of hers still
+        # closes the turn and she cannot talk over her own open offer. `last_body`
+        # moves with `last_dir` or the reply path's intent detectors (content-ask /
+        # escalation / decline / haggle) would be reading her own PPV caption instead
+        # of his message.
+        if answers_him:
             c.last_dir = direction
             c.last_body = text
         if direction == "in":
@@ -1546,6 +1670,22 @@ async def _gather(account_id: str,
             if created_at is not None:
                 c.in_run.append(created_at)
             c.last_in_text = _strip_html(body)
+            # …and separately, WORDS. The predicate reads the RAW body, before any
+            # rendering: it is the same question the SQL that enqueued the handoff
+            # asked, and it lives in `_common` so both engines ask it identically.
+            #
+            # `and c.last_in_text` is the second half, and it is not a tidy-up: a
+            # tags-only body ("<br>", and OF wraps every body in <p>…</p>) is
+            # non-empty, so the SQL calls it words and so does the predicate —
+            # they agree — but it RENDERS to "", and storing that would wipe the
+            # real words this handoff exists to answer. Both lanes gate on their
+            # own rendering of the BODY for this reason; see `inbound_is_words`.
+            if inbound_is_words(body) and c.last_in_text:
+                c.last_worded_in = c.last_in_text
+            # A new inbound RESTARTS the window the turn-handoff guard measures…
+            c.out_since_in_all_welcome = True
+            # …and ends any reaction that was still the last thing on the thread.
+            c.pic_back_at = None
             if c.first_in_at is None and created_at is not None:
                 c.first_in_at = created_at
             # Assigned, not OR-ed: the tier means "he JUST sent a picture", so a
@@ -1571,13 +1711,39 @@ async def _gather(account_id: str,
                 c.last_in_desc_at = created_at
             mid_reply[fan_id] = False        # he spoke → her next row is a new reply
         else:
+            # Deliberately NOT `answers_him`: "when did we last send him anything"
+            # stays literally true — a reaction IS something she sent, and rhythm's
+            # mirror whisper reading it as her last send is the honest answer. (The
+            # one consequence is a lost mirror sample at beta 0.12; the alternative
+            # is telling rhythm the thread was silent when a picture just landed.)
             c.last_out_at = created_at
-            # Anything that was not a broadcast ANSWERED him, so his run of unanswered
-            # messages ends here. Deliberately wider than `hers` below: a human chatter
-            # typing by hand closes the run too — she answered him, and a persistence
-            # exit that fired anyway would be reacting to a silence that never happened.
-            if not broadcast:
+            # Anything that ANSWERED him ends his run of unanswered messages.
+            # Deliberately wider than `hers` below: a human chatter typing by hand
+            # closes the run too — she answered him, and a persistence exit that
+            # fired anyway would be reacting to a silence that never happened. And
+            # deliberately narrower than "any outbound": a reaction answered his
+            # ACTION, not his words, so he is still owed the reply.
+            if answers_him:
                 c.in_run.clear()
+            # …and the same row narrows the "nothing but welcome bubbles since he
+            # spoke" window the turn handoff is guarded on. A blast is not an
+            # answer, and neither is a reaction, so both are transparent here
+            # exactly as they are to the turn gate; a welcome bubble is the ONE
+            # send that leaves the handoff valid, because it is the send that
+            # caused it. (So a freebie landing between the welcome and the handoff
+            # job does not cancel the rescue — she still owes him words.)
+            # Shared with welcome_chatter_for_info: `answers_him` is this lane's
+            # own answer to "did it take the turn", and it is the ONLY thing the
+            # two lanes are allowed to disagree about here.
+            c.out_since_in_all_welcome = welcome_window_after_outbound(
+                c.out_since_in_all_welcome, took_the_turn=answers_him,
+                automation_kind=automation_kind)
+            if turn_neutral:
+                c.pic_back_at = created_at
+            elif answers_him:
+                # She has now spoken in words, so the reaction is no longer the last
+                # thing on the thread — the same boundary `last_in_desc` uses.
+                c.pic_back_at = None
             hers = not broadcast and automation_kind in _OUR_KINDS
             # The picture is "dealt with" only once SHE HAS ANSWERED IT IN WORDS.
             #
@@ -1589,6 +1755,11 @@ async def _gather(account_id: str,
             # passed, because none of them seed an image_reply row; only the sequential
             # replay against real prod history caught it. Her chat and offer turns
             # (`_OUR_KINDS`) are the only sends that close a picture.
+            #
+            # `last_dir` now carries the SAME protection, from the other direction
+            # (`TURN_NEUTRAL_KINDS` above). Until it did, this block was half a fix:
+            # the description survived the freebie, but the TURN did not — so the
+            # rating beat kept its prose and was never given a turn to say it in.
             if hers:
                 c.last_in_desc = ""
                 c.last_in_desc_at = None
@@ -2851,7 +3022,8 @@ async def _send_free_bubble(client, account_id: str, fan_id: int, line: str,
 
 
 async def _thread_moved_on(account_id: str, fan_id: int,
-                           inbound_at: datetime | None) -> str:
+                           inbound_at: datetime | None,
+                           *, ignore_welcome: bool = False) -> str:
     """Between generation and the wire, did this turn stop being ours to answer?
 
     Two ways it can, and they are different failures. HE WROTE AGAIN: the reply we
@@ -2869,6 +3041,25 @@ async def _thread_moved_on(account_id: str, fan_id: int,
     autoreply asks half of this question twice (`_fan_still_waiting`,
     autoreply.py:413); this is the same query widened to notice a new INBOUND too,
     because a keep-warm line is still true after he speaks and a direct answer is not.
+
+    A REACTION IS NEVER AN ANSWER, on any call, so `TURN_NEUTRAL_KINDS` is excluded
+    unconditionally rather than behind a flag. `image_reply` / `tip_reward` land
+    within seconds of his photo or his tip and say nothing; counting one as
+    `already_answered` dropped the reply AFTER both LLM calls and the humanizer had
+    run, and nothing is stamped on a drop — so the fan was re-admitted by the turn
+    gate on the very next tick and paid for again, every tick, until he spoke. That
+    is why the exclusion is not a parameter: the first caller to forget it (the draft
+    replay) would have re-opened the leak, and no caller can ever want the other
+    behaviour.
+
+    `ignore_welcome` is the TURN HANDOFF's exemption, and ONLY that (§C3). On that
+    job a send_welcome bubble is guaranteed to be newer than his inbound — that is
+    the entire reason the job exists — so the `already_answered` arm would drop
+    every handoff reply on the floor after the turn gate had just admitted it: a
+    feature that silently did nothing. A welcome is not an answer to his message;
+    every OTHER automation kind and every named chatter still is, and
+    `fan_spoke_again` is untouched, so a fan who wrote AGAIN in the meantime still
+    drops the held reply and becomes an ordinary candidate on the next tick.
     """
     if inbound_at is None:
         return ""
@@ -2898,6 +3089,11 @@ async def _thread_moved_on(account_id: str, fan_id: int,
         # (`sent_by_employee_id`), and never one carrying a `mass_run_id`. An
         # untagged send stays ambiguous and is left to the account-wide turn gate
         # on the next sweep, which is exactly today's behaviour.
+        not_an_answer = (TURN_NEUTRAL_KINDS
+                         | ({"welcome"} if ignore_welcome else frozenset()))
+        automation_answered = and_(
+            Message.automation_kind.is_not(None),
+            Message.automation_kind.not_in(sorted(not_an_answer)))
         answered = (await s.execute(
             select(Message.message_id).where(
                 Message.account_id == str(account_id),
@@ -2906,7 +3102,7 @@ async def _thread_moved_on(account_id: str, fan_id: int,
                 Message.is_unsent.is_(False),
                 Message.created_at > inbound_at,
                 Message.mass_run_id.is_(None),
-                or_(Message.automation_kind.is_not(None),
+                or_(automation_answered,
                     Message.sent_by_employee_id.is_not(None)),
             ).limit(1)
         )).first()
@@ -5369,13 +5565,20 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
             "re-ask what he's into or wants.")
     personal_block = ("\n" + "\n".join(personal_lines)) if personal_lines else ""
 
-    history = c.messages[-history_tail:]
-    # The same slice of the parallel id list. `add_message` keeps the two in step, so
-    # this only falls back for a _Cand assembled by hand (the unit tests, and any
+    # ⚠️ `history_tail` MUST be > 0 before it reaches a slice. `xs[-0:]` is `xs[0:]`
+    # — the WHOLE thread, uncapped, up to ~1,000 rows — so a zero here would turn
+    # the cheapest-looking path into the most expensive and most stale-reciting
+    # prompt the engine can emit. `_history_window.tail_for` already guarantees a
+    # non-zero result whenever it is consulted; this is the second lock on the same
+    # door, because the failure is silent and the blast radius is a whole account.
+    history = c.messages[-history_tail:] if history_tail > 0 else []
+    # The same slice of the parallel id list, under the IDENTICAL guard so the two
+    # cannot fall out of step. `add_message` keeps them aligned, so the length
+    # fallback only fires for a _Cand assembled by hand (the unit tests, and any
     # caller that sets `messages` directly): id 0 matches no message, so it degrades
     # to today's prompt instead of labelling the wrong line.
-    ids = (c.msg_ids[-history_tail:] if len(c.msg_ids) == len(c.messages)
-           else [0] * len(history))
+    ids = (c.msg_ids[-history_tail:] if history_tail > 0 else []) \
+        if len(c.msg_ids) == len(c.messages) else [0] * len(history)
     # Rendered lines FIRST, because `if b` drops empty bodies and `_quotes.render`
     # keys off what the model can actually see.
     lines = [(d, b, mid) for (d, b), mid in zip(history, ids) if b]
@@ -6096,13 +6299,28 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     dry_run = bool(payload.get("dry_run"))
     force_ids = coerce_ids(payload.get("force_ids"))
     only_fan_ids = coerce_ids(payload.get("only_fan_ids"))
+    # THE TURN HANDOFF (plans/welcome-pacing §C3). send_welcome sets this when one
+    # of its own welcome bubbles finished landing ON TOP of the fan's reply: that
+    # bubble took the turn, so the `last_dir != "in"` gate below would skip him as
+    # `not_turn` — and so would `_thread_moved_on`'s last look, which counts ANY
+    # automation-kind outbound newer than the inbound as `already_answered`.
+    # Neither is opened by `force_ids` (both sit outside every forced exemption —
+    # verified), which is why this needs its own key. Absent ⇒ an empty set ⇒
+    # every line it touches is dead code and this engine is byte-identical.
+    turn_handoff_ids = coerce_ids(payload.get("turn_handoff_ids"))
     # Fans flagged as buying-intent by the caller (e.g. the inbound-image hook: a
     # fan sending US a photo IS a buying signal, but it carries no text the intent
     # regexes can match). Drives the cadence gate's `pic` tier — every other gate
     # (spend, cooldown, lease, fan-spoke-last) still applies. Empty by default →
     # no behavior change for normal sweeps.
     intent_fan_ids = coerce_ids(payload.get("intent_fan_ids"))
-    history_tail = int(payload.get("history_tail") or _HISTORY_TAIL)
+    # N, from the job payload. CLAMPED: `history_tail` is not in ai_chatter's knob
+    # catalog, and `_validate_payload_for_kind` passes unknown keys through
+    # untouched, so a raw-JSON `{"history_tail": -5}` would otherwise reach the
+    # slice as `c.messages[5:]` — nearly the whole thread. Absent/0 → the shipped
+    # constant, which is the behaviour this line has always had.
+    history_tail = _history_window.clamp_rows(payload.get("history_tail"),
+                                              _HISTORY_TAIL)
 
     cfg = await _load_config(account_id)
     # Item 18 — a scheduled re-engage nudge rides the same job kind; handle it and
@@ -6245,6 +6463,27 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # §4.4b / §7 — the post-buy follow-up RUNG and the free thank-you gift. The free
     # post_buy_bridge bubble and the aftercare warm line fire without these; only the
     # unsolicited priced rung / the free unseen-media gift are gated (consent, §11).
+    # ── The history window (ships ON; see _DEFAULTS). Read ONCE per run, here,
+    # because `cfg` is not loaded where `history_tail` is first read. Turned off
+    # by hand, every one of these is inert and the per-fan site below takes the
+    # `else` branch — the pre-feature prompt, byte for byte.
+    window_on = bool(cfg.get(_history_window.KEY_ENABLED))
+    if window_on:
+        # The payload keeps outranking the tab — today's precedence, unchanged —
+        # but the tab's N now applies when no payload key is set.
+        history_tail = _history_window.clamp_rows(
+            payload.get("history_tail"),
+            _history_window.clamp_rows(cfg.get(_history_window.KEY_ROWS),
+                                       _history_window.DEFAULT_ROWS))
+    # 0 hours = "no ceiling from this knob" (the house convention), i.e. plain N.
+    _window_hours = (max(0, int(cfg.get(_history_window.KEY_HOURS) or 0))
+                     if window_on else 0)
+    window_age = timedelta(hours=_window_hours) if _window_hours > 0 else None
+    window_floor = (max(0, int(cfg.get(_history_window.KEY_FLOOR)
+                               if cfg.get(_history_window.KEY_FLOOR) is not None
+                               else _history_window.DEFAULT_FLOOR))
+                    if window_on else 0)
+
     post_buy_rung_on = gate_on and bool(cfg.get("post_buy_rung_enabled"))
     gift_on = gate_on and bool(cfg.get("gift_enabled"))
     # ── The hook upsell (plans/hook-upsell). Rides `gate_on` for the same reason
@@ -6509,6 +6748,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     old_fans_engaged = 0    # candidates admitted via the engage_old_fans lift
     skipped_listed = 0      # blacklist / non-graduation skip_list / paused
     skipped_not_turn = 0    # we (or nobody) spoke last
+    turn_handoffs = 0       # …admitted anyway: a welcome bubble ate his reply
     rhythm_waiting = 0      # she's mid-pause for this fan (wake_at in the future)
     run_inline_s = 0.0      # cumulative inline hold this run() (the global-slot budget)
     skipped_spam = 0        # promo-spam: creator_we_follow + $0 + no exchange + blasted
@@ -6525,6 +6765,44 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     for fan_id, c in by_fan.items():
         forced = fan_id in force_ids
+        # ── BOUND TO THE PICTURE: these words are BUBBLE 1, not a new reply.
+        #
+        # The picture lane answers his photo with a picture and hands the words
+        # back here (plans/image-reply D2). Left alone, those words go through
+        # `rhythm.decide()` — which is the REPLY-START sampler: floor 25s, hot
+        # median 124s, cold median 415s, a 12% break roll and a sleep window. So
+        # the fan would see the picture, then the rating between 25s and seven
+        # minutes later, or not until morning. Two unrelated events, not one reply.
+        #
+        # But the picture WAS the reply's first bubble. Its latency was already
+        # decided — by `pacing.picture_back_target`, which is why the job's `run_at`
+        # was deferred at all. What is left is an INTER-BUBBLE gap, and that is
+        # exactly the split `pacing.py` is built on: rhythm owns bubble 0, pacing
+        # owns the gaps between the bubbles of one reply. So on a bound turn rhythm
+        # is skipped at BOTH its call sites and `hold_for_bubble` is told the text's
+        # first bubble is index 1 — the picture took index 0.
+        #
+        # `_BUBBLE_WINDOW` and not a new constant: it is ALREADY the window that
+        # says "rows of hers this close together are one reply" (`:1533`, the
+        # cadence counter at `:1755`). Reusing it makes "the words are bubble 1"
+        # the same claim the rest of the engine already makes about her own rows.
+        #
+        # Read off the ROW (`pic_back_at`), never a payload flag: a flag set at
+        # enqueue time can lie — the picture may have failed after it was set, or
+        # the lane may have skipped for a throttle — and then the words would be
+        # paced as a follow-up to something the fan never saw. `_gather` clears
+        # `pic_back_at` on every inbound and on every send that DID answer him, so
+        # the row can only ever say what actually happened. (Same principle as
+        # `out_since_in_all_welcome`.)
+        #
+        # Stored ON THE CANDIDATE, not in a local: this loop and the send loop are
+        # two sibling `for`s in one flat function scope, so a bare local written
+        # here is read down there as the LAST fan's answer — one bound fan sorting
+        # last would make every other fan in the sweep skip the sleep window and
+        # the break roll, and a bound fan sorting first would leave his own picture
+        # stranded behind `rhythm.decide()`.
+        c.bound_to_pic = (c.pic_back_at is not None
+                          and now - c.pic_back_at <= _BUBBLE_WINDOW)
         if fan_id in blacklist:
             skipped_listed += 1
             continue
@@ -6586,8 +6864,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     if fresh_inbound:
                         _rs.deferrals = 0
         if c.last_dir != "in":
-            skipped_not_turn += 1
-            continue
+            # …unless send_welcome told us its own welcome bubble is WHY we spoke
+            # last (§C3). Three conditions, all required: he is named in the job,
+            # he has actually said something, and every non-broadcast outbound
+            # since he said it was a welcome bubble — so a fan a human or another
+            # automation answered in the meantime is dropped rather than
+            # double-replied. On admission the candidate is REWRITTEN to the truth
+            # the handoff asserts: he spoke last, and these are his words
+            # (`last_in_text`, not `last_body` — `last_body` here is our own
+            # welcome bubble, and every intent detector downstream would be
+            # reading her line as his).
+            if not admit_turn_handoff(c, fan_id=fan_id,
+                                      handoff_ids=turn_handoff_ids):
+                skipped_not_turn += 1
+                continue
+            turn_handoffs += 1
         f = fans.get(fan_id)
         if f is not None and f.automation_paused_until and f.automation_paused_until > now:
             skipped_listed += 1
@@ -6672,6 +6963,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     hook_superseded = 0      # a later window expired the hook's own earlier box
     hook_upsells = 0         # CONFIRMED priced sends
     hook_by_source: "Counter[str]" = Counter()   # ask / situation / more
+    # The history window. All 0 and reported at 0 when the feature is off, so the
+    # stats shape does not change under the operator between runs.
+    history_rows_sum = 0     # Σ rows actually handed to the model — divide by
+                             # `replies_sent` for the mean transcript length
+    history_n_bound = 0      # …of those replies, N truncated the thread
+    history_t_bound = 0      # …the age cut decided
+    history_floor_bound = 0  # …the age cut would have gone below FLOOR
+    history_tiny = 0         # …the window collapsed to <= 2 rows. Should be ~0
+                             # with a floor; if it is not, the floor is not working.
     skipped_locked = 0
     skipped_cooldown = 0
     skipped_cadence = 0     # cadence: burst cap hit / post-purchase window lapsed
@@ -6690,6 +6990,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     rungs_quoted = 0        # priced rungs that actually went out (ladder_quote rows)
     taps_expired = 0        # tap-outs that served their TTL and reopened (not a life sentence)
     rhythm_deferred = 0     # lease released + resume job enqueued (never slept)
+    # Turns where her words were BUBBLE 1 of a reply whose bubble 0 was a picture
+    # (`_Cand.pic_back_at` inside `_BUBBLE_WINDOW`) — rhythm skipped, the measured
+    # inter-bubble pace held instead. Read it against `rate_pic_turns`: a picture
+    # lane running while this stays at zero means the reaction rows are landing
+    # OUTSIDE the two-minute window and the fan is seeing two unrelated events.
+    pic_bound_turns = 0
     drafts_stored = 0       # …of those, the ones that carried their text across the hop
     # What became of a stored draft on the wake, and why a generated reply was
     # dropped at the wire — both keyed by the string the deciding helper RETURNED,
@@ -7041,7 +7347,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # replies, silently, against the account's daily_cost_cap. The in-scene
             # DELAY still has to be sampled after generation (it depends on how long
             # the text takes to type); only the away/asleep verdict moves up here.
-            if rhythm_on and not rhythm_resume:
+            # `not bound_to_pic`: availability is a question about a reply that has
+            # not started. This one started when the picture landed — asking whether
+            # she is around now would let a break roll or the sleep window strand her
+            # own picture with no words after it. Stated consequence (D4): a picture
+            # sent inside the sleep window is followed by words inside it. The picture
+            # already proved she was awake; the real defect is that the pic lane never
+            # consults rhythm at all — follow-up `image-reply/pic-lane-sleep`.
+            if rhythm_on and not rhythm_resume and not c.bound_to_pic:
                 rst0 = rstates.get(fan_id)
                 lad0 = ladders.get(fan_id)
                 rnow0 = datetime.utcnow()
@@ -7895,12 +8208,49 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # SYSTEM prompt exactly as it always has — that is what an escape hatch is
             # for. Collapsing the two into one boolean is how the first cut deleted her
             # canon from both messages; see the `canon` parameter.
+            # THE HISTORY WINDOW, resolved once for this fan — because the two
+            # readers below MUST agree. Off, this is exactly `history_tail` (the
+            # payload value or the shared constant), so both sites behave as they
+            # always have.
+            tail, window_bound = (
+                _history_window.tail_for(c.msg_at, len(c.messages), c.last_in_at,
+                                         max_rows=history_tail,
+                                         max_age=window_age,
+                                         floor=window_floor)
+                if window_on else (history_tail, "n"))
+            if window_on:
+                _delivered = min(tail, len(c.messages))
+                history_rows_sum += _delivered
+                if _delivered <= 2:
+                    # The collapse case. A MEAN hides exactly the tail that
+                    # matters — the replies where the window shrank to almost
+                    # nothing — and with a floor of 6 this should be ~0. If it is
+                    # not, we want to hear it from a counter now, not from a
+                    # quality complaint in three weeks.
+                    history_tiny += 1
+                if window_bound == "n":
+                    history_n_bound += 1
+                elif window_bound == "t":
+                    history_t_bound += 1
+                elif window_bound == "floor":
+                    history_floor_bound += 1
+                log.info("ai_chatter history window account=%s fan=%s rows=%d "
+                         "n=%d hours=%d floor=%d bound=%s",
+                         account_id, fan_id, _delivered, history_tail,
+                         _window_hours, window_floor, window_bound)
+
             bio_was_asked = fan_state(f, _BIO_ASKED_KEY).get("asked") is True
+            # Reads the EFFECTIVE window, not the module constant. It used to read
+            # `_HISTORY_TAIL` directly, so any widening of the transcript left this
+            # gate still scanning 20: the model could see a bio question 25 rows
+            # back that the gate deciding whether her facts ride the prompt could
+            # not. Gate and transcript now read the same rows by construction.
             bio_asks_now = any(_persona_asks_about_her(b)
-                               for d, b in c.messages[-_HISTORY_TAIL:] if d == "in")
+                               for d, b in (c.messages[-tail:] if tail > 0 else [])
+                               if d == "in")
             canon = ("keep" if not bio_gate_on
                      else "show" if (bio_was_asked or bio_asks_now) else "hide")
-            msgs, presented = _build_messages(persona, f, c, asked, history_tail,
+            msgs, presented = _build_messages(persona, f, c, asked, tail,
                                               shape=_shape,
                                               canon=canon,
                                               custom_owed=_customs.is_owed(f),
@@ -8495,8 +8845,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # accounts holding enabled catalog rows, which is exactly backwards — an
             # empty shelf is where the model has NO grounded price to quote, so it is
             # where an invented one is most likely and least excusable.
+            #
+            # 🚨 `c.bound_to_pic` IS a reason to let it stand. On a bound turn the
+            # picture lane has ALREADY sent him a freebie — the row is on the thread
+            # (`pic_back_at`), the transcript names it ("[you sent him a pic back]",
+            # `_REACTION_TAG`) and the model was told about it on purpose. "just sent
+            # u one 😏" is then TRUE, and `_DELIVERY_TALK_RE` matches it verbatim. Left
+            # out of this conjunction, her one honest sentence is stripped as a
+            # phantom and `if not parts: continue` abandons the turn — the picture
+            # lands with no words after it, which is the exact failure the picture
+            # lane's whole hand-off exists to prevent, reached through another door.
             if offer_item is None:
-                _phantom = teaser is None and pending is None
+                _phantom = (teaser is None and pending is None
+                            and not c.bound_to_pic)
 
                 def _bad(p: str) -> bool:
                     if kind == _TURN_LIFE_TIP:
@@ -8570,7 +8931,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # every new fan, so the loudest turn in the product was landing on the
             # sticker's own 2-6s hold, under _FLOOR_S, bypassing the whole opening
             # schedule. Nothing to type on a gif, so the wpm hold is 0.
-            if rhythm_on and not rhythm_resume:
+            # `not bound_to_pic`: the reply-start latency was spent on the picture.
+            # `first_delay` therefore stays None, which is precisely what tells
+            # `hold_for_bubble` below that rhythm does not own this bubble — and
+            # `pace_idx` tells it the picture already took index 0, so the text's
+            # first bubble is an inter-bubble gap like every other. No `_save_rhythm`
+            # write and no `wake_at` on this path, exactly as on a rhythm-off account.
+            if rhythm_on and not rhythm_resume and not c.bound_to_pic:
                 rnow = datetime.utcnow()
                 # Read the thread's money ONCE. Its twin above does the same, and
                 # the two RhythmCtx builds must agree — three separate lookups
@@ -8712,8 +9079,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             elif rhythm_on and rhythm_resume:
                 # The wake_at WAS the decision. Send now, and clear the hop so the
                 # NEXT reply gets a fresh roll.
+                #
+                # ⚠️ ORDER: this arm is tested BEFORE the bound-to-pic arm below, and
+                # must stay there. A fan can be both — deferred for an older message,
+                # then sent a picture while he waited — and only THIS arm clears
+                # `wake_at`/`deferrals`. Bound first, and the hop would never
+                # discharge: the wake gate at the top of the loop would keep skipping
+                # him, and the one-hop cap would keep swallowing the next verdict.
                 await _save_rhythm(account_id, fan_id, wake_at=None, deferrals=0,
                                    context=rhythm.CONTEXT_ENGAGED)
+            elif rhythm_on and c.bound_to_pic:
+                # Counted HERE, not where `bound_to_pic` is computed: the number has
+                # to mean "a reply actually went out as bubble 1", not "a reaction row
+                # was in the window" — every gate between the two can still drop him,
+                # and a stat that counts intentions cannot be compared to
+                # `rate_pic_turns`. Only under `rhythm_on`: with rhythm off there was
+                # never a reply-start latency to skip, so nothing was bound.
+                pic_bound_turns += 1
 
             # ── LAST LOOK BEFORE THE WIRE. Everything above ran against the thread
             # `_gather` read at the top of the sweep; since then we have spent two
@@ -8723,7 +9105,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # cover-line prepend on purpose: that branch stamps `last_cover_at` and
             # burns the cover, and a cover spent on a turn we then abandon is a gap
             # explained to nobody.
-            _moved = await _thread_moved_on(account_id, fan_id, c.last_in_at)
+            # On a TURN HANDOFF the welcome bubble that ate his reply is newer
+            # than his inbound BY CONSTRUCTION, so without the exemption this last
+            # look would drop every handoff reply the turn gate just admitted.
+            _moved = await _thread_moved_on(
+                account_id, fan_id, c.last_in_at,
+                ignore_welcome=(fan_id in turn_handoff_ids))
             if _moved:
                 stale_drops[_moved] += 1
                 log.info("ai_chatter dropped a generated reply account=%s fan=%s "
@@ -8794,8 +9181,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # that precedence — see its docstring for why "not bubble 0" is not
                 # the same question as "rhythm did not decide this".
                 typing_s = typing_delay_seconds(part, typing_wpm)
+                # On a bound turn THE PICTURE WAS BUBBLE 0, so the text's first
+                # bubble is really the first inter-bubble gap. Shifting the index is
+                # the whole of D4's mechanism on this side: `hold_for_bubble`'s case 2
+                # ("pacing owns idx >= 1") then holds the measured gap instead of case
+                # 3's bare typing time, which at 0 wpm would have been an INSTANT send
+                # right behind the picture — the machine cadence the plan rejected as
+                # option (a). `first_delay` is None here either way (rhythm was
+                # skipped), so case 1 cannot fire on this path.
+                pace_idx = idx + 1 if c.bound_to_pic else idx
                 pace = pacing.hold_for_bubble(
-                    idx=idx, text=part, typing_s=typing_s,
+                    idx=pace_idx, text=part, typing_s=typing_s,
                     rhythm_delay_s=(first_delay if idx == 0 else None),
                     cfg=pace_cfg,
                     # Its OWN Random, seeded per bubble. Sharing rhythm's rng would
@@ -9280,10 +9676,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # …and WHICH arm earned them. The "more" arm is the one round 3 added on
         # a hunch, and this split is how the operator decides whether it stays.
         "hook_by_source": dict(hook_by_source),
+        # The history window (plans/chat-window). Present at 0 when off.
+        "history_rows_sum": history_rows_sum,
+        "history_n_bound": history_n_bound,
+        "history_t_bound": history_t_bound,
+        "history_floor_bound": history_floor_bound,
+        "history_tiny": history_tiny,
+        # ⚠️ Brings in `deliveries_failed` — a TIP-UNLOCK RETRY that could not
+        # deliver (`_resolve_open_offers`), NOT the pack lane's
+        # `pack_delivery_failed` twenty lines above. Two unrelated events, two
+        # near-identical names, one operator-facing blob; the merge is what put
+        # them in the same dict, and this is the second half of the note up there
+        # so whichever key a reader lands on first says which is which.
         **offer_stats,
         "old_fans_engaged": old_fans_engaged,
         "skipped_listed": skipped_listed,
         "skipped_not_turn": skipped_not_turn,
+        "turn_handoffs": turn_handoffs,
         "skipped_spam": skipped_spam,
         "skipped_muted_creator": skipped_muted_creator,
         "skipped_whale": skipped_whale,
@@ -9323,6 +9732,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "rungs_quoted": rungs_quoted,
         "taps_expired": taps_expired,
         "rhythm_deferred": rhythm_deferred,
+        "pic_bound_turns": pic_bound_turns,
         "drafts_stored": drafts_stored,
         "draft_outcomes": dict(draft_outcomes),
         "stale_drops": dict(stale_drops),

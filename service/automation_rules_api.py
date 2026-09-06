@@ -114,6 +114,41 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep to these fans (gates still apply)"},
         ],
     },
+    "auto_follow": {
+        # `surface: internal` on purpose — this kind is raw-JSON-only today and
+        # has no typed editor. The entry exists so `_validate_payload_for_kind`
+        # TYPES the knobs at save: without it `money_gate: "false"` (the string)
+        # saved fine and evaluated truthy, leaving the money gate ON when the
+        # operator had meant to switch it off. Give it a UI surface the day
+        # someone builds the editor.
+        "label": "Auto-follow / Auto-like", "recurring": True, "surface": "internal",
+        "cadence_default_s": 14400,
+        "summary": "Notification-only nudges: like fans' messages, or follow / "
+                   "re-follow them so OF pushes a 'started following you'. "
+                   "Never sends a DM.",
+        "example": "every 4h · action follow · daily_cap 30 · dry_run off",
+        "knobs": [
+            {"key": "action", "type": "str", "default": "like_messages",
+             "enum": ["like_messages", "like_posts", "follow", "ping"],
+             "hint": "which nudge to fire"},
+            {"key": "daily_cap", "type": "int", "min": 0, "max": 1000, "default": 50,
+             "hint": "max notifications this RUN (0 = the operator's stop switch)"},
+            {"key": "dry_run", "type": "bool", "default": True,
+             "hint": "plan only, no OF mutation — the preview runs the gate too"},
+            {"key": "money_gate", "type": "bool", "default": True,
+             "hint": "⚠️ MONEY, follow/ping only: price-check before following. "
+                     "FALSE follows blind and BUYS every priced profile in the "
+                     "pool (~3% of a stored audience, ≈$177 per 711 fans)"},
+            {"key": "quiet_days", "type": "int", "min": 1, "default": 7,
+             "hint": "ping: a fan counts as quiet after N days silent"},
+            {"key": "min_days_between_pings", "type": "int", "min": 1, "max": 365, "default": 14,
+             "hint": "follow + ping: per-fan notification cooldown in days — one "
+                     "shared ledger, and the backfill pool's only progress marker"},
+            {"key": "targets", "type": "json",
+             "hint": '{"source": "all_stored"|"expired"|"recent_active"|"smart_list"} '
+                     "or a list of those; also fan_ids / post_ids"},
+        ],
+    },
     "audience_sync": {
         "label": "Audience folder sync (include-only mode)", "recurring": True,
         "surface": "brain",
@@ -136,6 +171,11 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "max_welcomes", "type": "int", "min": 1, "default": 25, "hint": "cap sends per tick"},
             {"key": "with_image", "type": "bool", "default": True, "hint": "attach the time-of-day welcome image"},
             {"key": "time_only", "type": "bool", "default": True, "hint": "2nd bubble says only the day/time + location (no activity)"},
+            {"key": "skip_time_bubble", "type": "bool", "default": False, "hint": "drop the 2nd bubble entirely — greeting, then the question, then the GIF (outranks time_only and any pinned line)"},
+            {"key": "human_pace", "type": "bool", "default": True, "hint": "pace the burst like a person (quiet gaps before the bubbles) and welcome several fans at once — a UI 'send test' is exempt and stays instant"},
+            {"key": "stop_on_reply", "type": "bool", "default": True, "hint": "stop the welcome as soon as he replies — she finishes the bubble she's typing, and the chat engine answers him instead"},
+            {"key": "follow_back", "type": "bool", "default": True, "hint": "follow each new sub back in the same tick — OF pushes them a 'started following you' on top of the welcome"},
+            {"key": "follow_back_gate", "type": "bool", "default": False, "hint": "⚠️ MONEY: price-check each fan before following back. OFF (the default) follows blind, so a new sub who is themself a PAID creator charges you their price"},
             {"key": "question", "type": "str", "default": "what's yours?", "hint": "3rd bubble: this exact question, sent word-for-word (blank = off)"},
             {"key": "gif_id", "type": "str", "hint": "4th bubble: giphy id of a GIF sent after the question (blank = off)"},
             {"key": "model", "type": "str", "hint": "LLM override"},

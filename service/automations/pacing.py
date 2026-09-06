@@ -90,11 +90,16 @@ hunch.
 """
 from __future__ import annotations
 
+import math as _math
 from dataclasses import dataclass
 from random import Random
 
 from ._common import has_emoji
 from .rhythm import INLINE_MAX_S as _INLINE_MAX_S
+# The picture-back floor is rhythm's MEASURED one, imported rather than restated:
+# two copies of "25" would drift, and the number is the whole justification for
+# the floor (see `picture_back_target`).
+from .rhythm import _FLOOR_S as _RHYTHM_FLOOR_S
 
 # ── The three terms. Deliberately NOT operator knobs: an operator has no basis on
 # which to answer "how long does it take to press enter", and every one of these is
@@ -203,6 +208,28 @@ class Pace:
     drifted: bool = False
 
 
+def _think_gap(typing_phase: float, rng: Random, cfg: PaceConfig) -> tuple[float, float]:
+    """`(think_at_s, think_for_s)` — the one mid-sentence stall, or (0, 0).
+
+    Pure redistribution: the caller has already fixed its total, and this only
+    decides where inside the TYPING phase the bar goes dark. Landed strictly
+    inside the phase, never at either edge — a gap at offset 0 is just more quiet
+    time, and one at the end is a pause before the send, which reads as exactly
+    the machine beat it exists to break up.
+
+    Shared by `bubble_pace` and `welcome_burst_pace` so the two cannot drift into
+    two different notions of "she stopped typing for a second". The draw order
+    (duration, then offset) is part of the contract: it is what makes a seeded
+    Pace replay."""
+    if not cfg.think_gaps or typing_phase < _THINK_MIN_TYPING_S:
+        return 0.0, 0.0
+    want = rng.uniform(*_THINK_S)
+    think_for = min(want, typing_phase * _THINK_MAX_SHARE)
+    span = typing_phase - think_for
+    think_at = rng.uniform(span * 0.25, span * 0.75) if span > 0 else 0.0
+    return think_at, think_for
+
+
 def bubble_pace(typing_s: float, text: str, rng: Random,
                 cfg: PaceConfig | None = None,
                 budget_s: float | None = None) -> Pace:
@@ -260,15 +287,7 @@ def bubble_pace(typing_s: float, text: str, rng: Random,
     # ── The mid-sentence stall. Pure redistribution: it takes a slice OUT of the
     # typing phase rather than adding one, so `total` above is already final and
     # nothing downstream sees a different number because of it.
-    think_at = think_for = 0.0
-    if cfg.think_gaps and typing_phase >= _THINK_MIN_TYPING_S:
-        want = rng.uniform(*_THINK_S)
-        think_for = min(want, typing_phase * _THINK_MAX_SHARE)
-        # Land it inside the phase, never at either edge: a gap at 0 is just more
-        # quiet time, and one at the end is a gap before the send that reads as
-        # the same machine pause it is meant to break up.
-        span = typing_phase - think_for
-        think_at = rng.uniform(span * 0.25, span * 0.75) if span > 0 else 0.0
+    think_at, think_for = _think_gap(typing_phase, rng, cfg)
 
     return Pace(total_s=total, quiet_s=quiet, think_at_s=think_at,
                 think_for_s=think_for, added_s=total - typing_s,
@@ -293,6 +312,144 @@ def silent_hold(total_s: float, typing_s: float,
         return Pace(total_s=total_s)
     typing_s = min(max(0.0, float(typing_s or 0.0)), total_s)
     return Pace(total_s=total_s, quiet_s=total_s - typing_s)
+
+
+# ── The welcome burst (send_welcome's second consumer of this module) ────────
+#
+# A welcome is not a reply, so `hold_for_bubble`'s three-case precedence does not
+# describe it: there is no inbound message rhythm answers, nothing was read before
+# bubble 0, and the burst's SHAPE is fixed (greeting[+image] → the line → the
+# operator's question → the GIF) rather than however many parts a draft split into.
+# What carries over is the finding itself — dispersion not delay, and phases where
+# the "…is typing" bar is honestly dark because she is not typing.
+#
+# ⚠️ HONESTY: these numbers are DRAWN, not measured. This module's table is 120 days
+# of ESTABLISHED-thread reply gaps; no welcome burst has ever been measured. They are
+# deliberately SHORTER than the operator's 30s/20s illustration for exactly that
+# reason. An account that wants his numbers sets `pace_open_quiet_s` /
+# `pace_gap_quiet_s` on the rule payload — one JSON edit, no deploy.
+_WELCOME_PACE = PaceConfig(enabled=True, drift_pct=35.0, drift_cap_s=20.0,
+                           think_gaps=True)
+_WELCOME_GIF_S = (2.0, 6.0)          # a GIF is PICKED, not typed: the hold is all quiet
+_WELCOME_OPEN_QUIET_S = (6.0, 18.0)  # before the greeting — only when an image is attempted
+_WELCOME_GAP_QUIET_S = (10.0, 25.0)  # before the line that follows the greeting
+# The bound on an OPERATOR-supplied range, applied before the total ceiling applies
+# its own. 45s of dark screen is already past anything the measured table justifies;
+# past that a fan is watching nothing happen on his very first message.
+WELCOME_QUIET_MAX_S = 45.0
+
+
+def _welcome_quiet(rng: Random, override: object,
+                   default: tuple[float, float]) -> float:
+    """One quiet draw from `override` if it is a usable [lo, hi], else `default`.
+
+    The override rides the RULE PAYLOAD (raw JSON, no typed editor), so it arrives
+    as whatever the operator typed. A malformed one falls back to the default
+    rather than raising: a bad number on a rule must never cost a fan his welcome."""
+    lo, hi = default
+    if override is not None:
+        try:
+            lo, hi = float(override[0]), float(override[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            lo, hi = default
+        else:
+            lo = min(max(0.0, lo), WELCOME_QUIET_MAX_S)
+            hi = min(max(0.0, hi), WELCOME_QUIET_MAX_S)
+            if hi < lo:
+                lo, hi = hi, lo
+    return rng.uniform(lo, hi)
+
+
+# The parts a welcome burst is made of, in send order. A bubble's ROLE, not its
+# position, is what decides its rhythm — a burst is variable-length, so position
+# decides nothing.
+#
+# ⚠️ THIS MODULE OWNS THE NAMES, and `send_welcome` imports them (it already
+# imports `welcome_burst_pace` from here; nothing here imports it, so this is the
+# only direction that can hold). They used to exist in four places: `WELCOME_ROLES`
+# here, imported by nobody; `send_welcome._ROLE_*`, which is what actually crosses
+# the boundary; bare literals in `welcome_burst_pace` below; and two more in
+# BrainPanel. Renaming a role in the sender therefore did not break anything —
+# it silently degraded that role to `bubble_pace`, the documented "unknown role is
+# paced as tail" fallback, on a live send path. The fallback is a sound decision;
+# the defect was that a TYPO and a DELIBERATE DEFAULT were indistinguishable.
+ROLE_OPENER = "opener"   # the greeting, and the only bubble that carries an image
+ROLE_GAP = "gap"         # the time / activity line after it — the optional one
+ROLE_TAIL = "tail"       # the operator's question, appended word-for-word
+ROLE_GIF = "gif"         # the text-less giphy bubble (never in `bubbles`)
+WELCOME_ROLES = (ROLE_OPENER, ROLE_GAP, ROLE_TAIL, ROLE_GIF)
+
+
+def welcome_burst_pace(*, role: str, has_image: bool,
+                       typing_s: float, text: str, rng: Random,
+                       open_quiet: tuple[float, float] | None = None,
+                       gap_quiet: tuple[float, float] | None = None) -> Pace:
+    """How long send_welcome holds before a bubble, and what the fan sees.
+
+    Pure and seeded exactly like the rest of this module: the caller passes its own
+    `Random` (seeded per bubble — `welcome_pace:{account}:{fan}:{idx}`), so a burst
+    replays and a test is not flaky. There is NO env check in here; the caller
+    decides whether the feature is on, and when it is off this function is never
+    called at all, so nothing is drawn.
+
+    ⚠️ IT DISPATCHES ON `role`, NOT ON THE BUBBLE'S INDEX, and that is a bug fix
+    rather than a preference. The burst is VARIABLE-LENGTH: the middle bubble
+    disappears when `skip_time_bubble` is on AND when `_activity_bubble` returns
+    nothing for an unfilled slot (a live shape — `test_send_welcome`'s blank-slot
+    pin case). In both of those the operator's QUESTION slides into position 1, and
+    an index-dispatching sampler silently paid it the long U(10,25) "gap before the
+    second line" instead of the short beat it is. Nobody decided that; it just fell
+    out of the arithmetic. The caller knows each bubble's role while it is
+    composing them, so it says so.
+
+    The four roles, all drawn, in this fixed order:
+
+      "gif"     fully quiet U(2,6)s. She picked it, she did not type it, and there
+                is no indicator to run — the same seeded sticker beat ai_chatter
+                uses. Replaces send_welcome's flat 3.0s.
+      "opener"  the greeting. Quiet U(6,18)s ONLY when an image is ATTEMPTED
+                (`has_image`) — she was choosing a picture — then the greeting's
+                own typing time with the bar on. No image ⇒ no quiet at all,
+                which is today's hold exactly.
+      "gap"     the time/activity line after the greeting: quiet U(10,25)s, then
+                an enter press and the typing time, with a think-gap allowed
+                inside the typing phase. This is the bubble the burst may not
+                have at all.
+      "tail"    the operator's question and anything after it — an ordinary
+                `bubble_pace` under `_WELCOME_PACE`. Usually a few seconds.
+
+    An unknown role is paced as "tail": the conservative end (a few seconds, no
+    long dark gap), because this is a live send path and the alternative to a
+    sane fallback is a fan staring at nothing over a typo.
+
+    ⚠️ `Pace.total_s` is still the ONLY number that moves a clock (see this
+    module's INVARIANT). Quiet shrinks first so no hold exceeds `_TOTAL_CEIL_S`;
+    the worst default single hold is 25 + 1.2 + 60 = 86.2s, and the clamped worst
+    is 105s — both under `rhythm.INLINE_MAX_S`."""
+    typing_s = max(0.0, float(typing_s or 0.0))
+
+    if role == ROLE_GIF:
+        total = min(rng.uniform(*_WELCOME_GIF_S), _TOTAL_CEIL_S)
+        return Pace(total_s=total, quiet_s=total, added_s=total - typing_s)
+
+    if role == ROLE_OPENER:
+        # No draw at all without an image — the off-by-shape path stays byte-clean.
+        quiet = (_welcome_quiet(rng, open_quiet, _WELCOME_OPEN_QUIET_S)
+                 if has_image else 0.0)
+        quiet = min(quiet, max(0.0, _TOTAL_CEIL_S - typing_s))
+        return Pace(total_s=quiet + typing_s, quiet_s=quiet, added_s=quiet)
+
+    if role == ROLE_GAP:
+        quiet = _welcome_quiet(rng, gap_quiet, _WELCOME_GAP_QUIET_S)
+        enter = rng.uniform(*_ENTER_S)
+        typing_phase = typing_s + enter
+        quiet = min(quiet, max(0.0, _TOTAL_CEIL_S - typing_phase))
+        total = quiet + typing_phase
+        think_at, think_for = _think_gap(typing_phase, rng, _WELCOME_PACE)
+        return Pace(total_s=total, quiet_s=quiet, think_at_s=think_at,
+                    think_for_s=think_for, added_s=total - typing_s)
+
+    return bubble_pace(typing_s, text, rng, _WELCOME_PACE)
 
 
 def hold_for_bubble(*, idx: int, text: str, typing_s: float,
@@ -338,3 +495,72 @@ def hold_for_bubble(*, idx: int, text: str, typing_s: float,
         return bubble_pace(typing_s, text, rng, cfg, budget_s=budget_s)
 
     return Pace(total_s=typing_s)                                    # 3
+
+
+# ── The picture-back pause (tip_reward's image_reply lane) ───────────────────
+#
+# A third consumer, and the only one that returns SECONDS rather than a `Pace`:
+# nothing is held while it elapses. He sends a photo; the reply is a PICTURE, and
+# a picture is not typed — she is in her camera roll. So the whole pause is dark
+# (there is no honest indicator to run), which means no process needs to be awake
+# for it: `webhook_dispatch` defers the job's `run_at` and the executor picks it up
+# when it comes due. A `Pace` would be a lie about the shape — see
+# plans/image-reply/PLAN.md §D3.
+#
+# ⚠️ HONESTY, same as the welcome burst: these numbers are DRAWN, not measured. The
+# one measured number in here is the FLOOR — `rhythm._FLOOR_S`, 25s, off the table
+# in that module's docstring: 1:1 human replies under 25s are 1.4% of the corpus.
+# Everything above it is a shape chosen to satisfy this module's own finding
+# (DISPERSION, NOT DELAY — see the header): a flat pause is measurably worse than
+# no pause at all, so the base is uniform and one draw in ~three carries a real
+# lognormal "went looking through her camera roll" tail.
+#
+# THE MEASUREMENT THIS MAKES POSSIBLE, once it has run for a week: the `image_reply`
+# row's `created_at` minus the trigger message's, i.e. `landed_after_s` on the
+# `automation_runs` row. Compare its distribution to the FAN in→in column of this
+# module's table before touching a constant.
+_PICBACK_FLOOR_S = _RHYTHM_FLOOR_S   # 25s — the one measured number in here
+_PICBACK_BASE_S = (5.0, 20.0)        # over the floor: reading it, deciding to answer
+_PICBACK_DRIFT_P = 0.3               # one in ~three goes looking for the right one
+_PICBACK_DRIFT_MU = 20.0             # median of that hunt, seconds (lognormal)
+_PICBACK_DRIFT_SIGMA = 0.7
+_PICBACK_DRIFT_CAP_S = 45.0          # so floor + base + drift can never exceed…
+PICBACK_CEIL_S = 90.0                # …this. A pic later than this is not a reply.
+
+
+def picture_back_target(rng: Random) -> float:
+    """Seconds from HIS photo to HER picture landing. Not a hold — a target.
+
+    ⚠️ Read that again: the number is measured from the TRIGGER, not from now. The
+    caller subtracts the time already spent (the vision describe, the queue) so the
+    describe is counted INSIDE this target rather than added on top of it — the
+    fan experiences one number, and it is this one. `webhook_dispatch._deferred_run_at`
+    is where that arithmetic lives.
+
+    Pure and seeded like everything else in this module: the caller passes its own
+    `Random` (seeded `picback:{account}:{fan}:{message_id}`), so a replay of the
+    same photo draws the same target and a test can assert a distribution instead
+    of a range.
+
+    The draw, in this FIXED order so a seed replays even if a term is later
+    re-tuned:
+
+      floor 25s      `rhythm._FLOOR_S`. The measured one. A reaction faster than
+                     this is where 1.4% of humans live.
+      + U(5, 20)s    she read it and decided to answer.
+      + a drift      on `p=0.3` only: lognormal(median 20s, sigma 0.7), capped at
+                     45s. This is the whole point — the term that makes the output
+                     a DISTRIBUTION rather than "25 to 45 seconds, always". A flat
+                     pause moves every gap into one band and measures WORSE than no
+                     pause (this module's header, 120 days of production).
+
+    Result: floor 25s, p50 ~38s, a real tail, hard ceiling 90s."""
+    total = _PICBACK_FLOOR_S + rng.uniform(*_PICBACK_BASE_S)
+    # Drawn UNCONDITIONALLY (like `bubble_pace`'s roll) so re-tuning the rate does
+    # not re-roll every later draw off the same seed.
+    roll = rng.random()
+    drift = min(rng.lognormvariate(_math.log(_PICBACK_DRIFT_MU), _PICBACK_DRIFT_SIGMA),
+                _PICBACK_DRIFT_CAP_S)
+    if roll < _PICBACK_DRIFT_P:
+        total += drift
+    return min(total, PICBACK_CEIL_S)

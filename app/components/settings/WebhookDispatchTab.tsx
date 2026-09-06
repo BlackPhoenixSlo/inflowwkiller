@@ -17,13 +17,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Zap } from "lucide-react";
 
-import { Button, Card } from "@/components/ui/primitives";
+import { Card } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "./JsonConfigModal";
 import {
   useWebhookConfig,
   useSaveWebhookConfig,
   type WebhookConfig,
 } from "@/hooks/useWebhookConfig";
+import StickySaveBar, {
+  RetryLoad, SaveRow, loadGateNote, type SaveControl,
+} from "@/components/settings/StickySaveBar";
 
 const INPUT_CLS =
   "w-24 bg-bg border border-border rounded-lg px-3 py-2 text-base md:text-sm focus:outline-none focus:border-accent";
@@ -60,6 +63,48 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
   const typingWpm = form.typing_wpm ?? 38;
   const typingIndicator = form.typing_indicator ?? true;  // ON by default
 
+  /** One writer for every field, so the "Saved ✓" the pinned bar holds in view
+   *  can never outlive the state it describes. React Query latches `isSuccess`
+   *  until the next mutate() or reset(); `!isPending` does not clear it, so
+   *  without this an operator ticks a box and the pin still reads "Saved ✓".
+   *  Same seam as TipRewardTab's and PPVLibraryTab's markDirty(). */
+  const set = (patch: Partial<WebhookConfig>) => {
+    if (saveM.isSuccess || saveM.isError) saveM.reset();
+    setForm((f) => ({ ...f, ...patch }));
+  };
+
+  /** The load gate. The early return above covers a config that is still
+   *  FETCHING, not one whose fetch FAILED — every field then shows its
+   *  hardcoded fallback and a save would PUT those over the account's stored
+   *  blob (this endpoint takes a whole-blob replace). Its own named slot on the
+   *  control below, so it cannot go missing unnoticed.
+   *  `!!data`, not `data !== undefined`: a 200 with an empty body arrives as
+   *  `null`, and that un-seeded form is the whole point of the gate. No
+   *  `isSuccess` conjunct either — React Query only writes `data` from a
+   *  successful fetch, so it would add nothing but false negatives when a
+   *  background refetch fails over settings that loaded fine. `loadGateNote`
+   *  in StickySaveBar.tsx carries the long form. */
+  const configLoaded = !!cfgQ.data;
+  /** …said out loud. `loadGateNote` words each of the three states that gate
+   *  closes on honestly — in particular it does not claim these settings "never
+   *  loaded" when one background refetch failed over settings that did. */
+  const gateNote = loadGateNote(cfgQ);
+
+  /** THE tab's save control, built once and rendered twice — in flow, and again
+   *  in the pinned bar that is the last child of this same Card. */
+  const save: SaveControl = {
+    onSave: () => saveM.mutate(form),
+    saving: saveM.isPending,
+    canSave: configLoaded,
+    label: "Save instant-reply settings",
+    saved: saveM.isSuccess,
+    error: saveM.isError ? "Save failed" : null,
+    gateNote,
+  };
+  /** Beside that note, in BOTH controls: this config never polls, so without a
+   *  retry the only way out of a failed fetch is reloading the page. */
+  const retry = gateNote ? <RetryLoad q={cfgQ} /> : null;
+
   return (
     <Card className="p-4 space-y-4 max-w-xl">
       <header className="flex items-center gap-2">
@@ -92,7 +137,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
           type="checkbox"
           className="h-4 w-4 accent-[var(--accent)]"
           checked={enabled}
-          onChange={(e) => setForm((f) => ({ ...f, enabled: e.target.checked }))}
+          onChange={(e) => set({ enabled: e.target.checked })}
         />
         <span className="text-sm">
           {enabled ? "Enabled — replies in real time" : "Disabled (polls every 30s)"}
@@ -111,7 +156,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
             value={delay}
             disabled={!enabled}
             onChange={(e) =>
-              setForm((f) => ({ ...f, delay_seconds: Math.max(0, Number(e.target.value) || 0) }))
+              set({ delay_seconds: Math.max(0, Number(e.target.value) || 0) })
             }
           />
         </label>
@@ -125,7 +170,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
             value={jitter}
             disabled={!enabled}
             onChange={(e) =>
-              setForm((f) => ({ ...f, jitter_seconds: Math.max(0, Number(e.target.value) || 0) }))
+              set({ jitter_seconds: Math.max(0, Number(e.target.value) || 0) })
             }
           />
         </label>
@@ -156,7 +201,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
             className={INPUT_CLS}
             value={manualYield}
             onChange={(e) =>
-              setForm((f) => ({ ...f, manual_yield_minutes: Math.max(0, Number(e.target.value) || 0) }))
+              set({ manual_yield_minutes: Math.max(0, Number(e.target.value) || 0) })
             }
           />
         </label>
@@ -179,7 +224,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
             className={INPUT_CLS}
             value={typingWpm}
             onChange={(e) =>
-              setForm((f) => ({ ...f, typing_wpm: Math.max(0, Number(e.target.value) || 0) }))
+              set({ typing_wpm: Math.max(0, Number(e.target.value) || 0) })
             }
           />
         </label>
@@ -198,7 +243,7 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
             className="h-4 w-4 accent-[var(--accent)]"
             checked={typingIndicator}
             onChange={(e) =>
-              setForm((f) => ({ ...f, typing_indicator: e.target.checked }))
+              set({ typing_indicator: e.target.checked })
             }
           />
           <span className="text-sm">Show the fan a live “…is typing” bubble</span>
@@ -212,23 +257,16 @@ export default function WebhookDispatchTab({ accountId }: { accountId: string | 
         </p>
       </div>
 
-      <div className="flex items-center gap-3 pt-1">
-        <Button
-          onClick={() => saveM.mutate(form)}
-          disabled={saveM.isPending}
-        >
-          {saveM.isPending ? "Saving…" : "Save"}
-        </Button>
-        {saveM.isSuccess && !saveM.isPending && (
-          <span className="text-xs text-emerald-500">Saved ✓</span>
-        )}
-        {saveM.isError && (
-          <span className="text-xs text-red-500">Save failed</span>
-        )}
+      <SaveRow {...save} className="gap-3 pt-1">
+        {retry}
         <div className="ml-auto">
           <EditRawJsonButton surface="webhook-config" accountId={accountId} />
         </div>
-      </div>
+      </SaveRow>
+
+      {/* The pinned twin — same `save` object, so it cannot drift from the row
+       *  above — and the last child of the Card whose mutation it fires. */}
+      <StickySaveBar {...save}>{retry}</StickySaveBar>
     </Card>
   );
 }

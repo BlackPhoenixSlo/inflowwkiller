@@ -530,6 +530,11 @@ AUDIENCE_SENDER_CLASSIFICATION: dict[str, str] = {
     # exempt, named reason (printed in the Brain UI exemption register)
     "tip_reward": "exempt:reactive tip acknowledgment — answers a fan action; "
                   "operator-stop gated only",
+    # Its own KIND (not just a payload flag on tip_reward) so a $0 freebie can
+    # never queue ahead of a paid bundle — separate (account, kind) queue. Same
+    # exemption reasoning: it answers a fan action, his photo.
+    "image_reply": "exempt:reactive image reply — answers a fan action (his "
+                   "photo); operator-stop gated only",
     "make_right": "exempt:reactive repair/apology — gating it produces "
                   "dispute-shaped failures; operator-stop gated only",
     "unsend_messages": "exempt:cleanup — removes messages, sends nothing new",

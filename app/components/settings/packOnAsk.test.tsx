@@ -26,6 +26,7 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 
 import UpsellerTab from "@/components/settings/UpsellerTab";
 import { relay } from "@/lib/relay";
+import { inFlowSave as sharedInFlowSave } from "@/test-utils";
 
 const relayGet = relay.get as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
@@ -45,6 +46,11 @@ function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
 }
+
+/** These cases mean the IN-FLOW Save, not the pinned twin at the bottom of the
+ *  viewport — both carry the same accessible name on purpose, so a name lookup
+ *  cannot tell them apart. The shared helper lives in app/test-utils.tsx. */
+const inFlowSave = () => sharedInFlowSave(/Save Upseller settings/i);
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -67,10 +73,7 @@ describe("answering a content-ask", () => {
     // Assert the PAYLOAD, not the pixels. A checkbox that looks ticked while the
     // master flag never reaches the server is precisely the failure this guards,
     // and only the PUT body can tell the two apart.
-    // The tab renders the Save row twice — in-flow on desktop, sticky on a
-    // phone — so this takes the first rather than asserting there is one.
-    await user.click(
-      screen.getAllByRole("button", { name: /Save Upseller settings/i })[0]);
+    await user.click(inFlowSave());
     const body = relayPut.mock.calls.at(-1)?.[1] as { config: Record<string, unknown> };
     expect(body.config.pack_on_ask_enabled).toBe(true);
     expect(body.config.pack_send_enabled).toBe(true);
@@ -107,8 +110,7 @@ describe("answering a content-ask", () => {
     await user.clear(rate);
     await user.type(rate, "50");
 
-    await user.click(
-      screen.getAllByRole("button", { name: /Save Upseller settings/i })[0]);
+    await user.click(inFlowSave());
     const body = relayPut.mock.calls.at(-1)?.[1] as { config: Record<string, unknown> };
     expect(body.config.tease_sell_rate).toBe(0.5);
   });
