@@ -470,6 +470,7 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
     # Imported here, not at module import: fans.py is loaded by the relay on boot and
     # ai_chatter pulls in the LLM client + the whole offer engine behind it.
     from automations import ai_chatter as ac
+    from automations import rhythm
     from automations import upsell
 
     now = datetime.utcnow()
@@ -506,6 +507,34 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         comparisons, so 'is this state live' is decided once, here."""
         return dt if dt is not None and dt > now else None
 
+    # ── WHICH away-state, when there is one. `rhythm_state.context` names the
+    # step-out and the ordinary scheduled reply outright; it CANNOT name the sleep
+    # window, because `decide_availability` writes CONTEXT_UNAVAILABLE for both the
+    # night and the break roll. So the sleep half is reconstructed from her clock —
+    # by the engine's own predicate, never a second copy of the window arithmetic
+    # here (the same rule `skip_reason_blocks` is asked for below).
+    #
+    # Gated on `rhythm_wake` so a fan who is not paused costs nothing:
+    # `ac.sleep_window` only touches the DB for an account on the DERIVED source,
+    # and no fan reaches it unless he is actually away.
+    rhythm_wake = _future(rst.wake_at if rst is not None else None)
+    rhythm_asleep = False
+    if rhythm_wake is not None and bool(cfg.get("rhythm_enabled")):
+        cfg_row = await ac.load_cfg_row(account_id)
+        # `tz_off = clock_tz if rhythm_on else None` is what run() does; the flag is
+        # already checked above, so this is the same offset the sampler was handed.
+        tz_off = rhythm.tz_offset_for(getattr(cfg_row, "timezone", None),
+                                      getattr(cfg_row, "utc_offset", None))
+        rhythm_asleep = rhythm.sleeping_pause(
+            rhythm.RhythmCtx(
+                account_id=str(account_id), fan_id=int(fan_id),
+                sleep_window=await ac.sleep_window(
+                    account_id, tz_off, cfg.get("sleep_window"),
+                    str(cfg.get("rhythm_sleep_source") or "default")),
+                tz_offset_minutes=tz_off,
+                no_sleep=bool(cfg.get("rhythm_no_sleep"))),
+            rhythm_wake, now)
+
     # ── The gates, in run()'s order. First hit wins: a later gate may only speak if
     # nothing before it did. The SENTENCES live in fan_status_copy.
     badge = copy.standing_badge(
@@ -519,10 +548,16 @@ async def get_fan_ai_status(account_id: str, fan_id: int) -> dict[str, Any]:
         # unreachable. Exactly the drift this function's docstring forbids.
         skip_reason=(reason if ac.skip_reason_blocks(
             reason, engage_old_fans=bool(cfg.get("engage_old_fans"))) else None),
-        rhythm_wake_at=_future(rst.wake_at if rst is not None else None),
+        rhythm_wake_at=rhythm_wake,
         paused_until=_future(fan.automation_paused_until if fan is not None else None),
         companion_until=_future(lad.companion_until if lad is not None else None),
-        post_buy_until=_future(lad.cooldown_until if lad is not None else None))
+        post_buy_until=_future(lad.cooldown_until if lad is not None else None),
+        # ONE value, not two: both halves are derived together from `rhythm_wake`
+        # above, and passing the context while forgetting `asleep` would label a
+        # sleeping thread "On a break" with nothing to catch it. See `RhythmAway`.
+        rhythm_away=copy.RhythmAway(
+            context=(rst.context if rst is not None else None),
+            asleep=rhythm_asleep))
 
     # The engine that owns this fan. A payer welcome_chatter_for_info graduated ('spent') belongs to
     # the upseller — that's precisely the fan it exists for.

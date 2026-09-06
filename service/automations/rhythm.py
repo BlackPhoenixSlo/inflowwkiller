@@ -263,6 +263,12 @@ SCENE_TTL_S = 12 * 60
 # longer loses a little realism, an account that sleeps too long loses replies.
 DEFAULT_SLEEP = ("02:00", "06:00")
 
+# She does not answer 40 fans at 10:00:00, so the wake is smeared across this band
+# past the window's end. Named because `sleeping_pause` RECOGNISES the same band it
+# draws from: a literal in both places is a drift waiting to happen, and the drift
+# would show up as a badge calling her night a break for the first 45 minutes of it.
+WAKE_STAGGER_MAX_S = 45 * 60
+
 CONTEXT_ASK_OPEN = "ask_open"      # an unpaid rung is live, or he paid < 60min ago
 CONTEXT_FREE_CHAT = "free_chat"    # banter / sext, no open ask
 CONTEXT_UNAVAILABLE = "unavailable"
@@ -474,7 +480,7 @@ def tz_offset_for(timezone: str | None, utc_offset: int | None,
 
     ⚠️ The precedence was the OTHER WAY around until 2026-08-08, and that is what
     this reversal is for. Two clocks were stored per account and the silent one won:
-    Dana sat on `America/Los_Angeles` next to a stored -4, so her welcome told
+    Isabelle sat on `America/Los_Angeles` next to a stored -4, so her welcome told
     new subscribers "it's Friday night in US" at 07:38 Eastern and named yesterday's
     weekday after Eastern midnight. Nothing on any screen said which of the two was
     live. A fixed offset does NOT track DST — that is the accepted cost of having
@@ -600,6 +606,51 @@ def is_night(ctx: RhythmCtx, at_utc: datetime) -> bool:
     return in_sleep_window(local_now(at_utc, ctx.tz_offset_minutes), ctx.sleep_window)
 
 
+def _last_wake(local_dt: datetime, window: tuple[str, str]) -> datetime:
+    """The most recent creator-local wake boundary at or before `local_dt`. The mirror
+    of `next_wake`, and the reason it exists is that a stored `wake_at` is looked at
+    from AFTER it was chosen — asking for the NEXT boundary would skip a whole day."""
+    end = _parse_hhmm(window[1])
+    w = local_dt.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
+    if w > local_dt:
+        w -= timedelta(days=1)
+    return w
+
+
+def sleeping_pause(ctx: RhythmCtx, wake_at: datetime | None,
+                   at_utc: datetime) -> bool:
+    """Is the pause ending at `wake_at` HER NIGHT, rather than a break or a step-out?
+
+    ⚠️ THIS IS A RECONSTRUCTION, not a stored fact. `decide_availability` writes
+    CONTEXT_UNAVAILABLE for the sleep window AND for the break roll and keeps no note
+    of which fired, so the only honest thing left to do downstream is to ask the clock
+    the same questions the branch itself asked. Two of them, either sufficient:
+
+      • She is inside her sleep window RIGHT NOW. Whatever opened the pause, the model
+        has her asleep at this instant, so the word is true even when a break rolled at
+        01:50 is what is technically holding the thread — she could not have answered
+        anyway. (A break cannot be ROLLED during the night: the sleep branch returns
+        above it. Only one begun before 02:00 can still be running inside it.)
+      • Her drawn wake lands in the stagger band just past a wake boundary — the
+        signature the sleep branch and nothing else produces. This is what covers the
+        up-to-45-minute tail in which the window has ended but she is still in bed.
+
+    WHERE IT IS WRONG: a break rolled in the ~45 minutes after she wakes, and short
+    enough to end inside the same band, reads as sleep. Narrow (the shortest break is
+    30 minutes) and it errs toward the calmer word on a thread she was going to be
+    quiet on regardless.
+
+    False for an account with no clock and in no-sleep mode — neither HAS a night, so
+    no pause of theirs can be one."""
+    if wake_at is None or ctx.tz_offset_minutes is None or ctx.no_sleep:
+        return False
+    if is_night(ctx, at_utc):
+        return True
+    wake_local = local_now(wake_at, ctx.tz_offset_minutes)
+    since = (wake_local - _last_wake(wake_local, ctx.sleep_window)).total_seconds()
+    return 0 <= since <= WAKE_STAGGER_MAX_S
+
+
 def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decision | None:
     """Is she AROUND to answer at all? None = yes, go generate a reply.
 
@@ -618,7 +669,7 @@ def decide_availability(ctx: RhythmCtx, utc_now: datetime, rng: Random) -> Decis
         wake_local = next_wake(lnow, ctx.sleep_window)
         wake_utc = wake_local - timedelta(minutes=ctx.tz_offset_minutes)
         # Wake with a human stagger — she does not answer 40 fans at 10:00:00.
-        wake_utc += timedelta(seconds=rng.randint(0, 45 * 60))
+        wake_utc += timedelta(seconds=rng.randint(0, WAKE_STAGGER_MAX_S))
         return Decision(delay_s=0.0, context=CONTEXT_UNAVAILABLE, wake_at=wake_utc,
                         cover_line=_pick_cover(rng, "asleep", ctx, utc_now))
 

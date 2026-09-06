@@ -50,6 +50,10 @@ interface CustomRow {
   account_name: string;
   fan_id: number;
   display_name: string;
+  /** The OnlyFans @handle. Kept SEPARATE from `display_name` (which falls back
+   *  to it) because the handoff below has to carry the exact string the
+   *  operator pastes into OF search — a display name finds nothing there. */
+  of_username?: string | null;
   tip_cents: number | null;
   /** How many SEPARATE orders make up `tip_cents`. Two $100 tips a day apart
    *  are two voice notes, and the queue used to show one. 0 on a row whose
@@ -70,10 +74,35 @@ interface Brief {
   /** false = the model could not see him ask for anything in this excerpt.
    *  Rendered as a warning, never as a work order. */
   found_request?: boolean;
+  /** The concrete work order — what to make, how long, what to wear, what to
+   *  say, what to call him. This IS the handoff. */
   summary?: string;
-  deliverables?: string[];
-  say_by_name?: string | null;
-  uncertain?: string[];
+  /** His own lines that are the request, verbatim — the receipt. */
+  his_words?: string[];
+  call_him?: string | null;
+}
+
+/** ONE line of the order span. Named rather than inline because both the pane
+ *  and the clipboard render it, through `speaker`/`orderLine` below. */
+interface OrderMsg {
+  message_id: number;
+  from_fan: boolean;
+  is_tip: boolean;
+  text: string;
+  at: string | null;
+}
+
+/** The order's own span — see `/admin/customs/order`. NOT a window around the
+ *  tip: on a layaway custom the ask is months behind the money. */
+interface OrderLines {
+  lines: OrderMsg[];
+  count: number;
+  opened_at?: string | null;
+  /** true = the span was too long to print whole, so only the lines mentioning
+   *  the order survived. Said out loud, because the operator is otherwise
+   *  reading an edit without being told it is one. */
+  truncated?: boolean;
+  reason?: string;
 }
 
 interface ContextMsg {
@@ -124,6 +153,79 @@ function workOrderQuote(msgs: ContextMsg[]): string | null {
 }
 
 
+/** WHO SAID IT, for ONE order line — the single source for both surfaces.
+ *
+ *  The pane and the copy button render the same three-way conditional over the
+ *  same rows, and the pane's own comment promises the clipboard carries "exactly"
+ *  what is on screen. Written twice by hand that promise survives only until
+ *  someone edits one of them, so it is written once here and both call it. */
+function speaker(m: OrderMsg): string {
+  return m.is_tip ? "💸" : m.from_fan ? "HIM" : "US";
+}
+
+/** ONE order line as the clipboard carries it: speaker, date, text.
+ *
+ *  Padded to the pane's column widths so a pasted handoff reads as the same
+ *  three columns the operator was just looking at. */
+function orderLine(m: OrderMsg): string {
+  return `${speaker(m).padStart(4, " ")} ${(m.at || "").slice(0, 10)}  ${m.text}`;
+}
+
+/** THE HANDOFF, in the operator's own words (2026-09-05):
+ *
+ *      -username
+ *      -account
+ *      -copy and paste the request
+ *
+ *  ...where the request is *"scrape those 100 messages over the tips before
+ *  and after and generate CONCRETE SUMMARY OF WHAT WE NEED TO DO"*. So the
+ *  body is the model's work order from `/admin/customs/brief` (100 messages
+ *  each side of the tip, plus the order's own lines from the whole thread),
+ *  followed by his exact words as the receipt.
+ *
+ *  Until the brief lands, or when it fails, the raw order lines stand in so
+ *  the button never copies an empty request.
+ *
+ *  The username is `of_username`, NOT `display_name`. `display_name` falls back
+ *  to the handle, so on many rows they render identically and the difference is
+ *  invisible right up until the row where it matters and OF search finds
+ *  nothing. */
+function handoffText(
+  r: CustomRow,
+  brief: Brief | null | undefined,
+  order: OrderLines | null,
+): string {
+  const username = (r.of_username || "").trim();
+  const lines = [
+    `-username: ${username ? `@${username}` : `(not stored — fan #${r.fan_id}, "${r.display_name}")`}`,
+    `-account: ${r.account_name}`,
+  ];
+  // The total, from the DB. One number, nothing derived from it.
+  if (r.tip_cents != null) {
+    lines.push(`-total: ${money(r.tip_cents)}`);
+  }
+  if (brief?.call_him) lines.push(`-call him: ${brief.call_him}`);
+  lines.push("-request:");
+
+  if (brief?.ok && brief.found_request !== false && brief.summary) {
+    lines.push(`  ${brief.summary}`);
+    if ((brief.his_words || []).length > 0) {
+      lines.push("  His words:");
+      for (const w of brief.his_words || []) lines.push(`  "${w}"`);
+    }
+    return lines.join("\n");
+  }
+
+  const got = order?.lines || [];
+  if (got.length === 0) {
+    lines.push("  (no order talk found in this thread — open it in OnlyFans)");
+  } else {
+    for (const m of got) lines.push(orderLine(m));
+  }
+  return lines.join("\n");
+}
+
+
 function Section({
   title,
   note,
@@ -148,11 +250,52 @@ function Section({
   // The brief for the open row. `undefined` = never asked (the operator has to
   // click), `null` = in flight.
   const [brief, setBrief] = useState<Brief | null | undefined>(undefined);
+  // Which row was just copied, so the button can say it worked. A copy that
+  // silently succeeds is indistinguishable from a copy that silently failed,
+  // and the operator only finds out when he pastes an empty handoff.
+  const [copied, setCopied] = useState<string | null>(null);
+  // The order span for the open row. `null` = in flight. Loaded WITH the row,
+  // not on a second click: it is the answer to "what do I record", so making
+  // the operator ask for it separately is the extra step he objected to.
+  const [order, setOrder] = useState<OrderLines | null>(null);
 
   /** Load the thread around this row's anchor tip into the pane. */
   const loadCtx = useCallback(async (r: CustomRow) => {
     setCtx(null);
-    setBrief(undefined);
+    setBrief(null);
+    setOrder(null);
+    // The order span AND the work order, in parallel with the thread window
+    // below. Both fire on open — the operator ruled the extra click out. Each
+    // is best-effort: a failure leaves the handoff on its fallback, never
+    // blocks the pane.
+    //
+    // STARTED here and AWAITED at the bottom, rather than fired with `void`.
+    // Starting them first is what keeps all three requests in flight together;
+    // awaiting them at the end is what makes a rejection observable at all — as
+    // `void` IIFEs a throw from a `setState`, or from anything added to these
+    // blocks later, was an unhandled rejection nothing reported.
+    const orderPull = (async () => {
+      try {
+        const q = new URLSearchParams({
+          account_id: r.account_id,
+          fan_id: String(r.fan_id),
+        });
+        setOrder(await relay.get<OrderLines>(`/admin/customs/order?${q}`));
+      } catch {
+        setOrder({ lines: [], count: 0, reason: "lookup failed" });
+      }
+    })();
+    const briefPull = (async () => {
+      try {
+        setBrief(await relay.post<Brief>("/admin/customs/brief", {
+          account_id: r.account_id,
+          fan_id: r.fan_id,
+          at: r.tipped_at,
+        }));
+      } catch (e) {
+        setBrief({ ok: false, reason: e instanceof Error ? e.message : "failed" });
+      }
+    })();
     try {
       const q = new URLSearchParams({
         account_id: r.account_id,
@@ -172,6 +315,10 @@ function Section({
     } catch {
       setCtx([]);
     }
+    // Both already set their own fallback state on failure, so this cannot
+    // reject in practice — which is exactly why it must not be silent if it ever
+    // does. The pane is fully rendered by the time we get here.
+    await Promise.all([orderPull, briefPull]);
   }, []);
 
   const toggle = useCallback(
@@ -187,10 +334,9 @@ function Section({
     [openKey, loadCtx],
   );
 
-  /** Ask the model what to record. ON CLICK ONLY — a call per row on queue
-   *  load would be money spent on rows nobody opens. Best-effort: a failure
-   *  renders as a line in the pane, never as the page-wide error banner, and
-   *  the raw thread underneath is unaffected. */
+  /** Re-ask the model. The brief loads with the row (see `loadCtx`); this is
+   *  the retry for when it failed or came back without the request. Per row,
+   *  never per queue load — rows nobody opens cost nothing. */
   const askBrief = useCallback(async (r: CustomRow) => {
     setBrief(null);
     try {
@@ -204,6 +350,27 @@ function Section({
       setBrief({ ok: false, reason: e instanceof Error ? e.message : "failed" });
     }
   }, []);
+
+  /** Put the three-line handoff on the clipboard — see `handoffText`.
+   *
+   *  It copies what the pane has ALREADY loaded, which is why it lives inside
+   *  the expanded row: the request lines come from the thread, so there is
+   *  nothing honest to copy before it has been read. `writeText` rejects
+   *  outside a secure context, so a failure has to be visible rather than
+   *  leaving the operator to paste whatever was on the clipboard before. */
+  const copyHandoff = useCallback(
+    async (r: CustomRow) => {
+      const key = `${r.account_id}:${r.fan_id}`;
+      try {
+        await navigator.clipboard.writeText(handoffText(r, brief, order));
+        setCopied(key);
+        setTimeout(() => setCopied((c) => (c === key ? null : c)), 2000);
+      } catch {
+        setCopied(`${key}:failed`);
+      }
+    },
+    [brief, order],
+  );
 
   /** Re-scrape this fan's thread from OF, then re-read the pane.
    *
@@ -301,6 +468,14 @@ function Section({
                     >
                       {r.display_name}
                     </Link>
+                    {/* The handle, when it differs from what is already shown.
+                        `display_name` falls back to the username, so printing
+                        both unconditionally renders the same string twice. */}
+                    {r.of_username && r.of_username !== r.display_name && (
+                      <span className="ml-1 text-xs opacity-60">
+                        @{r.of_username}
+                      </span>
+                    )}
                   </td>
                   <td className="py-2 pr-3 opacity-80">{r.account_name}</td>
                   <td className="py-2 pr-3 tabular-nums font-medium">
@@ -392,87 +567,146 @@ function Section({
                         No messages stored around this tip.
                       </p>
                     )}
-                    {/* WHAT TO FILM. The button is the whole gate on cost —
-                        nothing is generated until someone asks. */}
-                    {ctx !== null && ctx.length > 0 && (
-                      <div className="mb-3">
-                        {/* ONE state, four renders. `undefined`/`null` as
-                            "never asked"/"in flight" reads as two unrelated
-                            nullables at the call site, so the phase is named
-                            once here and switched on once below. */}
-                        {briefPhase === "idle" && (
-                          <button
-                            onClick={() => void askBrief(r)}
-                            className="rounded border px-2 py-1 text-xs hover:bg-black/5"
-                            title="Read the thread and say what the voice note has to contain"
-                          >
-                            What to film?
-                          </button>
+                    {/* THE HANDOFF, first and above the model brief, because
+                        this is what actually gets sent on: username, account,
+                        his words. The brief below is the optional read-it-for-me
+                        layer — it was the ONLY layer, which is the "too
+                        complicated" the operator named. */}
+                    {ctx !== null && (
+                      <div className="mb-3 flex items-center gap-2">
+                        <button
+                          onClick={() => void copyHandoff(r)}
+                          className="rounded border px-2 py-1 text-xs hover:bg-black/5"
+                          title="Copy username, account and his exact words"
+                        >
+                          Copy handoff
+                        </button>
+                        {copied === key && (
+                          <span className="text-xs text-emerald-600">Copied</span>
                         )}
-                        {briefPhase === "loading" && (
-                          <p className="text-xs opacity-60">Reading the thread…</p>
+                        {copied === `${key}:failed` && (
+                          <span className="text-xs text-red-500">
+                            Copy blocked &mdash; select the text below instead
+                          </span>
                         )}
-                        {briefPhase === "failed" && brief && (
-                          <p className="text-xs opacity-60">
-                            Couldn&rsquo;t summarise ({brief.reason || "unknown"}) &mdash;
-                            the thread is below.
-                          </p>
+                        {order && order.lines.length === 0 && (
+                          <span className="text-xs opacity-60">
+                            no order talk found in this thread
+                          </span>
                         )}
-                        {briefPhase === "not-found" && brief && (
-                          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-                            <p className="text-xs font-semibold">
-                              His ask isn&rsquo;t in this excerpt
-                            </p>
-                            <p className="mt-1 text-xs opacity-80">
-                              {brief.summary ||
-                                "He never says what he wants in the messages we have."}{" "}
-                              Try &ldquo;Pull&rdquo; to fetch more of the thread from
-                              OnlyFans, or read it below.
-                            </p>
-                          </div>
-                        )}
-                        {briefPhase === "ready" && brief && (
-                          <div className="rounded border border-emerald-600/40 bg-emerald-600/5 px-3 py-2">
-                            <p className="text-xs font-semibold">
-                              Work order
-                              {/* From the DB. The model is never asked for a
-                                  figure — see the endpoint's docstring. */}
-                              {brief.paid_cents ? (
-                                <span className="ml-1 font-normal opacity-70">
-                                  · {money(brief.paid_cents)}
-                                  {(brief.order_count || 0) > 1
-                                    ? ` · ${brief.order_count} tips`
-                                    : ""}
-                                </span>
-                              ) : null}
-                            </p>
-                            {brief.summary && (
-                              <p className="mt-1 text-xs">{brief.summary}</p>
-                            )}
-                            {(brief.deliverables || []).length > 0 && (
-                              <ul className="mt-1 list-disc pl-4 text-xs">
-                                {(brief.deliverables || []).map((d, i) => (
-                                  <li key={i}>{d}</li>
-                                ))}
-                              </ul>
-                            )}
-                            {brief.say_by_name && (
-                              <p className="mt-1 text-xs">
-                                Say his name: <strong>{brief.say_by_name}</strong>
-                              </p>
-                            )}
-                            {(brief.uncertain || []).length > 0 && (
-                              <p className="mt-1 text-xs opacity-70">
-                                Unclear &mdash; your call: {(brief.uncertain || []).join("; ")}
-                              </p>
-                            )}
-                            <p className="mt-1 text-[11px] opacity-50">
-                              Generated from his messages. Check them below.
-                            </p>
-                          </div>
+                        {!r.of_username && (
+                          // The one case the handoff cannot fill in. Say it
+                          // where the copy happens, not after it is pasted.
+                          <span className="text-xs opacity-60">
+                            no @username stored &mdash; try &ldquo;Pull&rdquo;
+                          </span>
                         )}
                       </div>
                     )}
+                    {/* THE ORDER, on screen exactly as the copy button emits it.
+                        Rendered ABOVE the raw thread because it IS the answer:
+                        the thread below is a window around the money, and on a
+                        layaway custom the money is months from the ask. */}
+                    {order && order.lines.length > 0 && (
+                      <div className="mb-3 rounded border border-emerald-600/40 bg-emerald-600/5 px-3 py-2">
+                        <p className="text-xs font-semibold">
+                          The order
+                          {order.opened_at && (
+                            <span className="ml-1 font-normal opacity-70">
+                              · since {order.opened_at.slice(0, 10)}
+                            </span>
+                          )}
+                        </p>
+                        <div className="mt-1 space-y-1">
+                          {order.lines.map((m) => (
+                            <div key={m.message_id} className="flex gap-2 text-xs">
+                              <span
+                                className={`w-8 shrink-0 font-medium ${
+                                  m.is_tip
+                                    ? ""
+                                    : m.from_fan
+                                      ? "text-emerald-700"
+                                      : "opacity-50"
+                                }`}
+                              >
+                                {speaker(m)}
+                              </span>
+                              <span className="w-16 shrink-0 opacity-50">
+                                {(m.at || "").slice(0, 10)}
+                              </span>
+                              <span className="min-w-0">{m.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                        {order.truncated && (
+                          // Never let an EDIT look like the whole thread.
+                          <p className="mt-1 text-[11px] opacity-50">
+                            Long thread &mdash; showing only the lines that
+                            mention the order.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {/* WHAT TO DO. Loads with the row — this is the handoff
+                        body, so it is never behind a second click. */}
+                    <div className="mb-3">
+                      {briefPhase === "loading" && (
+                        <p className="text-xs opacity-60">Reading the thread…</p>
+                      )}
+                      {(briefPhase === "failed" || briefPhase === "idle") && (
+                        <p className="text-xs opacity-60">
+                          Couldn&rsquo;t summarise
+                          {brief?.reason ? ` (${brief.reason})` : ""} &mdash;{" "}
+                          <button
+                            onClick={() => void askBrief(r)}
+                            className="underline underline-offset-2 hover:opacity-70"
+                          >
+                            try again
+                          </button>
+                          . The copy button uses his raw lines meanwhile.
+                        </p>
+                      )}
+                      {briefPhase === "not-found" && brief && (
+                        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                          <p className="text-xs font-semibold">
+                            His ask isn&rsquo;t in this excerpt
+                          </p>
+                          <p className="mt-1 text-xs opacity-80">
+                            {brief.summary ||
+                              "He never says what he wants in the messages we have."}{" "}
+                            Try &ldquo;Pull&rdquo; to fetch more of the thread from
+                            OnlyFans, or read it below.
+                          </p>
+                        </div>
+                      )}
+                      {briefPhase === "ready" && brief && (
+                        <div className="rounded border border-emerald-600/40 bg-emerald-600/5 px-3 py-2">
+                          <p className="text-xs font-semibold">
+                            What to do
+                            {brief.call_him && (
+                              <span className="ml-1 font-normal opacity-70">
+                                · call him <strong>{brief.call_him}</strong>
+                              </span>
+                            )}
+                          </p>
+                          {brief.summary && (
+                            <p className="mt-1 text-xs">{brief.summary}</p>
+                          )}
+                          {(brief.his_words || []).length > 0 && (
+                            <div className="mt-1.5 text-xs opacity-80">
+                              <span className="font-medium">His words:</span>
+                              {(brief.his_words || []).map((w, i) => (
+                                <p key={i} className="italic">&ldquo;{w}&rdquo;</p>
+                              ))}
+                            </div>
+                          )}
+                          <p className="mt-1 text-[11px] opacity-50">
+                            Generated from 100 messages either side of the tip.
+                            Check them below.
+                          </p>
+                        </div>
+                      )}
+                    </div>
                     {ctx !== null && workOrderQuote(ctx) && (
                       <blockquote
                         className="mb-3 border-l-2 border-emerald-600/50 pl-3 text-xs italic opacity-90"

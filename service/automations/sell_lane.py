@@ -97,7 +97,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from sqlalchemy import select
 
@@ -108,6 +108,7 @@ from . import _customs, _language, _sell_signal, upsell
 
 if TYPE_CHECKING:                    # runtime import is lazy — see `may_sell`
     from . import pack_sender
+    from .content_contract import Contract
 
 log = logging.getLogger("of-relay.automation.sell_lane")
 
@@ -135,6 +136,10 @@ R_MAX_OPEN = "max_open_offers"
 R_CAPS = "caps"
 R_TICK_BUDGET = "tick_budget"
 R_CALLER = "caller_brake"
+# A caller that reads its OWN contract (see `plan(contract=)`) and found nothing
+# to sell on. Not a brake and not a lane refusal: the read ran, the answer was
+# "no reason to sell him anything right now", and that is a good answer.
+R_NO_HOOK = "no_hook"
 
 # `pack_sender` reports a would-send as "dry_run". Both mean "he got an ask", and
 # the string test was repeated at four call sites before this constant existed.
@@ -270,6 +275,12 @@ class SellResult:
     n: int | None = None
     price_cents: int | None = None
     category: str | None = None
+    # The OF message id of the box that went out, when one did. `_deliver` has
+    # always returned it; nothing above the lane could read it, so a caller that
+    # needs to remember WHICH offer it sent (the hook's per-purchase slot does)
+    # had to re-derive it from the offer table. None on every refusal, and on a
+    # dry run — nothing was sent, so there is no id to record.
+    message_id: int | None = None
 
     def __bool__(self) -> bool:
         return self.sold
@@ -283,7 +294,8 @@ class SellResult:
         return cls(sold=res.get("status") in _SOLD_STATUSES,
                    reason=str(res.get("reason") or res.get("status") or ""),
                    n=res.get("n"), price_cents=res.get("price_cents"),
-                   category=res.get("category"))
+                   category=res.get("category"),
+                   message_id=res.get("message_id"))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -372,6 +384,10 @@ class SellLane:
         self.budget = budget or TickBudget()
         self.sold = 0
         self.refused = 0
+        # A DECIDED pack that never reached the wire. A subset of `refused` —
+        # counted separately because "nothing to sell him" and "the send 400ed"
+        # are opposite events that both land in `_lane_refused`.
+        self.delivery_failed = 0
         self._counters: AskCounters | None = None
         self._by_fan: dict[int, int] = {}
         # The shelf switches are the master; the per-engine permission is the
@@ -433,7 +449,8 @@ class SellLane:
 
     @property
     def stats(self) -> dict:
-        return {"sold": self.sold, "sell_refused": self.refused}
+        return {"sold": self.sold, "sell_refused": self.refused,
+                "delivery_failed": self.delivery_failed}
 
     async def counters(self) -> AskCounters:
         """The per-RUN ask snapshot, fetched once and reused. A caller with its own
@@ -624,7 +641,9 @@ class SellLane:
     async def plan(self, fan_id: int, turn: Turn, *,
                    fan: Fan | None = None, blocked: bool = False,
                    counters: AskCounters | None = None,
-                   human_ask_at: datetime | None = None) -> SellPlan:
+                   human_ask_at: datetime | None = None,
+                   contract: "Callable[[], Awaitable[Contract | None]] | None" = None
+                   ) -> SellPlan:
         """Everything `sell` does EXCEPT the wire. Charges nothing, sends nothing.
 
         For the caller who has something to say between deciding and sending —
@@ -633,17 +652,50 @@ class SellLane:
         landed; drop it on the floor and nothing happened.
 
         Always returns a plan; a falsy one is a refusal, already counted.
+
+        `contract` is for the caller who does not want the lane to READ the ask
+        off the thread — it has its own reason to sell and its own way of finding
+        one. A zero-arg awaitable returning a `Contract`, or None for "I looked
+        and there is nothing here". Two things about it are load-bearing:
+
+          * it runs AFTER `_gate`, never before. The read is an LLM call, and
+            paying for one on a fan the brakes were always going to refuse is
+            exactly the 580-reads-of-one-message shape the memo above exists to
+            stop. This is the whole reason the keyword takes a CALLABLE and not
+            a `Contract`: a caller passing the finished value would have had to
+            spend the call to build it.
+          * a None answer is `R_NO_HOOK` and is NOT memoed — see
+            `_refused_nomemo`.
+
+        `contract=None` is byte-for-byte the shipped path: the lane reads the ask
+        itself through `plan_on_ask`, exactly as it always has.
         """
         refusal = await self._gate(fan_id, turn, fan=fan, blocked=blocked,
                                    counters=counters, human_ask_at=human_ask_at)
         if refusal is not None:
             return SellPlan(None, fan_id, turn, refusal)
         from . import pack_sender
-        d, refused = await pack_sender.plan_on_ask(self.account_id, fan_id,
-                                                   cfg=self.cfg)
+        if contract is not None:
+            ctr = await contract()
+            if ctr is None:
+                res = SellResult.refused(R_NO_HOOK)
+                return SellPlan(None, fan_id, turn,
+                                self._refused_nomemo(fan_id, turn, res))
+            # …onto the HOOK row, not the ask lane's. `_offer_caps_ok` counts a
+            # fan's offers by catalog item, so the caps-exemption the caller was
+            # given (R2-a) is only half-real until its sends land somewhere the
+            # ask lane's own count does not look. Both halves are the same ruling
+            # and neither works alone.
+            d, refused = await pack_sender.plan_ask_delivery(
+                self.account_id, fan_id, ctr, cfg=self.cfg,
+                item_tag=pack_sender.HOOK_CATEGORY)
+        else:
+            d, refused = await pack_sender.plan_on_ask(self.account_id, fan_id,
+                                                       cfg=self.cfg)
         if d is None:
             res = SellResult.from_pack(refused)
-            self._lane_refused(fan_id, turn, res)
+            (self._refused_nomemo if contract is not None
+             else self._lane_refused)(fan_id, turn, res)
             return SellPlan(None, fan_id, turn, res)
         return SellPlan(d, fan_id, turn)
 
@@ -673,9 +725,14 @@ class SellLane:
         from . import pack_sender
         res = SellResult.from_pack(await pack_sender.deliver(
             client, plan.delivery, voice_line=voice_line, dry_run=dry_run))
-        if res.sold:
+        if res:
             self._sold(plan.fan_id, plan.turn, res)
         else:
+            # Reached only when a DECIDED plan failed on the wire — `plan.result`
+            # already returned above for every refusal, so there is nothing else
+            # in this branch. No `dry_run` guard is needed: "dry_run" is in
+            # `_SOLD_STATUSES`, so a would-send is `sold` and never lands here.
+            self.delivery_failed += 1
             self._lane_refused(plan.fan_id, plan.turn, res)
         return res
 
@@ -709,6 +766,25 @@ class SellLane:
         log.info("sell_lane SOLD engine=%s account=%s fan=%s %s n=%s px=%s%s",
                  self.engine, self.account_id, fan_id, res.category, res.n,
                  res.price_cents, _via(turn))
+
+    def _refused_nomemo(self, fan_id: int, turn: Turn,
+                        res: SellResult) -> SellResult:
+        """`_lane_refused` WITHOUT the memo. Counts, logs, remembers nothing.
+
+        🚨 The memo is keyed on `turn.at`, and it answers the NEXT `_gate` on the
+        same inbound — whoever asks. A caller that brought its own contract is
+        not the only reader of that message: on the same turn the model may still
+        come back with `SELL: yes`, and the ordinary ask lane would then be
+        refused by a memo about a question it never asked. So a contract-carrying
+        refusal is remembered by the caller's own state, not here.
+
+        Returns the result it was handed, so a caller can count and return in one
+        expression.
+        """
+        self.refused += 1
+        log.info("sell_lane lane refused (no memo) engine=%s account=%s fan=%s: %s%s",
+                 self.engine, self.account_id, fan_id, res.reason, _via(turn))
+        return res
 
     def _lane_refused(self, fan_id: int, turn: Turn, res: SellResult) -> None:
         self.refused += 1

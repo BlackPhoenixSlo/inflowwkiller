@@ -47,7 +47,8 @@ from db.models import (
     CATALOG_IS_SINGLE, AccountAiConfig, CatalogItem,
     ContentOffer, Fan, Message, created_at_text, parse_ts,
 )
-from automations import _ghost, _sell_signal, _voice, rhythm, script_packs, starter_catalog
+from automations import (_ghost, _hook_upsell, _sell_signal, _voice, rhythm,
+                         script_packs, starter_catalog)
 from automations._common import load_voice_blocks
 # The bound on the operator's typing-pace knob. Read from the engine rather than
 # retyped, so the API cannot advertise a maximum the send path would clamp away.
@@ -606,6 +607,22 @@ def _validate_cfg(cfg: dict) -> dict:
         out["gift_enabled"] = bool(cfg["gift_enabled"])
     if "filming_stall_enabled" in cfg:
         out["filming_stall_enabled"] = bool(cfg["filming_stall_enabled"])
+    # The hook upsell (plans/hook-upsell) — the fourth after-a-buy surface, and the
+    # early-ask window under it. Both ship OFF and both ride the gate at runtime.
+    if "hook_upsell_enabled" in cfg:
+        out["hook_upsell_enabled"] = bool(cfg["hook_upsell_enabled"])
+    if "hook_upsell_early_ask" in cfg:
+        out["hook_upsell_early_ask"] = bool(cfg["hook_upsell_early_ask"])
+    # …and the read's reasoning effort (R4-c). A value outside the vocabulary lands
+    # as "auto" rather than raising, deliberately: this switch exists to be TUNED in
+    # production against a live account, and a 422 on a stale UI build or a typo
+    # would take the whole config save down with it. "auto" is the shipped meaning
+    # anyway, and `_hook_upsell.effort_for` narrows it again per model — a pick the
+    # account's model does not offer never reaches the wire.
+    if "hook_upsell_effort" in cfg:
+        _eff = str(cfg["hook_upsell_effort"] or "").strip().lower()
+        out["hook_upsell_effort"] = (_eff if _eff in _hook_upsell.EFFORT_PICKS
+                                     else "auto")
     # Proven-spend floor. Ships OFF; the numeric knobs ride in
     # _INT_KNOBS / _FLOAT_KNOBS below.
     if "proven_spend_floor_enabled" in cfg:

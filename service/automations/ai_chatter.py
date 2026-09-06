@@ -108,6 +108,7 @@ from ._outbound import ConsistencyCtx, finalize_draft
 from . import _language
 from . import _customs
 from . import _life_tip  # the life-expense tip ask: cadence + block (pure)
+from . import _hook_upsell  # after a buy: the cadence windows + the bridge check (pure)
 from . import _objection  # which apology this turn owes him (regexes + the judge)
 from . import _voice
 from . import _openers  # the gen_info opener pool (the deepen phase)
@@ -1047,6 +1048,20 @@ _DEFAULTS: dict = {
     #     post_buy_bridge bubble still fires without it; only the follow-up RUNG is
     #     gated. OFF is the genuine consent question.
     "post_buy_rung_enabled": False,
+    #   hook_upsell_enabled — the FOURTH after-a-buy surface (plans/hook-upsell): a
+    #     few of his messages after an unlock she reads the thread for a reason to
+    #     sell one more set (his ask, what he is doing, or the step up from what he
+    #     already bought) and a priced pack follows the ordinary reply. Ships OFF,
+    #     and off it is not reached at all — every branch is behind `hook_on`.
+    "hook_upsell_enabled": False,
+    #   hook_upsell_early_ask — R4-b. On: his 1st-4th message after the unlock can
+    #     also carry a hook, ASKS ONLY. Off (shipped): an ask that soon belongs to
+    #     the ordinary ask lane and its caps — "keep waiting".
+    "hook_upsell_early_ask": False,
+    #   hook_upsell_effort — R4-c. The hook READ's reasoning effort, one of
+    #     `_hook_upsell.EFFORT_PICKS`. "auto" is one step above the model's weakest
+    #     setting; a pick the account's model does not offer falls back to auto.
+    "hook_upsell_effort": "auto",
     #   gift_enabled — a genuinely FREE (price=0) unseen-media thank-you at aftercare
     #     after >=2 paid rungs this session (§7.2). NEVER a paid gift, never after a
     #     spend_regret line.
@@ -1215,7 +1230,8 @@ class _Cand:
                  "day_out_n", "day_out_n_at_stop", "total_out_n", "first_at",
                  "her_last_at", "pic_sent", "last_in_desc", "last_in_desc_at",
                  "last_out_was_gif", "last_in_text", "first_in_at",
-                 "msg_ids", "reply_ctx", "in_run", "her_times")
+                 "msg_ids", "reply_ctx", "in_run", "her_times",
+                 "last_in_mid")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -1270,6 +1286,16 @@ class _Cand:
         # the fan-run scan, the tests that hand-build a _Cand) is untouched; both
         # lists have exactly one writer, `add_message`, so they cannot drift.
         self.msg_ids: list[int] = []
+        # HIS NEWEST inbound message id — the one the reply this tick is
+        # answering. `msg_ids` already carries it, but only BOTH directions
+        # interleaved, so a reader wanting "the message id of what he just
+        # said" had to walk `messages` backwards for the last "in" and index
+        # across. Two lists that must be traversed in step to answer one
+        # question is exactly the desync `add_message` was made the single
+        # writer to prevent; this is the answer, written by that same writer.
+        # The hook upsell reads it as its per-inbound dedupe key: a read costs
+        # an LLM call and the same message cannot produce a different answer.
+        self.last_in_mid: int | None = None
         # The quote-reply he made, if any — filled per reply by `_quotes.resolve`,
         # read only
         # by `_build_messages`. None = no quote, the overwhelming case.
@@ -1329,6 +1355,8 @@ class _Cand:
         a future `continue` in _gather cannot desync them behind our back."""
         self.messages.append((direction, text))
         self.msg_ids.append(int(message_id))
+        if direction == "in":
+            self.last_in_mid = int(message_id)
 
 
 # An untagged outbound sent verbatim to at least this many DIFFERENT fans is a
@@ -1968,11 +1996,66 @@ async def _offer_caps_ok(account_id: str, fan_id: int, cfg: dict) -> bool:
     min_msgs = int(cfg.get("min_fan_msgs_between_offers") or 0)
     max_day = int(cfg.get("max_offers_per_fan_per_day") or 0)
     now = datetime.utcnow()
+    # ── THE HOOK UPSELL'S OFFERS ARE NOT IN THESE COUNTS. Operator ruling R2-a
+    # (plans/hook-upsell §6): "these are additional offers, not counting to those
+    # caps" — in BOTH directions. The hook is not paced by the ask lane's caps
+    # (that is `hook_lane`'s zeroed cfg, one layer up) and the ask lane must not
+    # be paced by the hook's sends, which is this.
+    #
+    # Both halves matter, and the second is the one with a name: Dillon, 2026-09-04
+    # (R4-d). He unlocked a $36 pack and asked "I want nudes" 79 seconds later, and
+    # `min_fan_msgs_between_offers` refused him — not because he had been sold
+    # anything since, but because the box he HAD JUST BOUGHT set `last_at`. Leaving
+    # the hook out of `burned` but not out of `last_at` would rebuild that exact
+    # refusal with the hook's own box as the trigger, on the surface added to fix it.
+    #
+    # It is a per-lane catalog ROW rather than a flag on the offer because that is
+    # the join `_offerable_for_fan`, the attribution reports and this query already
+    # speak; see `pack_sender.ensure_ask_item`. With no hook rows on the account the
+    # subquery is empty and every count below is the number it always was.
+    #
+    # MATCHED ON THE JSON ELEMENT, NOT THE SUBSTRING, and the predicate is
+    # `pack_sender.tags_carry` — THE SAME ONE `pack_sender._singleton_item` uses.
+    # That is deliberate and it is the whole point: `_singleton_item` is the WRITE
+    # side (which row `ensure_ask_item` hands the lane) and this is the READ side
+    # (which offers are exempt from the caps). When the two spelled it differently,
+    # the lane could be handed an operator's `hook_upsell_v2` row whose offers this
+    # query then did NOT exempt — hook offers back inside the ask lane's caps, R2-a
+    # broken. One function, two callers, so a third cannot reintroduce the split.
+    #
+    # `tags` is a JSON array of OPERATOR-TYPED strings (`scripts_api.py:1238` takes
+    # any 40 chars, twelve of them), so a bare `LIKE '%hook_upsell%'` also swallowed
+    # `hook_upsell_v2`, `test-hook_upsell` and — `_` being a LIKE wildcard —
+    # `hook-upsell`. Every offer from such a row vanished from BOTH counts below and
+    # the account over-offered, silently. `tags_carry` quotes and escapes, closing
+    # both classes.
+    #
+    # It does NOT close case: SQLite `LIKE` is case-insensitive and no writer
+    # lower-cases a tag, so `["Hook_Upsell"]` is still treated as this lane's row.
+    # That is left alone on purpose and is consistent rather than dangerous —
+    # `tags_carry` is also what picks the lane's row, so a differently-cased tag is
+    # adopted by the hook lane AND exempted here, together. See the docstring.
+    #
+    # NOT gated on `hook_upsell_enabled`, deliberately. R2-a is unconditional in both
+    # directions, and the flag is a switch an operator flips back: hook rows outlive
+    # an off-switch, so gating here would make a fan's historical hook offers start
+    # pacing the ask lane the moment the feature was turned off — reintroducing the
+    # Dillon refusal (R4-d) on the accounts that had already stopped using the lane.
+    # `case_hook_offers_are_outside_the_per_fan_caps` asserts the ungated contract.
+    # The cost is bounded: the subquery is `account_id`-scoped over a per-account
+    # catalogue of tens of rows, on the index `ix_catalog_items_script` leads with.
+    from . import pack_sender
+    _not_hook = ContentOffer.item_id.not_in(
+        select(CatalogItem.id).where(
+            CatalogItem.account_id == str(account_id),
+            CATALOG_IS_SINGLE,
+            pack_sender.tags_carry(pack_sender.HOOK_CATEGORY)))
     async with get_session() as s:
         last_at = (await s.execute(
             select(func.max(ContentOffer.offered_at)).where(
                 ContentOffer.account_id == str(account_id),
-                ContentOffer.fan_id == int(fan_id))
+                ContentOffer.fan_id == int(fan_id),
+                _not_hook)
         )).scalar_one_or_none()
         if last_at is not None and min_msgs > 0:
             n = (await s.execute(
@@ -1990,7 +2073,8 @@ async def _offer_caps_ok(account_id: str, fan_id: int, cfg: dict) -> bool:
                     ContentOffer.account_id == str(account_id),
                     ContentOffer.fan_id == int(fan_id),
                     ContentOffer.status.in_(("expired", "cancelled")),
-                    ContentOffer.offered_at > now - timedelta(hours=24))
+                    ContentOffer.offered_at > now - timedelta(hours=24),
+                    _not_hook)
             )).scalar_one()
             if int(burned or 0) >= max_day:
                 return False
@@ -3066,6 +3150,114 @@ async def _maybe_discount_resend(client, account_id: str, cfg: dict,
         await ax.release_fan_lease(account_id, fan_id)
 
 
+async def _anchor_was_mass(account_id: str, fan_id: int,
+                           paid_at: datetime | None) -> int:
+    """Was the unlock a hook cycle is anchored on part of a MASS BLAST? 1/0.
+
+    Log-line only, and it is here because the plan (H12) rejected EXCLUDING blast
+    unlocks from the anchor rather than rejecting the question. He paid; a blast he
+    opened is a real purchase and the burst above is bounded by the tick budget. But
+    "does the hook convert on blast buyers the way it does on 1:1 buyers" is a real
+    operator question, and it is unanswerable after the fact unless the decision
+    line carries the bit.
+
+    One query, and only on a hook that actually PLANNED — never on the ordinary
+    path, never on a fan the windows did not reach.
+    """
+    if paid_at is None:
+        return 0
+    async with get_session() as s:
+        hit = (await s.execute(
+            select(Message.message_id).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.direction == "out",
+                Message.is_paid.is_(True),
+                Message.mass_run_id.is_not(None),
+                func.coalesce(Message.purchased_at, Message.created_at) == paid_at)
+            .limit(1)
+        )).first()
+    return 1 if hit is not None else 0
+
+
+async def _human_live_ask(account_id: str, fan_id: int, now: datetime) -> bool:
+    """Is a PERSON'S unpaid price already in front of this fan right now?
+
+    The hook upsell's one hard "not now" (plans/hook-upsell §2.4d): a chatter or
+    the creator herself sent him a PPV out of the OF web UI minutes ago, and
+    stacking a second price under her next reply is the shape every human on the
+    account would call over-selling.
+
+    `_human_money_signals(...).ask` cannot answer this, and the difference is the
+    whole helper. That field is the newest unpaid priced outbound FROM ANYONE —
+    our own hook box from window 1 included — so reading it would make W1 block
+    W2 for six hours and the second window would never fire on the fan it was
+    designed for. Here the filter is `automation_kind IS NULL`: every send this
+    codebase makes stamps a kind, so a NULL one is a human being.
+    """
+    async with get_session() as s:
+        hit = (await s.execute(
+            select(Message.message_id).where(
+                Message.account_id == str(account_id),
+                Message.fan_id == int(fan_id),
+                Message.direction == "out",
+                Message.is_unsent.is_(False),
+                Message.price_cents > 0,
+                # is_paid is NULL on free sends, so test it explicitly rather
+                # than trusting falsiness — the same care `_human_money_signals`
+                # takes on the same column.
+                or_(Message.is_paid.is_(False), Message.is_paid.is_(None)),
+                Message.automation_kind.is_(None),
+                Message.created_at > now - _HUMAN_ASK_TTL)
+            .limit(1)
+        )).first()
+    return hit is not None
+
+
+async def _expire_open_offer(client, account_id: str, offer: ContentOffer,
+                             cfg: dict) -> bool:
+    """Retire one open offer: unsend the box, mark it expired, stand the ladder down.
+
+    Three steps that must happen together and IN THIS ORDER, which is the whole
+    reason they are a function. Lifted verbatim out of the stall sweep when the
+    hook upsell got a second reason to retire a box — its own unpaid PPV from an
+    earlier window, superseded by a later one (plans/hook-upsell §2.4d). Two
+    copies of an ordered three-step retirement is how one of them ends up
+    resolving the row before pulling the message, and then the unsend runs
+    against a row that no longer says it is open.
+
+    Returns True when a message was actually pulled off the wire, so the sweep
+    can keep counting `offers_unsent` exactly as it did.
+
+    ⚠️ Writes. The caller owns the dry-run question — the sweep asks it before
+    calling, and so must anyone else.
+    """
+    unsent = False
+    # Pull the unpurchased offer message FIRST (best-effort; per-chat unsend only
+    # works inside OF's 24h window, and stall_ttl is well under it), then mark the
+    # offer expired.
+    if bool(cfg.get("unsend_expired_offer")) and offer.offer_message_id:
+        try:
+            await asyncio.to_thread(client.unsend_message,
+                                    int(offer.offer_message_id), int(offer.fan_id))
+            unsent = True
+        except Exception:
+            log.debug("ai_chatter expired-offer unsend failed account=%s "
+                      "fan=%s msg=%s", account_id, offer.fan_id,
+                      offer.offer_message_id, exc_info=True)
+    await _resolve_offer(int(offer.id), status="expired", resolved_by=None)
+    if bool(cfg.get("qualification_gate_enabled")):
+        # The rung died on the vine — close the ladder to IDLE, NOT tapped.
+        # A PPV that merely aged out unopened is not a "no": measured, plenty
+        # of proven payers ignore one message and buy the next. Tapping them
+        # for 24h retired money-in-hand fans (e.g. a $45 payer went dark after
+        # one unopened PPV). IDLE still resets rung_index (via _close_ladder),
+        # so the next ask re-prices off the band, never off a price he never
+        # paid — but he stays sellable right away.
+        await _close_ladder(account_id, int(offer.fan_id), upsell.STATUS_IDLE)
+    return unsent
+
+
 async def _resolve_open_offers(account_id: str, client, cfg: dict,
                                *, dry_run: bool,
                                only_fan_ids: set[int] | None = None) -> dict:
@@ -3086,7 +3278,6 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
              "offers_unsent": 0, "deliveries_failed": 0, "would_unlock": 0,
              "discount_resends": 0}
     ttl_h = int(cfg.get("stall_ttl_hours") or 0)
-    unsend_expired = bool(cfg.get("unsend_expired_offer"))
     gate_on = bool(cfg.get("qualification_gate_enabled"))
     now = datetime.utcnow()
     for offer in await _open_offers(account_id):
@@ -3105,29 +3296,8 @@ async def _resolve_open_offers(account_id: str, client, cfg: dict,
                          account_id, fan_id, offer.offered_at, int(offer.price_cents or 0)))))
             if not paid_late:
                 if not dry_run:
-                    # Pull the unpurchased offer message FIRST (best-effort; per-chat
-                    # unsend only works inside OF's 24h window, and stall_ttl is well
-                    # under it), then mark the offer expired.
-                    if unsend_expired and offer.offer_message_id:
-                        try:
-                            await asyncio.to_thread(
-                                client.unsend_message,
-                                int(offer.offer_message_id), fan_id)
-                            stats["offers_unsent"] += 1
-                        except Exception:
-                            log.debug("ai_chatter expired-offer unsend failed account=%s "
-                                      "fan=%s msg=%s", account_id, fan_id,
-                                      offer.offer_message_id, exc_info=True)
-                    await _resolve_offer(int(offer.id), status="expired", resolved_by=None)
-                    if gate_on:
-                        # The rung died on the vine — close the ladder to IDLE, NOT tapped.
-                        # A PPV that merely aged out unopened is not a "no": measured, plenty
-                        # of proven payers ignore one message and buy the next. Tapping them
-                        # for 24h retired money-in-hand fans (e.g. a $45 payer went dark after
-                        # one unopened PPV). IDLE still resets rung_index (via _close_ladder),
-                        # so the next ask re-prices off the band, never off a price he never
-                        # paid — but he stays sellable right away.
-                        await _close_ladder(account_id, fan_id, upsell.STATUS_IDLE)
+                    if await _expire_open_offer(client, account_id, offer, cfg):
+                        stats["offers_unsent"] += 1
                 stats["offers_expired"] += 1
                 continue
 
@@ -3715,7 +3885,7 @@ async def _fire_post_buy_rung(client, account_id: str, cfg: dict, fan_id: int,
     quote = None
     item = None
     if pricing_on:
-        cfg_row = await _load_cfg_row(account_id)
+        cfg_row = await load_cfg_row(account_id)
         media_asks, acct_median, lib_bounds = await _price_context(account_id, cfg_row)
         fstate = await _fan_ladder_state(account_id, fan_id, f, lad)
         pfloor = _proven_floor_cents(fstate, cfg)
@@ -3914,9 +4084,15 @@ async def _run_aftercare(account_id: str, payload: dict, cfg: dict) -> dict:
 # enqueues a fan-scoped resume job, and moves on — the tick still owes up to 7 other
 # fans an answer, and `continue` (not `return`) is what pays them.
 
-async def _load_cfg_row(account_id: str) -> AccountAiConfig | None:
+async def load_cfg_row(account_id: str) -> AccountAiConfig | None:
     """The raw AccountAiConfig row — rhythm needs `timezone`/`utc_offset` (the
-    creator-local clock), which the merged ai_chatter_config dict doesn't carry."""
+    creator-local clock), which the merged ai_chatter_config dict doesn't carry.
+
+    PUBLIC because it has readers outside this module. `fans.py` renders the fan
+    drawer's away-badge and must answer "is she asleep" with the ENGINE'S OWN
+    inputs or the badge drifts from the behaviour it describes — which is the whole
+    point of that function's docstring. It was reaching through the underscore to
+    do it. Reaching for the right value was correct; the underscore was the lie."""
     async with get_session() as s:
         row = await s.get(AccountAiConfig, str(account_id))
         if row is not None:
@@ -3924,8 +4100,8 @@ async def _load_cfg_row(account_id: str) -> AccountAiConfig | None:
     return row
 
 
-async def _sleep_window(account_id: str, tz_offset_minutes: int | None,
-                        override, source: str = "default") -> tuple[str, str]:
+async def sleep_window(account_id: str, tz_offset_minutes: int | None,
+                       override, source: str = "default") -> tuple[str, str]:
     """Her sleep window, in creator-local HH:MM. Three sources, in precedence order:
 
       1. an explicit operator override (`sleep_window`), which always wins;
@@ -3961,6 +4137,20 @@ async def _sleep_window(account_id: str, tz_offset_minutes: int | None,
             continue
         counts[hour] = counts.get(hour, 0) + int(n or 0)
     return rhythm.derive_sleep_window(counts)
+
+
+#: DEPRECATED pre-promotion spellings — call `load_cfg_row` / `sleep_window`.
+#: `fans.py` and the suites reached through the underscore before these had
+#: public names; the aliases keep the remaining old CALL SITES working
+#: (`test_ai_chatter.py:7918-7933`, `_sim_dirk_floor.py:28` — all plain calls)
+#: rather than trading a cross-module reach-through for an AttributeError.
+#:
+#: They do NOT make the old name patchable: this is a one-way binding and every
+#: production caller now goes through the public name, so monkeypatching
+#: `_sleep_window` is a SILENT no-op. Nothing does that today. Remove these two
+#: lines once those six call sites are updated.
+_load_cfg_row = load_cfg_row
+_sleep_window = sleep_window
 
 
 async def _load_rhythm(account_id: str, fan_ids) -> dict[int, RhythmState]:
@@ -4859,12 +5049,17 @@ _TURN_ESCALATION = "escalation"    # he's leaning in, with something to sell
 _TURN_DARE = "dare"                # ask him for a picture — always a callback
 _TURN_HOT = "hot"                  # the sexting ladder
 _TURN_LIFE_TIP = "life_tip"        # the cadence tip ask rides this ordinary turn
+_TURN_HOOK_UPSELL = "hook_upsell"  # after a buy: her reply, then a pack on his own words
 
 # The beats where a gif instead of words is the exact non-reaction they exist to
 # replace. On these the sticker protocol is withheld from the prompt entirely, rather
 # than generated and thrown away — a filter turns a bad reply into NO reply.
+# _TURN_HOOK_UPSELL is here because the PPV under her reply is captioned with a
+# bridge line that ANSWERS him ("omg im about to hop in the shower too") — a gif
+# above it answers nothing, and the box then reads as a cold blast with a sticker.
 _TURNS_NEEDING_WORDS = frozenset({_TURN_BRUSH_OFF, _TURN_RATE_PIC, _TURN_REACT_PIC,
-                                  _TURN_PIC_OFFER, _TURN_LIFE_TIP})
+                                  _TURN_PIC_OFFER, _TURN_LIFE_TIP,
+                                  _TURN_HOOK_UPSELL})
 # The beats that spend the picture play's cooldown. A RATING spends it too: he sent
 # one, so daring him for one is asking for what he has already given — and an OFFER
 # spends it for the mirror reason: she has just told him to send one, so daring him
@@ -4905,7 +5100,46 @@ _TURNS_SPENDING_THE_DARE = frozenset({_TURN_DARE, _TURN_RATE_PIC, _TURN_PIC_OFFE
 # beside it is the double-pay shape the 2026-07-23 rule exists for. Membership is
 # what clears `sell`, rejects a marker, blocks the pack plan and the forced ask,
 # and drops a priced teaser at the chokepoint — one rule, five sites, said once.
-_TURNS_NOT_SELLING = frozenset({_TURN_DARE, _TURN_PIC_OFFER, _TURN_LIFE_TIP})
+#
+# IN — `_TURN_HOOK_UPSELL`, and it is the same five sites doing the same job for the
+#   opposite reason: this turn ALREADY carries a priced pack (the hook lane decided
+#   one above, and `_pack_plan` is initialised to it). Without the membership the
+#   model's own `>>OFFER` marker, the forced ask and the priced convo teaser could
+#   each staple a SECOND price to the same reply, which is the two-boxes-one-turn
+#   shape `max_open_offers` exists to bound. The hook's reply is the ORDINARY answer
+#   to his message; the sale is entirely in the caption of the box beneath it.
+_TURNS_NOT_SELLING = frozenset({_TURN_DARE, _TURN_PIC_OFFER, _TURN_LIFE_TIP,
+                                _TURN_HOOK_UPSELL})
+# ⚠️ THE BEATS WHOSE OWN PROMPT ALREADY SPENDS THE TURN'S ONE QUESTION, so no
+# gen_info opener is worked in on top. The persona allows at most ONE question per
+# reply; an opener IS a question, and a reply carrying two asks him two things and
+# gets an answer to neither. Read at exactly one site — the opener roll in `run()`,
+# ~2700 lines below — and the membership lives HERE, beside the other `_TURNS_*`
+# rules, because it is a property of the BEAT and the beat is defined here. That
+# distance is the whole reason this set exists rather than a bare `kind !=` test:
+# the next after-a-buy surface reads this block, not that line.
+#
+# IN — `_TURN_LIFE_TIP`. `_life_tip.prompt_block` rides the system prompt with the
+#   ask as this message's stated goal, and `_build_messages` drops the bio question
+#   on it for the same reason (live run 2026-09-03: handed both a gap and the ask,
+#   the model kept the gap and dropped the ask in 8 of 32 replies). Rolling an
+#   opener here would not even reach the model — the `elif life_tip:` arm sits
+#   ABOVE the opener arm — it would only BURN it: `_openers.record_used` fires on
+#   any confirmed send and `mark_used` retires that profile line for good.
+#
+# OUT — `_TURN_HOOK_UPSELL`, deliberately, and it is the member this set will be
+#   most tempting to add. Its ask is not in her words at all: the reply is the
+#   ORDINARY answer to his message and the price lives in the caption of the box
+#   beneath it (the argument is stated once, in `_TURNS_NOT_SELLING` above). It is
+#   also the ONLY named beat with no arm of its own in `_build_messages`, so it is
+#   the only one that reaches the opener arm and actually renders one — membership
+#   would cost a real deepen turn on the warmest fans there are.
+# OUT — every other beat, and for a different reason worth knowing before you add
+#   the fifth: each already has an arm ABOVE the opener arm, so the opener it rolls
+#   is never rendered. Membership would change nothing they SAY. (It would stop the
+#   ration being spent on a question the model never saw — a real defect, but a
+#   separate one, older than this set and not what this rule is about.)
+_TURNS_WITH_THEIR_OWN_QUESTION = frozenset({_TURN_LIFE_TIP})
 
 
 def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
@@ -6013,6 +6247,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # unsolicited priced rung / the free unseen-media gift are gated (consent, §11).
     post_buy_rung_on = gate_on and bool(cfg.get("post_buy_rung_enabled"))
     gift_on = gate_on and bool(cfg.get("gift_enabled"))
+    # ── The hook upsell (plans/hook-upsell). Rides `gate_on` for the same reason
+    # smart pricing does: it is a PRICED unsolicited-ish send decided off a live
+    # signal, and without the gate that decision is made on a thread nobody has
+    # qualified. `early_on` rides the hook in turn — a switch under a switch is
+    # read once here so no per-fan branch has to remember the nesting.
+    hook_on = gate_on and bool(cfg.get("hook_upsell_enabled"))
+    early_on = hook_on and bool(cfg.get("hook_upsell_early_ask"))
+    # Not validated here: `_hook_upsell.effort_for` picks from the MODEL's own
+    # list and falls back to auto on anything it does not offer, so a junk string
+    # that got past the validator costs an INFO line, never a raise on the wire.
+    effort_pick = str(cfg.get("hook_upsell_effort") or "auto")
     # A rhythm RESUME run: the stored wake_at WAS the decision (made a sleep or a
     # break ago). Re-rolling decide() here is what would livelock the fan — every
     # wake re-samples a new gap and he is never actually answered. Send inline.
@@ -6023,7 +6268,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # the defer site and `_replay_draft`.
     draft_ready = bool(rhythm_resume and payload.get("draft_parts"))
 
-    cfg_row = await _load_cfg_row(account_id)
+    cfg_row = await load_cfg_row(account_id)
     # Prompt clock: independent of the rhythm flag — the chat model must know
     # HER local time even when human-rhythm pacing is off. None ⇒ no clock line.
     clock_tz = rhythm.tz_offset_for(getattr(cfg_row, "timezone", None),
@@ -6042,8 +6287,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # prompt). `cfg_row` is already in hand here, so the flag costs no extra query.
     day = await _daylog.load_day(account_id, cfg_row, model=model,
                                  purpose=_PURPOSE, clock_tz=clock_tz)
-    sleep_win = (await _sleep_window(account_id, tz_off, cfg.get("sleep_window"),
-                                     str(cfg.get("rhythm_sleep_source") or "default"))
+    sleep_win = (await sleep_window(account_id, tz_off, cfg.get("sleep_window"),
+                                    str(cfg.get("rhythm_sleep_source") or "default"))
                  if rhythm_on else rhythm.DEFAULT_SLEEP)
     media_asks: dict[int, list[int]] = {}
     acct_median: int | None = None
@@ -6187,7 +6432,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                    # `life_tip_on` reads `.tip` — the newest inbound tip is the
                    # ask's anchor. Without it the map is {} and the loop would
                    # count from the dawn of the thread on every rhythm-off account.
-                   if (gate_on or rhythm_on or pp_on or life_tip_on) else {})
+                   # ...and `hook_on` reads `.paid` — the newest unlock IS the
+                   # hook's anchor, the thing every window is counted from.
+                   if (gate_on or rhythm_on or pp_on or life_tip_on or hook_on)
+                   else {})
     # gen_info profiles (bio / bullet notes / teases) → the prompt, so the AI knows
     # his story, not just his tags. Always loaded (personalization is not gated).
     profiles = await _load_profiles(account_id, by_fan.keys())
@@ -6199,6 +6447,25 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # closer's permission to sell IS `pack_on_ask_enabled`; the per-engine keys
     # exist only for the engines that were never sellers.
     lane = await sell_lane.for_run(account_id, engine=_PURPOSE, cfg=cfg)
+    # ── The hook upsell's OWN lane instance (plans/hook-upsell §2.3, operator
+    # ruling R2-a: "these are additional offers, not counting to those caps").
+    #
+    # Same class, same brakes, same `on`; two knobs zeroed, and zero means OFF in
+    # `_offer_caps_ok`. What survives is every brake that is about HIM (broke,
+    # declined, spend regret, companion, tapped, a paid custom he is owed, the
+    # 7-day spend cap) and every cap that is about the OF SESSION (the account
+    # hour/day ceilings, `max_open_offers`, and the tick budget — which is SHARED,
+    # not copied, so the hook cannot double the account's burst allowance).
+    #
+    # A second instance rather than a per-call override because `may_sell` reads
+    # `self.cfg` several layers down, and threading a caps-exemption through those
+    # layers would put the exemption where any caller could reach it. It is a
+    # property of THIS lane, so it lives on this lane. Built even with the hook
+    # off — the constructor is pure, and no branch below reaches it.
+    hook_lane = sell_lane.SellLane(
+        account_id, _PURPOSE,
+        {**cfg, "max_offers_per_fan_per_day": 0, "min_fan_msgs_between_offers": 0},
+        budget=lane.budget)
     # 🔔 …and `lane.on`, because the signal's ONLY consumer is that lane. With the
     # shelf or the ask-trigger off, every sale refuses `R_DISABLED` before it reads a
     # word he wrote — so asking the model would buy a prompt block and a protocol line
@@ -6393,6 +6660,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     would_offer = 0          # dry-run: offers that would have been recorded
     unbacked_stripped = 0    # price-talk bubbles dropped (no offer behind them)
     life_tip_asked = 0       # replies that carried the life-expense tip ask
+    # ── The hook upsell (plans/hook-upsell §1.6). Five numbers, because the one
+    # thing an operator cannot see from a send count is WHY a switched-on account
+    # is quiet: `hook_reads` says the cadence reached him, `hook_none` says the
+    # model found nothing to sell on, and `hook_refused` says the VAULT had
+    # nothing — which on an undescribed vault is every single window (§0.9), and
+    # is the difference between "tune the prompt" and "run Describe".
+    hook_reads = 0           # windows that spent an LLM read
+    hook_none = 0            # …of those, the model saw no hook (window stays open)
+    hook_refused = 0         # …read OK, the vault could not serve it (window spent)
+    hook_superseded = 0      # a later window expired the hook's own earlier box
+    hook_upsells = 0         # CONFIRMED priced sends
+    hook_by_source: "Counter[str]" = Counter()   # ask / situation / more
     skipped_locked = 0
     skipped_cooldown = 0
     skipped_cadence = 0     # cadence: burst cap hit / post-purchase window lapsed
@@ -7070,6 +7349,22 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if second_offer:
                 caps_cfg = {**caps_cfg, "min_fan_msgs_between_offers": 1}
 
+            # HER clock for this fan, built ONCE per turn and read by everything that
+            # asks "may a ladder open right now". It used to be built inside the gate
+            # block below, which is `if gate_on and offerable:` — so a second reader
+            # outside that block (the hook upsell's gate, which runs whether or not
+            # this fan has a shelf) would either NameError or build a second context
+            # from the same inputs. Two RhythmCtx values for one fan on one turn is
+            # two answers to `ladder_may_open` waiting to drift apart; one construction
+            # up here is the fix, and it costs nothing — the constructor is pure.
+            rctx_gate = rhythm.RhythmCtx(
+                account_id=str(account_id), fan_id=fan_id,
+                voice=v.voice,
+                pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
+                pace_curve=rhythm_curve,
+                sleep_window=sleep_win, tz_offset_minutes=tz_off,
+                no_sleep=rhythm_no_sleep, enabled=rhythm_on)
+
             # seller_off (spec §6): COMPANION / cooldown window live, or bot-accused
             # this turn — the conversation stays ON but NO priced ask, no pending
             # re-tease, no post_buy. The LLM reply below still runs (she talks).
@@ -7138,13 +7433,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # one: park it and it fires on his next qualifying inbound.
                     lad_status = (fan_ladder.status if fan_ladder is not None
                                   else upsell.STATUS_IDLE)
-                    rctx_gate = rhythm.RhythmCtx(
-                        account_id=str(account_id), fan_id=fan_id,
-                        voice=v.voice,
-                        pace_buckets=bool(cfg.get("rhythm_pace_buckets")),
-                        pace_curve=rhythm_curve,
-                        sleep_window=sleep_win, tz_offset_minutes=tz_off,
-                        no_sleep=rhythm_no_sleep, enabled=rhythm_on)
                     # Same creator-local day the WRITE path stamps (see daily_day
                     # below) — the two must agree or the counter never rolls over.
                     local_day = rhythm.local_now(now, tz_off).strftime("%Y-%m-%d")
@@ -7341,6 +7629,155 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # carve-out on a turn that bans it, which is the third way a price got onto
             # a dare. `kind` was already decided using the OLD sell.close, so the
             # content_ask/escalation rungs it could have won are unaffected.
+            # ── THE HOOK UPSELL (plans/hook-upsell). After he BUYS — an unlock or
+            # a tip — a few of his messages later she reads the thread for a reason
+            # to sell one more set — his own ask, what he is DOING, or the step up
+            # from what he already bought — and a priced pack follows the ordinary
+            # reply.
+            #
+            # BEFORE the life-tip gate on purpose: both want an ordinary turn, and a
+            # due hook outranks a due tip (the hook is money he has already shown he
+            # will spend; the tip is a favour). The tip's own `kind == ""` test then
+            # stands it down without a word of new code.
+            #
+            # ⚠️ THE WHOLE BLOCK IS BEHIND `hook_on`, which ships False. Off, not one
+            # statement below runs and this engine behaves exactly as it did before
+            # the feature existed (R3-a, the add-on rule).
+            _hook_plan: "sell_lane.SellPlan | None" = None
+            _hook: list = []          # the read's answer, so the caption can reach it
+            _hs: dict = {}            # this purchase's slot
+            _hook_n = 0               # HIS messages since the purchase — unlock or tip
+            _hook_w: int | None = None
+            if (hook_on and kind == "" and lane.on
+                    # R3-b: a content ask INSIDE a window is a hook turn — the read
+                    # gets a SOLD block and can aim one step past what he already
+                    # has, which the ordinary ask lane cannot do. If it declines,
+                    # `kind` is still "" and that lane runs below exactly as today.
+                    and not _customs.is_owed(f)
+                    # The account's burst ceiling, charged on the DECISION below —
+                    # read here too so a full budget costs no LLM call at all.
+                    and forced_this_tick < _MAX_FORCED_ASKS_PER_TICK
+                    and (not rhythm_on or rhythm.ladder_may_open(now, rctx_gate))):
+                _m = human_money.get(fan_id, _NO_MONEY)
+                # A tip is a purchase too (operator ruling; reverses
+                # plans/hook-upsell/PLAN.md §4.2): the NEWEST money event anchors
+                # the windows, whichever row it arrived on. The life-tip keeps its
+                # own cadence off `.tip` below, untouched.
+                _paid = _newest(_m.paid, _m.tip)
+                if _paid is not None:
+                    _hs = _hook_upsell.cycle(fan_state(f, _hook_upsell.KEY), _paid)
+                    _hook_n = await _fan_msgs_since(account_id, fan_id, _paid)
+                    _hook_w = _hook_upsell.due(
+                        _hs, _paid, n_since=_hook_n, now=now,
+                        message_id=c.last_in_mid,
+                        # R4-b: W0 is ASKS ONLY, so a turn with no ask never opens it.
+                        early=(early_on and vault_ask))
+                if _hook_w is not None and not await _human_live_ask(account_id, fan_id, now):
+                    free = pending is None
+                    _own = (None if free else
+                            _hook_upsell.own_open_offer(_hs, pending.offer_message_id))
+                    # A LATER window supersedes the hook's OWN earlier box: he did not
+                    # open W1's pack, so W2 pulls it and sends a fresher one a rung
+                    # down rather than queueing a second price behind a dead one.
+                    # Anything else that is open — a rung, an ask-lane pack, a
+                    # chatter's PPV — is not ours to expire, and the window waits.
+                    #
+                    # `not dry_run`, because the supersede is three real writes and an
+                    # unsend on the wire. A dry run reports the window as blocked,
+                    # which is the honest preview: nothing was retired, so nothing
+                    # could have been sent.
+                    if not free and _own is not None and _own < _hook_w and not dry_run:
+                        await _expire_open_offer(client, account_id, pending, cfg)
+                        hook_superseded += 1
+                        free = True
+                        log.info("ai_chatter hook upsell SUPERSEDES its own w=%d box "
+                                 "account=%s fan=%s msg=%s", _own, account_id, fan_id,
+                                 pending.offer_message_id)
+                    if free:
+
+                        async def _read(_w=_hook_w):
+                            # Counted HERE, not at the call site: `hook_lane.plan`
+                            # runs its brakes BEFORE the contract callable, so a fan
+                            # a brake refuses (offers_paused, rung_gap…) spends no
+                            # read and must count none. Counting at the call site
+                            # made brake refusals look like reads that found nothing.
+                            nonlocal hook_reads
+                            hook_reads += 1
+                            # Lazily, like every other reach into the ask lane from
+                            # here: importing `content_prompts` at module scope drags
+                            # `content_resolver` and `pack_sender` into EVERY import
+                            # of ai_chatter, and most of them never send a pack.
+                            from . import content_prompts
+                            h = await content_prompts.read_hook(
+                                account_id, fan_id, voice=v.voice,
+                                saved_effort=cfg_row.reasoning_effort,
+                                effort_pick=effort_pick, ask_only=(_w == 0))
+                            # Belt and braces: the prompt is TOLD only kind 1 counts
+                            # in W0, and a result that ignores it is dropped here too.
+                            # One code path, and the expensive half (the call) is
+                            # already paid either way.
+                            if h is not None and _w == 0 and h.source != "ask":
+                                log.info("ai_chatter hook upsell W0 drops source=%s "
+                                         "account=%s fan=%s", h.source, account_id, fan_id)
+                                h = None
+                            if h is not None:
+                                _hook.append(h)
+                            return h.contract if h is not None else None
+
+                        _hook_plan = await hook_lane.plan(
+                            fan_id,
+                            dataclasses.replace(_sell_turn(c, fan_lang), wide_ask="hook"),
+                            fan=f, blocked=seller_off,
+                            # R2-a: the per-fan ask count is deliberately zero — the
+                            # hook's budget is two per purchase, not the day's asks.
+                            # The ACCOUNT ceilings are the run's real numbers.
+                            counters=sell_lane.AskCounters(
+                                asks_today=0, account_hour=acct_hour_asks,
+                                account_day=acct_day_asks),
+                            human_ask_at=human_money.get(fan_id, _NO_MONEY).ask,
+                            contract=_read)
+                        if _hook_plan:
+                            kind = _TURN_HOOK_UPSELL
+                            # Charged on the DECISION, like the vault lane below: a
+                            # plan this fan is holding IS a send this tick intends to
+                            # make, and counting it late lets three fans plan against
+                            # the same free slot.
+                            forced_this_tick += 1
+                            hook_by_source[_hook[0].source] += 1
+                            log.info(
+                                "ai_chatter hook upsell PLANNED account=%s fan=%s w=%d "
+                                "n=%d px=%s source=%s what=%r anchor_mass=%s via=hook",
+                                account_id, fan_id, _hook_w, _hook_n,
+                                _hook_plan.delivery.price_cents, _hook[0].source,
+                                _hook[0].what,
+                                await _anchor_was_mass(account_id, fan_id, _paid))
+                        elif not _hook:
+                            # The read said no hook — or a brake refused BEFORE it ran,
+                            # in which case nothing was spent and nothing is stamped.
+                            # Only `R_NO_HOOK` means the call actually happened.
+                            if (_hook_plan.result is not None
+                                    and _hook_plan.result.reason == sell_lane.R_NO_HOOK):
+                                hook_none += 1
+                                # The window STAYS OPEN — his next message inside it is
+                                # read again. Only the message id is burned, so the same
+                                # inbound is never paid for twice.
+                                await set_fan_state(
+                                    account_id, fan_id, _hook_upsell.KEY,
+                                    _hook_upsell.stamp_checked(_hs, c.last_in_mid))
+                        else:
+                            # Read OK, the vault could not serve it. The window CLOSES:
+                            # re-reading on his next two messages buys the same refusal
+                            # three times, and the next window still gets its chance.
+                            hook_refused += 1
+                            log.info("ai_chatter hook upsell REFUSED account=%s fan=%s "
+                                     "w=%d source=%s: %s via=hook", account_id, fan_id,
+                                     _hook_w, _hook[0].source,
+                                     getattr(_hook_plan.result, "reason", None))
+                            await set_fan_state(
+                                account_id, fan_id, _hook_upsell.KEY,
+                                _hook_upsell.stamp_spent(
+                                    _hook_upsell.stamp_checked(_hs, c.last_in_mid),
+                                    _hook_w))
             # ── THE LIFE-EXPENSE TIP ASK takes an ORDINARY turn, and only one. Every
             # other beat outranks it (a rating, a brush-off, a buy, the ladder), a
             # paid-and-unsent custom mutes it (`_OWED_BLOCK` says "no tip ask"), and
@@ -7424,9 +7861,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Gated AND rationed. `_questions_still_needed` only says the bio gaps
             # are filled; it does not say THIS turn wants a question. Without the
             # roll every reply to a gathered fan carries one, for ever.
-            # Not on the tip-ask turn: an opener is a question too, and that turn
-            # already has its one (see `life_tip` in _build_messages).
-            if kind != _TURN_LIFE_TIP and not _questions_still_needed(f, asked) \
+            # Not on a beat that already carries the turn's one question — an
+            # opener is a question too. Which beats those are, and why the hook
+            # upsell is NOT one of them, is stated once at
+            # `_TURNS_WITH_THEIR_OWN_QUESTION`.
+            if kind not in _TURNS_WITH_THEIR_OWN_QUESTION \
+                    and not _questions_still_needed(f, asked) \
                     and _openers.should_offer(
                     enabled=openers_on, rate=openers_rate,
                     seed=f"opener:{account_id}:{fan_id}:{c.last_body}"):
@@ -7701,7 +8141,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Every path that abandons this turn below (he wrote again, the send
             # failed, rhythm parks the reply) simply drops it, and the next tick
             # decides again on the same words.
-            _pack_plan: "sell_lane.SellPlan | None" = None
+            # ⚠️ INITIALISED TO THE HOOK'S PLAN, not to None — and that is the
+            # whole handover. On a hook turn `kind` is `_TURN_HOOK_UPSELL`, which
+            # is in `_TURNS_NOT_SELLING`, so the block below never runs and never
+            # overwrites it; from here the hook's pack rides the ordinary vault
+            # lane's path — the phantom-delivery reasoning, the priced tail, the
+            # deferred-draft exclusion and `lane.deliver` — with no second copy of
+            # any of it. On every other turn `_hook_plan` is None and this is the
+            # declaration it always was.
+            _pack_plan: "sell_lane.SellPlan | None" = _hook_plan
             if (kind not in _TURNS_NOT_SELLING and vault_ask
                     and forced_this_tick < _MAX_FORCED_ASKS_PER_TICK):
                 # Through the shared seam, not straight at pack_sender — so the
@@ -8031,19 +8479,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # "go unlock the one i sent" is true, not a phantom). offer_item is None
             # here, so a fresh priced PPV never reaches this branch.
             #
-            # 🚨 `_pack_plan` IS REAL MEDIA. The vault lane decides above and delivers
-            # at the end of this turn (`lane.deliver`), and it CLEARS `offer_item` on
-            # the way past — so a truthful "sending it now babe" was being read as a
-            # hallucination on the one turn it is literally true. If it was the only
-            # bubble, `if not parts: continue` then abandoned the turn and dropped the
-            # plan: the sale lost, counted nowhere but `unbacked_stripped`.
+            # 🚨 `_pack_plan` is NOT a reason to let delivery talk stand (2026-09-05,
+            # relay log: "they arrived in ur dms" went out one second BEFORE the wire
+            # 400ed). Two reasons, either one enough: a refused plan is a `SellPlan`
+            # too — falsy, NOT None (`sell_lane.SellPlan.__bool__`), so an `is None`
+            # test was False on every turn the lane actually PLANNED, refusal
+            # included (it is literally None only when no hook plan exists and the
+            # fan never asked — common, but not the case that bit us); and
+            # even a decided plan has attached NOTHING when the reply is written —
+            # the bubbles land first, `lane.deliver` runs after. If the claim was
+            # the only bubble, `if not parts: continue` abandons the turn; the plan
+            # stamps nothing and the same inbound is re-read next tick.
             #
             # ⚠️ The `catalog_items` guard is gone with it. It scoped this floor to
             # accounts holding enabled catalog rows, which is exactly backwards — an
             # empty shelf is where the model has NO grounded price to quote, so it is
             # where an invented one is most likely and least excusable.
             if offer_item is None:
-                _phantom = teaser is None and pending is None and _pack_plan is None
+                _phantom = teaser is None and pending is None
 
                 def _bad(p: str) -> bool:
                     if kind == _TURN_LIFE_TIP:
@@ -8541,7 +8994,33 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # re-audit still runs at the wire, where a folder edited in between
             # becomes a lie.
             if _pack_plan:
-                await lane.deliver(client, _pack_plan, dry_run=dry_run)
+                # The hook's bridge is her ONE line above the claim, and the ONLY
+                # place the mirror ("omg im literally about to hop in the shower
+                # too 🙈") is ever said — there is no reply-side prompt block, by
+                # design, so nothing can promise content the wire then refuses.
+                # `compose_caption` puts the claim first and drops the line if it
+                # names media or a price; `_hook_upsell.bridge_ok` already checked
+                # both at the read, so a line that got here survives.
+                _sold = await lane.deliver(client, _pack_plan, dry_run=dry_run,
+                                           voice_line=(_hook[0].bridge
+                                                       if kind == _TURN_HOOK_UPSELL and _hook
+                                                       else None))
+                # The hook's budget is spent on the CONFIRMED send and nowhere else.
+                # A plan that was decided but never landed — rhythm parked the reply,
+                # the send failed, the wire audit refused, a dry run — stamps NOTHING,
+                # so the wake tick re-reads the SAME inbound and he still gets the box
+                # the thread already promised nothing about. (`checked_mid` is not
+                # written either: that would burn the only message this window has.)
+                if kind == _TURN_HOOK_UPSELL and _sold.sold and not dry_run:
+                    await set_fan_state(
+                        account_id, fan_id, _hook_upsell.KEY,
+                        _hook_upsell.stamp_sent(_hs, _hook_w, _hook_n,
+                                                _sold.message_id, _sold.price_cents))
+                    hook_upsells += 1
+                    log.info("ai_chatter hook upsell SENT account=%s fan=%s w=%d n=%d "
+                             "px=%s msg=%s source=%s via=hook", account_id, fan_id,
+                             _hook_w, _hook_n, _sold.price_cents, _sold.message_id,
+                             _hook[0].source if _hook else None)
             # §3.4 — record the REALIZED inbound→send latency + bubble count at the SEND
             # site (not the drawn delay at decide() time), rolling last 20. Fed back into
             # the next tick's RhythmCtx so the soft fast-reply nudge can see the history.
@@ -8774,6 +9253,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # the roster header do not have to change.
         "packs_sent": lane.sold,
         "packs_refused": lane.refused,
+        # The subset of `packs_refused` that was DECIDED and then failed on the
+        # wire — a different problem from "nothing to sell him", and the only one
+        # of the two worth paging about. Distinct from the blob's
+        # `deliveries_failed`, which is a tip-unlock retry and NOT this.
+        "pack_delivery_failed": lane.delivery_failed,
         "offers_forced_stale": offers_forced_stale,
         "paid_state_refreshed": paid_state_refreshed,
         "teasers_sent": teasers_sent,
@@ -8781,6 +9265,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "would_offer": would_offer,
         "unbacked_stripped": unbacked_stripped,
         "life_tip_asked": life_tip_asked,
+        # The hook upsell. `hook_reads` is the denominator for the other four —
+        # a switched-on account with reads and no upsells is a prompt problem if
+        # `hook_none` carries them and a VAULT problem if `hook_refused` does
+        # (an undescribed vault refuses every window; see plans/hook-upsell §0.9).
+        # ⚠️ As of 2026-09-05 `hook_reads` counts only fans the brakes let through
+        # to an LLM call; brake refusals used to be folded in. Ratios computed
+        # against it step-change across that date with no behavior change.
+        "hook_reads": hook_reads,
+        "hook_none": hook_none,
+        "hook_refused": hook_refused,
+        "hook_superseded": hook_superseded,
+        "hook_upsells": hook_upsells,
+        # …and WHICH arm earned them. The "more" arm is the one round 3 added on
+        # a hunch, and this split is how the operator decides whether it stays.
+        "hook_by_source": dict(hook_by_source),
         **offer_stats,
         "old_fans_engaged": old_fans_engaged,
         "skipped_listed": skipped_listed,
