@@ -175,7 +175,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "human_pace", "type": "bool", "default": True, "hint": "pace the burst like a person (quiet gaps before the bubbles) and welcome several fans at once — a UI 'send test' is exempt and stays instant"},
             {"key": "stop_on_reply", "type": "bool", "default": True, "hint": "stop the welcome as soon as he replies — she finishes the bubble she's typing, and the chat engine answers him instead"},
             {"key": "follow_back", "type": "bool", "default": True, "hint": "follow each new sub back in the same tick — OF pushes them a 'started following you' on top of the welcome"},
-            {"key": "follow_back_gate", "type": "bool", "default": False, "hint": "⚠️ MONEY: price-check each fan before following back. OFF (the default) follows blind, so a new sub who is themself a PAID creator charges you their price"},
+            {"key": "follow_back_gate", "type": "bool", "default": True, "hint": "⚠️ MONEY: price-check each fan before following back and SKIP the ones who charge. ON by default (costs +1 read per sub); OFF follows blind, so a new sub who is themself a PAID creator charges you their price"},
             {"key": "question", "type": "str", "default": "what's yours?", "hint": "3rd bubble: this exact question, sent word-for-word (blank = off)"},
             {"key": "gif_id", "type": "str", "hint": "4th bubble: giphy id of a GIF sent after the question (blank = off)"},
             {"key": "model", "type": "str", "hint": "LLM override"},

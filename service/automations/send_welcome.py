@@ -49,10 +49,11 @@ It mirrors the scrape_chats reference in automation_executor.py:
     gets a welcome is also FOLLOWED back in the same tick, so OF fires a
     "started following you" push alongside the DM. It runs after the welcome is
     marked and its errors are swallowed — a follow that fails must never cost a
-    fan their welcome. ⚠️ MONEY: by operator decision the paid-profile gate is
-    OFF by default here (unlike auto_follow, which always gates), so a new sub
-    who is themself a PRICED creator will CHARGE this account to follow back;
-    set `follow_back_gate: true` to buy the profile check back (+1 read/sub).
+    fan their welcome. ⚠️ MONEY: the paid-profile gate is ON by default
+    (2026-09-07, reversing the one-day-old OFF), so a new sub who is themself a
+    PRICED creator is SKIPPED rather than paid for — same posture as
+    auto_follow. It costs +1 read per welcomed sub. `follow_back_gate: false`
+    follows blind and saves that read, at the price of buying subscriptions.
 
 SEND SHAPE (2026-07): the deterministic welcome goes out as TWO paced bubbles —
 bubble 1 is the stutter greeting with the time-of-day image attached, bubble 2 is
@@ -351,10 +352,12 @@ _FOLLOW_BACK_DEFAULT = True
 # Whether to price-check each fan before following. OF's /subscribe is a PAYING
 # endpoint: it is free only when the target's own subscribePrice is 0, so a new
 # sub who is themself a paid creator would CHARGE this account to follow back.
-# auto_follow always gates. Here the default is OFF by operator decision
-# (2026-09-06) — follow everyone, spend one fewer read per sub, accept the risk.
-# Flip the `follow_back_gate` knob to true to buy the gate back per rule.
-_FOLLOW_BACK_GATE_DEFAULT = False
+# Default ON (2026-09-07), matching auto_follow, which has always gated: the
+# operator's rule is "we always skip those". This reverses the one-day-old OFF
+# of 2026-09-06 — the read it saved was never worth an unasked-for purchase,
+# and no live rule had written the key, so the flip reached all of them.
+# `follow_back_gate: false` opts one rule back into the blind, paying follow.
+_FOLLOW_BACK_GATE_DEFAULT = True
 
 # First-letter → alliterative adjective for the stutter greeting. e.g. S → "Sexy
 # Sofie". Drives every welcome now that the nameless riff is deterministic too.
@@ -979,11 +982,12 @@ def _bot_folder_media_id(client, hour: int) -> int | None:
 # `_StrandedError` cannot reach this lane: only the "pinged" arm raises it, and
 # that arm needs `unfollow_first=True`.
 #
-# ⚠️ MONEY, unchanged by the de-duplication: with `follow_back_gate` off — the
-# operator-chosen default — `money_gate=False` calls follow_user with NO profile
-# read, so a new sub who is themself a paid creator CHARGES this account their
-# price. Deliberate (2026-09-06): one fewer read per sub, and a fan subscribing
-# to us is almost never a priced creator. `follow_back_gate: true` buys it back.
+# ⚠️ MONEY, unchanged by the de-duplication: `follow_back_gate` decides whether
+# this lane spends a get_user before each follow. ON is the default (2026-09-07)
+# and a priced sub is skipped. Turning it OFF passes `money_gate=False`, which
+# calls follow_user with NO profile read — so a new sub who is themself a paid
+# creator CHARGES this account their price. That was briefly the default; it is
+# not any more.
 
 
 def _test_mode() -> bool:
@@ -2187,7 +2191,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # the panel — never defaulted here, for the same reason as `question` above.
     gif_id = str(payload.get("gif_id") or "").strip()
     # Follow back every new sub in the same tick as the welcome (see _follow_back).
-    # Default ON; `follow_back_gate` (default OFF) adds the paid-profile check.
+    # Both default ON; `follow_back_gate` is the paid-profile check that makes a
+    # priced sub a skip instead of a purchase.
     follow_back = bool(payload.get("follow_back", _FOLLOW_BACK_DEFAULT))
     follow_back_gate = bool(payload.get("follow_back_gate", _FOLLOW_BACK_GATE_DEFAULT))
     # Pace the burst like a person, and run several fans' bursts at once.

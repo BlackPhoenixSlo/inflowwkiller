@@ -33,7 +33,7 @@ const SELECT_CLS =
   "w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
 
 type Action = "like_messages" | "like_posts" | "follow" | "ping";
-type Source = "expired" | "recent_active" | "smart_list";
+type Source = "expired" | "recent_active" | "smart_list" | "all_stored";
 
 // The one table that owns the action↔source pairing: which pools an action may
 // target (first entry = its default). ruleToForm, the action-switch snap, and
@@ -41,7 +41,7 @@ type Source = "expired" | "recent_active" | "smart_list";
 // place. "expired" is follow-only (OF's lapsed-subscriber list — nothing to
 // like there); ping/like_posts derive their own pools and show no Target.
 const SOURCES_BY_ACTION: Record<Action, Source[]> = {
-  follow: ["expired", "recent_active", "smart_list"],
+  follow: ["expired", "recent_active", "smart_list", "all_stored"],
   like_messages: ["recent_active", "smart_list"],
   like_posts: [],
   ping: [],
@@ -50,6 +50,7 @@ const SOURCE_LABELS: Record<Source, string> = {
   expired: "Recently-expired fans (win-back)",
   recent_active: "Recently-active fans",
   smart_list: "A Smart List",
+  all_stored: "Every fan on file (backfill)",
 };
 
 /** Valid source for `action`, keeping `source` when allowed. Legacy values
@@ -127,6 +128,8 @@ export default function AutoFollowTab({ accountId }: { accountId: string | null 
       p.targets = { source: "smart_list", smart_list_id: form.smartListId };
     } else if (form.source === "expired") {
       p.targets = { source: "expired" };
+    } else if (form.source === "all_stored") {
+      p.targets = { source: "all_stored" };
     } else {
       p.targets = { source: "recent_active", days: form.days };
     }
@@ -266,6 +269,14 @@ export default function AutoFollowTab({ accountId }: { accountId: string | null 
             {form.source === "expired" && (
               <div className="text-xs text-fg-dim self-end pb-2.5">
                 OnlyFans’ own lapsed-subscriber list — the fans worth winning back.
+              </div>
+            )}
+            {form.source === "all_stored" && (
+              <div className="text-xs text-fg-dim self-end pb-2.5">
+                Every fan on file — current subs, old fans never followed, and
+                fans who lapsed but are still stored. Sliced by max-actions each
+                run and skipping anyone pinged recently, so a 4-hourly rule
+                drains the backlog over a few days and then idles.
               </div>
             )}
             {form.source === "recent_active" && (
