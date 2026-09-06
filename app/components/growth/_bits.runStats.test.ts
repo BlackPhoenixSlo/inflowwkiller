@@ -22,19 +22,38 @@ describe("runStatsChunks — dry-run reporting", () => {
   });
 
   it("flags a zero forecast so it cannot be skimmed past", () => {
-    const chunks = runStatsChunks({ would_follow: [], candidates: 8, examined: 8 });
+    // `no_price_skipped` is the marker that says the gate actually ran. Without
+    // it the chunk is withheld on purpose (see _bits.tsx) — so every case that
+    // asserts a forecast IS rendered has to carry it.
+    const chunks = runStatsChunks({
+      would_follow: [], candidates: 8, examined: 8, no_price_skipped: 0,
+    });
     expect(chunks.find((c) => c.text === "0 would notify")?.tone).toBe("warn");
   });
 
   it("does not flag a forecast that will actually act", () => {
-    const chunks = runStatsChunks({ would_ping: [1, 2, 3], candidates: 40, examined: 40 });
+    const chunks = runStatsChunks({
+      would_ping: [1, 2, 3], candidates: 40, examined: 40, no_price_skipped: 0,
+    });
     const w = chunks.find((c) => c.text === "3 would notify");
     expect(w).toBeDefined();
     expect(w?.tone).toBeUndefined();
   });
 
   it("reads would_ping as well as would_follow", () => {
-    expect(line({ would_ping: [7001, 7002], examined: 2 })).toContain("2 would notify");
+    expect(line({ would_ping: [7001, 7002], examined: 2, no_price_skipped: 0 }))
+      .toContain("2 would notify");
+  });
+
+  it("says nothing at all when it cannot prove the gate ran", () => {
+    // The case the three above used to assert backwards. An older relay fills
+    // `would_follow` with the raw, UN-gated pool, so rendering it would restate
+    // the six-day lie with more confidence than the wording it replaced.
+    // Silence is the deliberate answer; `money_gate: false` is the other way in.
+    const s = line({ would_follow: [1, 2, 3], candidates: 8, examined: 8 });
+    expect(s).not.toContain("would notify");
+    expect(line({ would_follow: [1, 2, 3], money_gate: false }))
+      .toContain("would notify");
   });
 
   it("says when only part of the pool was checked", () => {

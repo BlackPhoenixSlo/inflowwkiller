@@ -78,6 +78,8 @@ const WELCOME_DEFAULTS = {
   skip_time_bubble: false,
   human_pace: true,
   stop_on_reply: true,
+  follow_back: true,
+  follow_back_gate: true,
 };
 
 // send_followup's default per-step silence thresholds (hours) — mirrors
@@ -351,6 +353,19 @@ export default function BrainPanel() {
   const [welcomeStopOnReply, setWelcomeStopOnReply] = useState(
     WELCOME_DEFAULTS.stop_on_reply,
   );
+  // Follow the new subscriber back in the same tick as his welcome, so OF fires
+  // a "started following you" push alongside the DM. Lives on payload.follow_back;
+  // same ⚠️ ON-BY-DEFAULT `!== false` reading as the two above.
+  const [welcomeFollowBack, setWelcomeFollowBack] = useState(
+    WELCOME_DEFAULTS.follow_back,
+  );
+  // ⚠️ MONEY. Buys a profile price-check before each follow-back, so a new sub who
+  // is themself a PRICED creator is skipped instead of charged for. ON by default
+  // (2026-09-07) — "we always skip those" — which costs +1 read per subscriber and
+  // matches auto_follow, which has always gated. Unticking it buys the blind follow.
+  const [welcomeFollowBackGate, setWelcomeFollowBackGate] = useState(
+    WELCOME_DEFAULTS.follow_back_gate,
+  );
   // Bubble 3 = the operator's own question, sent WORD-FOR-WORD (no AI touch-up).
   // Lives on the rule's payload.question; "" = off (no third bubble).
   const [welcomeQuestion, setWelcomeQuestion] = useState(WELCOME_QUESTION_DEFAULT);
@@ -406,6 +421,8 @@ export default function BrainPanel() {
       setWelcomeSkipTimeBubble(welcomeRule.payload?.skip_time_bubble === true);
       setWelcomeHumanPace(welcomeRule.payload?.human_pace !== false);
       setWelcomeStopOnReply(welcomeRule.payload?.stop_on_reply !== false);
+      setWelcomeFollowBack(welcomeRule.payload?.follow_back !== false);
+      setWelcomeFollowBackGate(welcomeRule.payload?.follow_back_gate !== false);
       // Absent key (rule saved before the knob existed) → show the default, so
       // the next save stamps it — same migration path as time_only's `!== false`.
       // An explicit "" is the operator's own clear and stays cleared.
@@ -423,6 +440,8 @@ export default function BrainPanel() {
       setWelcomeSkipTimeBubble(WELCOME_DEFAULTS.skip_time_bubble);
       setWelcomeHumanPace(WELCOME_DEFAULTS.human_pace);
       setWelcomeStopOnReply(WELCOME_DEFAULTS.stop_on_reply);
+      setWelcomeFollowBack(WELCOME_DEFAULTS.follow_back);
+      setWelcomeFollowBackGate(WELCOME_DEFAULTS.follow_back_gate);
       setWelcomeQuestion(WELCOME_QUESTION_DEFAULT);
       setWelcomeGifId("");
     }
@@ -597,6 +616,8 @@ export default function BrainPanel() {
             skip_time_bubble: welcomeSkipTimeBubble,
             human_pace: welcomeHumanPace,
             stop_on_reply: welcomeStopOnReply,
+            follow_back: welcomeFollowBack,
+            follow_back_gate: welcomeFollowBackGate,
             question: welcomeQuestion.trim(),
             // Always written (even "") for the same reason as `question`: the
             // merge means omitting it could never CLEAR a GIF once picked.
@@ -620,14 +641,17 @@ export default function BrainPanel() {
                      skip_time_bubble: welcomeSkipTimeBubble,
                      human_pace: welcomeHumanPace,
                      stop_on_reply: welcomeStopOnReply,
-                     // Written explicitly, though it matches the sender's own
-                     // read-default. This is a knob with no checkbox in the
-                     // panel, and following back is a PAYING call when the new
-                     // sub is themself a priced creator — a fresh rule must say
-                     // so in its payload rather than inherit it invisibly, so
-                     // the raw-JSON editor shows a key to turn off. The update
-                     // branch above preserves a hand-set `false` via the spread.
-                     follow_back: true,
+                     // Written explicitly, though both match the sender's own
+                     // read-defaults: following back is a PAYING call when the new
+                     // sub is themself a priced creator, so a fresh rule must say
+                     // in its payload both that it follows back and that it
+                     // price-checks first, rather than inherit either invisibly.
+                     // Both keys have a checkbox (2026-09-06) — before that this
+                     // was raw-JSON only, which is how an operator could have the
+                     // feature on and no way to see it. The update branch above
+                     // preserves a hand-set `false` via the spread.
+                     follow_back: welcomeFollowBack,
+                     follow_back_gate: welcomeFollowBackGate,
                      question: welcomeQuestion.trim(),
                      gif_id: welcomeGifId },
         });
@@ -1356,7 +1380,63 @@ export default function BrainPanel() {
                 />
                 Stop if he replies mid-welcome
               </label>
+              <label
+                className="flex items-center gap-2 pb-1.5 text-sm text-fg"
+                title="Follow him back in the same tick as his welcome, so OnlyFans fires a 'started following you' push alongside the DM. A follow that fails never costs him his welcome."
+              >
+                <input
+                  type="checkbox"
+                  checked={welcomeFollowBack}
+                  onChange={(e) => {
+                    setWelcomeFollowBack(e.target.checked);
+                    setWelcomeMsg(null);
+                  }}
+                  className="accent-accent"
+                />
+                Follow back after they subscribe
+              </label>
             </div>
+            {welcomeFollowBack && (
+              <div className="space-y-1.5">
+                <p className="text-[10px] text-fg-dim">
+                  Every new subscriber who gets a welcome is followed back in the
+                  same tick, so OnlyFans sends him a “started following you”
+                  notification on top of the DM. If the follow fails he still
+                  gets his welcome.
+                </p>
+                <label
+                  className="flex items-center gap-2 text-sm text-fg"
+                  title="Price-check each new subscriber's own profile before following back, and skip the ones who charge. On by default; costs one extra read per subscriber."
+                >
+                  <input
+                    type="checkbox"
+                    checked={welcomeFollowBackGate}
+                    onChange={(e) => {
+                      setWelcomeFollowBackGate(e.target.checked);
+                      setWelcomeMsg(null);
+                    }}
+                    className="accent-accent"
+                  />
+                  Skip subscribers who charge to follow
+                </label>
+                {welcomeFollowBackGate ? (
+                  <p className="text-[10px] text-fg-dim">
+                    A subscriber who charges for his own page is skipped, never
+                    followed — the same price-check auto-follow on the Growth tab
+                    runs. Costs one extra read per subscriber, and a profile
+                    whose price won’t load is skipped too rather than guessed at.
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-warn">
+                    ⚠️ Costs money. With the price-check off, a new subscriber
+                    who is themself a paid creator will <b>charge this account</b>
+                    to follow them back. Ticking the box is the default and the
+                    house rule — untick it only to save that one read per
+                    subscriber.
+                  </p>
+                )}
+              </div>
+            )}
             {welcomeStopOnReply && (
               <p className="text-[10px] text-fg-dim">
                 The moment he writes something, the rest of the welcome is

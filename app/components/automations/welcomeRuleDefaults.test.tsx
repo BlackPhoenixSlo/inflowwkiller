@@ -100,6 +100,11 @@ describe("a welcome rule created from the Brain panel", () => {
     expect(boxFor("Stop if he replies mid-welcome").checked).toBe(true);
     expect(boxFor("Short 2nd bubble (time & place only)").checked).toBe(true);
     expect(boxFor("Skip the time bubble").checked).toBe(false);
+    // ⚠️ MONEY. The price-check went ON by default 2026-09-07 ("we always skip
+    // subscribers who charge to follow"), and an unticked box here is an
+    // operator being told this account will follow priced creators blind.
+    expect(boxFor("Follow back after they subscribe").checked).toBe(true);
+    expect(boxFor("Skip subscribers who charge to follow").checked).toBe(true);
   });
 
   it("POSTs human_pace and stop_on_reply as TRUE", async () => {
@@ -118,6 +123,11 @@ describe("a welcome rule created from the Brain panel", () => {
     // ...and the other two shape knobs, so the whole created shape is pinned.
     expect(draft.payload.time_only).toBe(true);
     expect(draft.payload.skip_time_bubble).toBe(false);
+    // ⚠️ MONEY, and the one knob here whose wrong value costs real cash: a rule
+    // born with `follow_back_gate: false` buys a subscription to every priced
+    // creator who subscribes to it.
+    expect(draft.payload.follow_back).toBe(true);
+    expect(draft.payload.follow_back_gate).toBe(true);
   });
 
   it("still honours a box the operator UNticks before creating the rule", async () => {
@@ -133,5 +143,23 @@ describe("a welcome rule created from the Brain panel", () => {
         { payload: Record<string, unknown> };
     expect(draft.payload.human_pace).toBe(false);
     expect(draft.payload.stop_on_reply).toBe(true);
+  });
+
+  it("lets the operator untick the money gate and writes the explicit false", async () => {
+    // The opt-out has to survive to the payload as `false`, not as an absent
+    // key: the sender's read-default is now ON, so omitting it would silently
+    // re-arm the gate on a rule the operator deliberately opened up.
+    await mountWithNoWelcomeRule();
+    await act(async () => {
+      fireEvent.click(boxFor("Skip subscribers who charge to follow"));
+    });
+    await act(async () => { fireEvent.click(screen.getByText("Enable welcome")); });
+
+    await waitFor(() => expect(relayPost).toHaveBeenCalled());
+    const draft = relayPost.mock.calls.find(
+      (c) => String(c[0]) === "/admin/automation-rules")![1] as
+        { payload: Record<string, unknown> };
+    expect(draft.payload.follow_back_gate).toBe(false);
+    expect(draft.payload.follow_back).toBe(true);
   });
 });
