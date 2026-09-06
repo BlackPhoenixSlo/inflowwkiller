@@ -33,6 +33,13 @@ adversarially and defaults to REJECT, and an item has to earn its place twice.
 Call 4 only ever runs on a REFUSAL, where the alternative was silence. It is a
 different question from MATCH ("what fits?" vs "nothing fits — what is closest?")
 and asking it is the difference between "here is something" and "this is close".
+
+A seventh call sits outside all of that — 7. HOOK (`read_hook`), which is the
+mirror image of call 1. READ asks "what did he ask for"; HOOK asks "is there any
+reason to sell him one more set right now", off his own last messages AND off
+what he has already bought. It BUILDS a contract instead of reading one, so
+everything downstream of it is the shipped ask lane. It is refusable in every
+direction and returns None on doubt — no hook is a good answer.
 """
 from __future__ import annotations
 
@@ -40,22 +47,30 @@ import logging
 import re
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 
 import llm_client                       # module import so tests can patch .chat
 import vault_pack_picker
 from db.engine import get_session
-from db.models import Fan, Message, VaultItem, created_at_text, parse_ts
+from db.models import (
+    Fan, Message, VaultItem, VaultSend, created_at_text, parse_ts,
+)
 
 from ._common import (
     build_facts_note, facts_from_fan, load_voice_blocks, resolve_model,
 )
 # The canonical strip. `_funnel_routing` is a pure leaf (re + datetime), and it
 # is where `reply_mass_funnel` and `_funnel_signals` already get this.
+from . import _hook_upsell
 from ._funnel_routing import strip_html
 from .content_contract import MEDIA_KINDS, Contract, _STOPWORDS
+# The ONE place a pack's media is counted and named — the SOLD block below tells
+# him what he bought in the same words the caption above it will use. A second
+# "6 pics + 1 vid" renderer is how the two start disagreeing.
+from .pack_claim import _media_phrase
 
 log = logging.getLogger("of-relay.automation.content_prompts")
 
@@ -343,6 +358,320 @@ async def read_contract(account_id: str, fan_id: int, *, n_msgs: int = 20,
         strict=bool(p.get("strict")), quote=str(p.get("quote") or "")[:120],
         exclusions=excl[:6], terms=terms,
     )
+
+
+# ── CALL 7 — the hook upsell's read ─────────────────────────────────
+#
+# plans/hook-upsell §2.2. The mirror image of CALL 1: instead of reading an ask
+# off the thread, it looks for a REASON to make one, a few of his messages after
+# he unlocked something. Three sources in order of preference — his own ask, the
+# situation he is in ("brb shower"), or, when his words hold nothing, the step up
+# from what he already bought. It BUILDS a contract, so everything under it is
+# the shipped ask lane and no new sending path exists.
+#
+# 🚨 Refusable in every direction and it NEVER raises. "No hook" is the expected
+# answer on most turns and the caller treats it as one; a raise here would take
+# down the reply the fan is actually waiting for.
+
+
+@dataclass(frozen=True)
+class Hook:
+    """A reason to sell, and the two halves of what it produces.
+
+    `source` and `what` are for the log line and the per-source stat — the
+    operator's only way to see WHICH of the three arms is earning its keep, and
+    the answer decides whether the "more" arm stays. `bridge` is her one line
+    above the caption; `contract` is what the ask lane already knows how to eat.
+    """
+    source: str                 # "ask" | "situation" | "more"
+    what: str                   # ≤60 chars, the hook in the model's own words
+    bridge: str                 # her ONE line, already `bridge_ok`
+    contract: Contract
+
+
+#: The three arms, in the order the prompt prefers them.
+HOOK_SOURCES = ("ask", "situation", "more")
+#: Sold groups the block shows. Five is his recent buying, not his history: the
+#: read is deciding what to sell NEXT, and a two-month-old $3 unlock says nothing
+#: about that while costing tokens on every window message.
+_SOLD_GROUPS = 5
+_SOLD_DESC_CHARS = 70
+
+
+#: Explicitness, strongest first. The order the tier lines are RENDERED in, and
+#: it is not cosmetic: the "more" arm is asking "how far up has he already been",
+#: so the top tier in a mixed group has to be the first thing it reads. Counting
+#: order would put the biggest bucket first and bury it.
+_TIER_ORDER = ("hardcore", "explicit", "suggestive", "sfw")
+
+
+def _tier_rank(tier: str) -> int:
+    t = str(tier or "").strip().lower()
+    return _TIER_ORDER.index(t) if t in _TIER_ORDER else len(_TIER_ORDER)
+
+
+def _tier_phrase(tiers: list[str]) -> str:
+    """`"explicit"` when a group is one tier, `"3 explicit, 4 suggestive"` when
+    it is not. The tier is what the "more" arm reads to decide "he only ever
+    bought covered ones", so a group that mixes them must say so."""
+    counted = Counter(str(t).strip().lower() for t in tiers if t)
+    if not counted:
+        return "untiered"
+    if len(counted) == 1:
+        return next(iter(counted))
+    return ", ".join(f"{counted[t]} {t}"
+                     for t in sorted(counted, key=_tier_rank))
+
+
+async def _sold_lines(account_id: str, fan_id: int) -> list[str]:
+    """WHAT HE HAS ALREADY BOUGHT FROM HER, newest first — the block that makes
+    the difference between "I want nudes" and "I want nudes, and he already has
+    the suggestive mirror set".
+
+    R3-b/R3-e: without it the read has his words and nothing else, so "show me
+    more" resolves to what he is already holding, and the "more" arm — photos
+    only, or covered only, so send the video or the tier above — has nothing to
+    stand on.
+
+    ONE query. `vault_sends` rows he PURCHASED, joined to the vault item behind
+    each, grouped by the message they arrived in (a pack is one purchase, not
+    seven), newest `_SOLD_GROUPS` groups. The price is per-SEND and stamped
+    identically on every row of the slice, so the group's price is any of them.
+
+    The last line is the vault's own tier counts — what she still has to sell,
+    which is the other half of "and the vault holds the step up". Empty list when
+    he has bought nothing: a man with no purchases has no hook cycle either, so
+    the caller never asks.
+    """
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultSend.message_id, VaultSend.price_cents, VaultSend.sent_at,
+                   VaultItem.kind, VaultItem.explicitness_tier,
+                   VaultItem.description, VaultItem.video_description,
+                   VaultItem.search_text)
+            .join(VaultItem, and_(VaultItem.account_id == VaultSend.account_id,
+                                  VaultItem.media_id == VaultSend.media_id))
+            .where(VaultSend.account_id == str(account_id),
+                   VaultSend.fan_id == int(fan_id),
+                   VaultSend.was_purchased.is_(True))
+            # Newest PURCHASE first; inside one, the order it was sent in. The
+            # rows of a pack share a `sent_at` to the second, so without the id
+            # tiebreak the descriptions of one buy come out in whatever order
+            # SQLite felt like — which read as the pack being listed backwards.
+            .order_by(VaultSend.sent_at.desc(), VaultSend.id.asc())
+        )).all()
+    groups: dict[object, list] = {}
+    for row in rows:
+        # A hand-sent row can carry a NULL message_id; each of those is its own
+        # group rather than one giant merged "purchase" of everything untracked.
+        key = row[0] if row[0] is not None else ("solo", row[2], row[3])
+        groups.setdefault(key, []).append(row)
+    # Grouped in full and sliced afterwards, never truncated mid-scan: the rows
+    # of one pack share a `sent_at` to the second, so a sub-second tie can order
+    # them either way and a "stop after five groups" break would drop half of a
+    # purchase from its own line.
+    lines: list[str] = []
+    for members in list(groups.values())[:_SOLD_GROUPS]:
+        price = max(int(m[1] or 0) for m in members)
+        body, _n = _media_phrase([str(m[3] or "photo") for m in members])
+        descs: list[str] = []
+        for m in members:
+            text = " ".join(str(m[5] or m[6] or m[7] or "").split())
+            if text and text.lower() not in {d.lower() for d in descs}:
+                descs.append(text[:_SOLD_DESC_CHARS])
+        when = members[0][2]
+        lines.append(
+            f"${price / 100:.0f} · {body} · {_tier_phrase([m[4] for m in members])}"
+            + (f" · {' / '.join(descs[:4])}" if descs else "")
+            + (f" — {when:%Y-%m-%d %H:%M}" if isinstance(when, datetime) else ""))
+    if not lines:
+        return []
+    async with get_session() as s:
+        tiers = (await s.execute(
+            select(VaultItem.explicitness_tier, func.count(),
+                   func.sum(case((VaultItem.kind.in_(("video", "gif")), 1),
+                                 else_=0)))
+            .where(VaultItem.account_id == str(account_id),
+                   VaultItem.removed_at.is_(None),
+                   func.coalesce(VaultItem.search_text, "") != "")
+            .group_by(VaultItem.explicitness_tier)
+        )).all()
+    held = [f"{t or 'untiered'} {int(n)}"
+            + (f" ({int(v)} vid{'s' * (int(v) > 1)})" if v else "")
+            for t, n, v in sorted(tiers, key=lambda r: _tier_rank(r[0]))
+            if int(n)]
+    if held:
+        lines.append("THE VAULT ALSO HOLDS: " + ", ".join(held) + ".")
+    return lines
+
+
+def _hook_system(voice: str) -> str:
+    """CALL 7's system prompt. Built per VOICE, not per account — the pronouns
+    are the only thing that differs, and the register comes from the account's
+    own voice blocks, which the model sees in the thread's speaker labels.
+
+    Module-level like `_contract_system` and for the same reason: it is the same
+    bytes on every call, which is what a provider's prefix cache rewards.
+    """
+    male = str(voice or "").strip().lower() == "him"
+    who = "HIM" if male else "HER"
+    herself = "himself" if male else "herself"
+    return (
+        f"You read the last messages of an OnlyFans chat between a fan (FAN) and "
+        f"the creator ({who}), and a list of what he has already BOUGHT from "
+        f"{'him' if male else 'her'}. Find the best reason to sell him one more "
+        "paid set right now, from the FAN's own last two or three messages "
+        "first, then from the list. Three kinds, in this order of preference:\n"
+        "1. ASK — he asks for content or names what he wants (\"I want nudes\", "
+        "\"show me more\", \"toes and pussy is what im here for\"). If he has "
+        "already bought that exact thing, put it in exclusions and aim one step "
+        "further.\n"
+        "2. SITUATION — what he is DOING, ABOUT TO DO, or WHERE HE IS (a shower, "
+        "bed, the car, the gym, cooking, going to sleep, the beach, coffee) that "
+        f"the creator could mirror with a clip or photos of {herself} doing the "
+        "same.\n"
+        "3. MORE — nothing in his words, but what he bought was photos only, or "
+        "covered/suggestive only, and the vault holds the step up: the SAME "
+        "thing on video, or the same thing uncovered.\n"
+        "Not a feeling with no object, not a question about the creator, not a "
+        "purchase he is reporting, not a complaint. If nothing fits, hook is "
+        "false — that is a good answer.\n"
+        'Reply as JSON: {"hook": true|false, "source": "ask"|"situation"|"more", '
+        '"what": "<\u226460 chars>", "subject": "<noun phrase about the creator for a '
+        "caption, e.g. 'me in the shower', 'my kitty', 'me in the mirror'>\", "
+        '"media_kind": "video"|"photo"|null, "terms": ["8-15 single lowercase '
+        'words a description of that media would contain; use the vault\'s own '
+        'words"], "exclusions": ["what he already has, when he asked for '
+        'something new"], "bridge": "<ONE short line in the creator\'s voice '
+        "that answers or mirrors him — no price, no media word, no digits — e.g. "
+        "'omg im literally about to hop in the shower too \U0001f648', 'fine "
+        "dillon… kitty it is', 'u liked the mirror ones so… this is me "
+        "doing it properly \U0001f648'>\"}"
+    )
+
+
+_HOOK_SYSTEM = {"her": _hook_system("her"), "him": _hook_system("him")}
+
+#: W0's one extra sentence. The caller drops a non-ask result anyway — belt and
+#: braces, because the early window exists so an ask that lands one message after
+#: a buy is answered, and nothing else.
+_ASK_ONLY = ("\n\nIn this read only kind 1 (ASK) counts; answer hook:false for "
+             "anything else.")
+
+
+async def read_hook(account_id: str, fan_id: int, *, voice: str = "her",
+                    saved_effort: str | None = None, effort_pick: str = "auto",
+                    ask_only: bool = False) -> Hook | None:
+    """CALL 7 — is there a reason to sell him one more set right now?
+
+    Returns a `Hook` whose contract the ask lane can plan on, or None. None is
+    the common answer and is never an error: no hook, an unparseable reply, a
+    bridge line the caption composer would have dropped, a provider error or a
+    spend cap all come back the same way, each logged at INFO with its reason
+    (a silent feature is an unmeasurable one).
+
+    The contract is NOT strict — operator ruling R3-c. The lane's own hedge
+    ("not exactly shower but 🙈 me pulling my top down — 3 pics + 1 vid") is a
+    better answer than silence when the vault has nothing exact, and the hedge is
+    what makes it honest. `company=False` for the same reason every other lane
+    defaults it: company is opt-in, never a bonus.
+    """
+    def _no(reason: str, **kw) -> None:
+        log.info("hook read NONE account=%s fan=%s: %s%s", account_id, fan_id,
+                 reason, "".join(f" {k}={v!r}" for k, v in kw.items()))
+        return None
+
+    lines = await _thread_lines(account_id, fan_id, _hook_upsell.N_MSGS, voice)
+    if not lines:
+        return _no("empty_thread")
+    sold = await _sold_lines(account_id, fan_id)
+
+    model = await resolve_model(account_id, "content_resolver")
+    # R3-d/R4-c. `_resolve_effort` RAISES on a value the model does not offer,
+    # so the choice is made against the model's own list here and a pick it
+    # cannot honour falls back to auto — loudly, because a silently ignored test
+    # setting is the operator drawing the wrong conclusion from a week of data.
+    choices = llm_client.effort_options(model)
+    effort = _hook_upsell.effort_for(choices, saved_effort, effort_pick)
+    pick = str(effort_pick or "auto").strip().lower()
+    if pick not in ("", "auto") and pick != effort:
+        log.info("hook read effort pick %r is not offered by %s %s — using %r",
+                 pick, model, list(choices), effort)
+
+    user = ("CHAT (oldest first):\n" + "\n".join(lines)
+            + (("\n\nSOLD TO HIM (newest first): " + "\n".join(sold))
+               if sold else ""))
+    # The vault's own words, per ACCOUNT — so it rides the user message here
+    # rather than the system block `read_contract` caches it in: this prompt is
+    # cached per VOICE, and an account's lexicon inside it would be a different
+    # system prompt for every account and no cache hit for any of them.
+    lexicon = await vault_lexicon(account_id)
+    if lexicon:
+        user += ("\n\nTHE VAULT'S OWN WORDS (use these for terms, most common "
+                 "first):\n" + ", ".join(lexicon))
+    if ask_only:
+        user += _ASK_ONLY
+
+    try:
+        res = await llm_client.chat(
+            model=model,
+            messages=[{"role": "system",
+                       "content": _HOOK_SYSTEM["him" if str(voice or "").strip().lower()
+                                               == "him" else "her"]},
+                      {"role": "user", "content": user}],
+            purpose="content_resolver_hook",
+            account_id=str(account_id), fan_id=int(fan_id),
+            response_format={"type": "json_object"}, temperature=0,
+            reasoning_effort=effort,
+        )
+        p = res.parsed if isinstance(res.parsed, dict) else {}
+    except Exception as e:  # noqa: BLE001
+        return _no("provider_error", detail=str(e)[:120])
+    if not p:
+        return _no("unparseable")
+    if not p.get("hook"):
+        return _no("no_hook")
+
+    bridge = " ".join(str(p.get("bridge") or "").split())
+    if not _hook_upsell.bridge_ok(bridge):
+        # Dropping it and shipping a bare claim is the other option, and it is
+        # worse: the bridge IS the hook. A line the composer would have silently
+        # eaten means the read did not do the job it was paid for.
+        return _no("bad_bridge", bridge=bridge[:80])
+
+    source = str(p.get("source") or "").strip().lower()
+    if source not in HOOK_SOURCES:
+        # Never "ask" by default — W0 sells on his ask or not at all, and a
+        # mislabelled arm there would open the early window on small talk.
+        source = "situation"
+    subject = str(p.get("subject") or "").strip() or None
+    kind = str(p.get("media_kind") or "").strip().lower()
+    quote = next((ln.split(":", 1)[1].strip() for ln in reversed(lines)
+                  if ln.startswith("FAN")), "")
+    # `read_contract`'s own normalisation, and for its reason: a term is a LIKE
+    # needle, so a whole sentence matches nothing. The subject rides along.
+    raw = list(p.get("terms") or [])
+    if subject:
+        raw.append(subject)
+    terms: list[str] = []
+    for chunk in raw:
+        for word in re.split(r"[^a-z0-9]+", str(chunk).strip().lower()):
+            if 3 <= len(word) <= 24 and word not in _STOPWORDS and word not in terms:
+                terms.append(word)
+    excl = [str(x).strip() for x in (p.get("exclusions") or []) if str(x).strip()]
+
+    hook = Hook(
+        source=source, what=str(p.get("what") or "")[:60], bridge=bridge,
+        contract=Contract(
+            is_ask=True, strict=False, subject=subject,
+            media_kind=(kind if kind in MEDIA_KINDS else None),
+            terms=terms[:15], exclusions=excl[:6], quote=quote[:120],
+            company=False),
+    )
+    log.info("hook read OK account=%s fan=%s source=%s what=%r subject=%r "
+             "kind=%s terms=%d effort=%r", account_id, fan_id, hook.source,
+             hook.what, subject, hook.contract.media_kind, len(terms), effort)
+    return hook
 
 
 async def _match(account_id: str, fan_id: int, contract: Contract,

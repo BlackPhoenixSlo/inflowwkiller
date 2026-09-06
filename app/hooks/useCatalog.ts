@@ -193,6 +193,18 @@ export interface AiChatterConfig {
   gift_enabled?: boolean;
   /** The "im filming it rn" active fiction — chargeback surface, 0-EV. OFF default. */
   filming_stall_enabled?: boolean;
+  /** After a buy, on his 5th-7th message (and once more at 14-20), read the thread
+   *  for a reason to sell one more set — his ask, what he's doing, or the step up
+   *  from what he already bought — and send a vault pack captioned in her voice.
+   *  Rides the qualification gate and the vault ask lane. OFF by default. */
+  hook_upsell_enabled?: boolean;
+  /** …and also on his 1st-4th message, ASKS ONLY. Off, an ask that soon after a buy
+   *  stays with the ordinary ask lane and its caps. OFF by default. */
+  hook_upsell_early_ask?: boolean;
+  /** Reasoning effort for that read: "auto" (one step above the model's weakest) or
+   *  one of low/medium/high/max. A pick the account's model doesn't offer falls back
+   *  to auto. Default "auto". */
+  hook_upsell_effort?: "auto" | "low" | "medium" | "high" | "max";
   /** 1 = tap out after one unpaid rung; 2 = one win-back discount, then stop. */
   stop_after_unpaid_rungs?: number;
   /** Rolling 7-day paid brake → companion for the window (cents). */

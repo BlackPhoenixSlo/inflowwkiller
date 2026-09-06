@@ -361,7 +361,7 @@ export default function AiStatusStrip({ accountId, fanId }: Props) {
       {data.break_proof && (
         <span
           className="text-fg-dim"
-          title="An ask went out in the last 30 min, or he paid in the last hour, so the random 'she stepped away' break can't roll mid-sale. This shields the thread from Human Rhythm's breaks only — the daily ceiling is its own gate with its own chip. Past the window she's free to take a break again, and the next reply covers for it ('sorry was in the shower 🚿')."
+          title="An ask went out in the last 30 min, or he paid in the last hour, so the random 'stepped away' break can't roll mid-sale. This shields the thread from Human Rhythm's random breaks only — the sleep window still takes the thread until morning even mid-sale, and the daily ceiling is its own gate with its own chip. Past the window the break roll is live again, and the next reply covers for it ('sorry was in the shower 🚿')."
         >
           🛡 can't wander off (30m)
         </span>

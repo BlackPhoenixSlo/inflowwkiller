@@ -593,6 +593,73 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
               </span>
             </span>
           </label>
+          {/* ── the hook upsell: her reply, then a pack on his own words ──────
+              Sits under the silent-buyer rung because it is the other half of the
+              same moment: that one fires when he says NOTHING, this one only when
+              he talks. Its two sub-controls are production TEST switches (R4-b/c),
+              so they are indented under the master and inert until it is on. */}
+          <label className="flex items-start gap-2 cursor-pointer text-sm">
+            <input type="checkbox" className="mt-0.5" checked={!!cfg.hook_upsell_enabled}
+              onChange={(e) => set({ hook_upsell_enabled: e.target.checked })} />
+            <span>
+              <span className="font-medium">
+                Upsell on what he&apos;s doing or asking (5-7 messages after a buy, once
+                more at 14-20)
+              </span>
+              <span className="block text-fg-dim text-xs">
+                After he buys, the model reads his next few messages for a reason to
+                sell one more set — he asks for more, he&apos;s off to shower or in the
+                car, or he only bought pics and the vault has the video — and a small
+                pack goes out from the vault, captioned in the model&apos;s own voice,
+                priced like a PPV Library ask (a rung above his biggest buy; a
+                walk-down if he ignored it). If the vault has nothing exact, the
+                closest thing goes instead, captioned honestly (&quot;not exactly …
+                but&quot;). At most twice per purchase, on top of every other offer;
+                never on top of a chatter&apos;s live sale; never a cold message. Needs
+                the vault lane on (it is by default) and a DESCRIBED vault.
+              </span>
+            </span>
+          </label>
+          <div className={cn("space-y-2 pl-6",
+            cfg.hook_upsell_enabled ? "" : "opacity-50 pointer-events-none")}>
+            <label className="flex items-start gap-2 cursor-pointer text-sm">
+              <input type="checkbox" className="mt-0.5"
+                checked={!!cfg.hook_upsell_early_ask}
+                disabled={!cfg.hook_upsell_enabled}
+                onChange={(e) => set({ hook_upsell_early_ask: e.target.checked })} />
+              <span>
+                <span className="font-medium">
+                  Also sell on an early ask (his 1st-4th message after a buy)
+                </span>
+                <span className="block text-fg-dim text-xs">
+                  Off: an ask that soon after a buy stays with the normal ask lane and
+                  its caps (&quot;keep waiting&quot;). On: the hook answers it, outside
+                  the caps, once per purchase.
+                </span>
+              </span>
+            </label>
+            <label className="space-y-1 block">
+              <div className="text-fg-dim text-xs">Hook read effort</div>
+              <select className={`${INPUT} w-full md:w-40`}
+                disabled={!cfg.hook_upsell_enabled}
+                value={cfg.hook_upsell_effort ?? "auto"}
+                onChange={(e) => set({
+                  hook_upsell_effort:
+                    e.target.value as NonNullable<typeof cfg.hook_upsell_effort>,
+                })}>
+                <option value="auto">auto (one step up)</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="max">max</option>
+              </select>
+              <span className="block text-fg-dim text-xs">
+                Only settings the account&apos;s model offers apply; anything else falls
+                back to auto. glm-5.3-flash offers low · high · max; deepseek-v4-pro
+                low · medium · high; the flash models have no setting.
+              </span>
+            </label>
+          </div>
           <div className="text-sm space-y-1 pt-1">
             <div className="text-fg-dim text-xs">If he doesn&apos;t buy an offer</div>
             <label className="flex items-center gap-2">

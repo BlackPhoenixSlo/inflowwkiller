@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
@@ -51,25 +51,50 @@ _REVIEW_DAYS = 60
 # routine, health food") and tips afterwards, sometimes days and a hundred
 # messages before the tip that completes the order.
 #
-# `before` carries the weight, and that is the whole correction: the anchor is
-# the OLDEST outstanding tip, and the request is made BEFORE the money arrives
-# ("naked gym routine, health food" … then he tips). So the ask sits in the
-# run-up, behind the anchor, behind however much small talk happened in
-# between. `after` only has to cover the tips that followed and any clarifying
-# back-and-forth. These are COUNTS, not days — see `customs_context` on why a
-# time window is the wrong shape here.
+# SYMMETRIC, 100 EACH SIDE, and the reasoning below is why that is enough rather
+# than why one side should be bigger. These are COUNTS, not days — see
+# `customs_context` on why a time window is the wrong shape here.
 #
-# ⚠️ THESE WERE THE WRONG WAY ROUND IN THE FIRST CUT AND A TEST CAUGHT IT: with
+# `before` is the side that has to reach: the anchor is the OLDEST outstanding
+# tip and the request is made BEFORE the money arrives ("naked gym routine,
+# health food" … then he tips), so the ask sits in the run-up, behind however
+# much small talk happened in between. `after` only has to cover the tips that
+# followed and any clarifying back-and-forth. So `before` is the side that must
+# never be the SMALL one — and at 100/100 it is not.
+#
+# ⚠️ THEY WERE THE WRONG WAY ROUND IN THE FIRST CUT AND A TEST CAUGHT IT: with
 # before=60/after=140 a thread carrying 80 messages between the ask and the tip
 # returned 61 rows and did NOT contain the ask — the exact failure this was
-# written to fix, reproduced by the fix itself.
-_BRIEF_BEFORE = 160
-_BRIEF_AFTER = 40
+# written to fix, reproduced by the fix itself. The correction was to stop
+# starving `before`, not to starve `after` in return.
+#
+# Operator spec 2026-09-05: *"scrape those 100 messages over the tips before and
+# after and generate CONCRETE SUMMARY OF WHAT WE NEED TO DO"*. 100 each side —
+# the operator named the number and named it symmetrically, so a tuned asymmetry
+# here would be this file inventing a spec it was handed.
+#
+# The long-run-up case is not solved by widening this window at all: the window
+# is topped up with the order's own lines from the WHOLE thread (see
+# `customs_order`), so an ask placed weeks before the tip reaches the model
+# whatever `before` is set to. That is why this stayed a round, symmetric number.
+_BRIEF_BEFORE = 100
+_BRIEF_AFTER = 100
 
 # How many of HIS lines reach the model. The window above decides what is
 # fetched; this decides what survives into the prompt, and the two have to agree
 # about which END matters — see the truncation note in `customs_brief`.
-_BRIEF_MAX_LINES = 60
+#
+# ⚠️ IT MUST COVER THE WHOLE 100+100 WINDOW PLUS THE ORDER SPAN, AND AT 400 IT
+# DOES — which is the point: on any ordinary thread the truncation below never
+# fires at all. That is deliberate, because when it DID fire it was wrong. At 60
+# it kept 40 lines from July and 20 from the end and dropped the 3 Sep message
+# that WAS the order, and the live model wrote a work order off a July line.
+#
+# So this is a backstop for a pathological thread, not a budget: it is sized
+# ABOVE the window rather than tuned against it, and the both-ends split in
+# `customs_brief` is what makes the rare firing survivable rather than what
+# makes this number safe.
+_BRIEF_MAX_LINES = 400
 
 log = logging.getLogger("of-relay.customs_api")
 
@@ -199,6 +224,14 @@ async def list_customs(account_id: str | None = Query(None)) -> dict[str, Any]:
             "fan_id": int(fid),
             "marked": True,
             "display_name": disp or uname or f"fan #{fid}",
+            # THE HANDLE, shipped separately from the display name and never
+            # folded into it. The operator's job after reading this row is to
+            # find the man in OnlyFans, and OF search takes the @username — a
+            # display name ("Dennis 🔥") finds nothing. The row rendered only
+            # `display_name`, which falls back to the username, so the two were
+            # indistinguishable on screen and un-copyable apart: operator ruling
+            # 2026-09-05, *"you need to copy and paste the exact username"*.
+            "of_username": uname or None,
             "tip_cents": cents,
             "order_count": len(bursts),
             # Every order behind the total, newest first, so the pane can offer
@@ -263,28 +296,41 @@ async def _unmarked(allowed: list[str] | None,
         )).all()}
 
     out = []
-    for key, (cents, at, msg_id) in _customs.orders_per_fan(tips).items():
+    # EVERY order, not just the newest — the same correction the owed list above
+    # already took. `orders_per_fan` returns one burst per fan, so a man who
+    # tipped $100 on Monday and $100 on Tuesday appeared here as ONE $100
+    # question, and the older one had no other surface at all: this list is the
+    # last one, and the owed list excludes it by construction. Both halves of
+    # the queue now count orders the same way (`_customs._walk_bursts`).
+    for key, bursts in _customs.bursts_per_fan(tips).items():
         if key not in keys:
             continue
         acct, fid = key
         fan = fans.get(key)
-        # Already settled — delivered, or an operator cleared it. Not a question.
-        if fan is not None and fan.customs_cleared_at and at <= fan.customs_cleared_at:
-            continue
-        out.append({
-            "account_id": acct,
-            "account_name": names.get(acct, acct),
-            "fan_id": int(fid),
-            "marked": False,
-            "display_name": ((fan.of_display_name or fan.of_username) if fan else None)
-                            or f"fan #{fid}",
-            "tip_cents": int(cents or 0),
-            "tipped_at": at.isoformat() if at else None,
-            "lifetime_spend_cents": int((fan.lifetime_spend_cents if fan else 0) or 0),
-            # Anchor the chat on the tip itself — see the page for why the id
-            # matters more than the fan link alone.
-            "chat_href": _chat_href(acct, fid, msg_id),
-        })
+        for cents, at, msg_id in bursts:
+            # Already settled — delivered, or an operator cleared it. Not a
+            # question. Per ORDER, so clearing an old one leaves a newer one
+            # standing rather than settling the whole fan.
+            if fan is not None and fan.customs_cleared_at and at <= fan.customs_cleared_at:
+                continue
+            out.append({
+                "account_id": acct,
+                "account_name": names.get(acct, acct),
+                "fan_id": int(fid),
+                "marked": False,
+                "display_name": ((fan.of_display_name or fan.of_username) if fan else None)
+                                or f"fan #{fid}",
+                # Same contract as the owed rows above — a review row is handed off
+                # by exactly the same copy-paste, so it cannot be the one shape
+                # missing the handle.
+                "of_username": (fan.of_username if fan else None) or None,
+                "tip_cents": int(cents or 0),
+                "tipped_at": at.isoformat() if at else None,
+                "lifetime_spend_cents": int((fan.lifetime_spend_cents if fan else 0) or 0),
+                # Anchor the chat on the tip itself — see the page for why the id
+                # matters more than the fan link alone.
+                "chat_href": _chat_href(acct, fid, msg_id),
+            })
     return out
 
 
@@ -435,6 +481,242 @@ async def customs_context(
             "messages": [_row(r) for r in reversed(older)] + [_row(r) for r in newer]}
 
 
+class _Msg(NamedTuple):
+    """ONE stripped thread row, as the order scan reads it.
+
+    A bare 5-tuple with the same fields was indexed positionally in six places
+    (`m[4]` for is_tip, `m[2]` for the text, `m[1]` for the direction), which is
+    unreadable at the call site and silently wrong if the SELECT's column order
+    ever moves. The names cost one class and make both impossible."""
+    message_id: int
+    direction: str          # "in" = the fan, "out" = us
+    text: str               # already `_strip_html`-ed and stripped
+    at: datetime | None
+    is_tip: bool
+
+
+# ── THE ORDER LINES ──────────────────────────────────────────────────────────
+#
+# THE ANCHOR WORDS open an order. Deliberately the narrowest possible set — a
+# word that only appears when somebody is talking about commissioned work. This
+# is what decides WHERE the order starts, so a loose word here (`video`, say,
+# which appears in every PPV caption we have ever sent) drags the span back
+# across unrelated history.
+_ORDER_ANCHOR_WORDS = ("custom", "voice note", "voicenote", "commission")
+
+# THE SPEC WORDS keep a line when the span is too long to print whole. Wider
+# than the anchors, because by this point the span is already bounded and the
+# job is recall: these are the words a spec is written in — the length, the
+# wardrobe, the thing to say.
+_ORDER_SPEC_WORDS = (
+    "custom", "video", "vid", "clip", "record", "film", "commission",
+    "minute", "minutes", "min", "mins", "long", "length",
+    "wear", "wearing", "hat", "shirt", "shirtless", "naked", "outfit",
+    "say", "name", "talk", "content", "details", "describe", "described",
+)
+
+# A GAP THIS LONG ENDS AN ORDER. One live fan has a COMPLETED 2024 custom and a
+# live 2026 one in the same thread; without this the span opens in November
+# 2024 and the operator reads two years of two different jobs. 45 days is longer
+# than the quiet stretches inside one live order (one ran 6 days, another had a
+# 24-day silence mid-layaway) and far shorter than the 16 months between his
+# two orders.
+_ORDER_GAP_DAYS = 45
+
+# Above this many lines the span is FILTERED to spec-bearing lines instead of
+# printed whole. Tuned against both live rows: a fast order (6 days) prints
+# whole at 32 lines, and a layaway (60 days of daily chat) is 238 lines whole
+# and 33 filtered. Both land readable.
+_ORDER_MAX_FULL = 40
+
+# How far back to look at all, and the row cap. Not a window around the tip —
+# the whole relationship. See the docstring: 58 days separated one live order
+# from the tip that surfaced it.
+_ORDER_SEARCH_DAYS = 400
+_ORDER_SEARCH_MAX = 4000
+
+
+def _norm(s: str) -> str:
+    """Whitespace/quote-insensitive key for matching a quote to its message."""
+    return " ".join(s.replace("’", "'").replace("‘", "'").replace("“", '"')
+                    .replace("”", '"').lower().split())
+
+
+def _whole_messages(quotes: list[str], fan_msgs: list[dict]) -> list[str]:
+    """Swap each model quote for the FULL stored message it came from.
+
+    The operator's rule is "whole message if it's that important", and a model
+    told never to shorten still does. So the prompt is not the enforcement;
+    this is. A quote that is not a substring of anything he sent is dropped —
+    a line shown as "his words" must be his."""
+    out: list[str] = []
+    for q in quotes:
+        nq = _norm(q).strip('."\' …')
+        if not nq:
+            continue
+        hit = next((m["text"] for m in fan_msgs if nq in _norm(m["text"])), None)
+        if hit and hit.strip() not in out:
+            out.append(hit.strip())
+    return out
+
+
+def _is_blast(text: str, blast: dict[str, int]) -> bool:
+    """Did we send this exact text to more than one fan?
+
+    OUR MARKETING IS THE LOUDEST THING IN THE THREAD and it is full of the words
+    an order is written in — "unlock it and you get everything, every set, every
+    clip", sent to the whole roster. On the live rows this was most of what a
+    keyword scan returned, which is precisely the "not clear enough" the operator
+    named. A line that went to N fans is not this fan's order, whatever it says.
+
+    Compared on a prefix because the same blast arrives with and without its
+    `<br/>` variants, which strip to texts differing only in whitespace."""
+    return blast.get(text[:120], 0) > 1
+
+
+@router.get("/admin/customs/order")
+async def customs_order(
+    account_id: str = Query(...),
+    fan_id: int = Query(...),
+) -> dict[str, Any]:
+    """WHAT HE ORDERED, in his words, found across the WHOLE thread.
+
+    This serves the operator's 2026-09-05 ruling — *"copy and paste the exact
+    username, which account, and what the customer said"*. `customs_context`
+    cannot serve it, and why not is the entire reason this endpoint exists.
+
+    ⚠️ THE REQUEST IS NOT NEAR THE TIP, AND ON A LAYAWAY CUSTOM IT IS NOWHERE
+    NEAR IT. Verified against two live rows, not argued from first principles:
+
+      fan A — order placed in July. The tip that put him on the queue landed
+      in September, and he had been paying it off in $100 instalments the whole
+      time ("I'm now 400/700 of what I owe you for that custom"). That is 58
+      days and several hundred messages apart. A 160-message `before` window
+      reads none of it — what it actually returns is small talk.
+
+      fan B — the ask is SPLIT across two days (the scenario and wardrobe one
+      day, "five minute video" the next), and then RENEGOTIATED BY US to ten
+      minutes. Keeping only his longest single message loses half the order;
+      keeping only HIS messages loses the spec that was actually agreed.
+
+    So: scan the whole thread, keep the lines that are ABOUT an order, return
+    them oldest-first with dates. BOTH DIRECTIONS, and that is deliberate — the
+    spec gets settled in the back-and-forth ("ten minutes, no cuts, that covers
+    the hat, the toy, and every filthy word"), so a fan-only view of that
+    conversation is not the order.
+
+    NO MODEL, on purpose. The operator films against this text, and a paraphrase
+    that quietly rewrites "ten minutes, no cuts" costs a take. Matching is a
+    literal substring test he can predict, and every line is returned verbatim.
+    """
+    assert_account_owned(account_id)
+    import re
+
+    from automation_executor import _strip_html
+
+    since = datetime.utcnow() - timedelta(days=_ORDER_SEARCH_DAYS)
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.message_id, Message.direction, Message.body,
+                   Message.created_at, Message.is_tip)
+            .where(Message.account_id == str(account_id),
+                   Message.fan_id == int(fan_id),
+                   Message.is_unsent.is_(False),
+                   Message.created_at >= since)
+            # Newest-first under the cap so it sheds ANCIENT history rather than
+            # the live negotiation; re-sorted oldest-first immediately below.
+            .order_by(Message.created_at.desc())
+            .limit(_ORDER_SEARCH_MAX)
+        )).all()
+        rows = list(reversed(rows))
+
+        # Every outbound body on this account, counted by how many DIFFERENT
+        # fans received it. One grouped query, not one per line — see `_is_blast`.
+        #
+        # ⚠️ SUMMED ONTO THE NORMALISED KEY, NEVER ASSIGNED. `GROUP BY
+        # Message.body` groups on the RAW body, so one blast stored with and
+        # without its `<br/>`/`<p>` wrapper comes back as SEVERAL rows that strip
+        # to the same text. A dict comprehension collapses them by OVERWRITING —
+        # last row wins — so three variants each sent to one fan scored 1 apiece
+        # and `_is_blast`'s `> 1` let our own PPV copy through as the fan's own
+        # words. The prefix key unified them; the counting undid it.
+        #
+        # Summing distinct-fan counts across variants slightly over-counts a fan
+        # who received two of them. That is the SAFE direction here: this filter
+        # only ever REMOVES lines from the order span, so over-counting drops one
+        # more line of our marketing, while under-counting puts marketing in the
+        # work order the operator films from.
+        blast: dict[str, int] = {}
+        for b, n in (await s.execute(
+                select(Message.body, func.count(func.distinct(Message.fan_id)))
+                .where(Message.account_id == str(account_id),
+                       Message.direction == "out",
+                       Message.is_unsent.is_(False))
+                .group_by(Message.body)
+        )).all():
+            key = _strip_html(b or "").strip()[:120]
+            blast[key] = blast.get(key, 0) + int(n)
+
+    # Strip once; every pass below reads the same cleaned text.
+    msgs = [_Msg(int(mid), direction, _strip_html(body or "").strip(),
+                 created, bool(is_tip))
+            for mid, direction, body, created, is_tip in rows]
+
+    def _own_words(text: str, direction: str) -> bool:
+        """A line that is this fan's conversation, not our mass marketing."""
+        return not (direction == "out" and _is_blast(text, blast))
+
+    # ── 1. WHERE DOES THE CURRENT ORDER OPEN?
+    # The earliest anchor line reachable from the newest one without crossing a
+    # `_ORDER_GAP_DAYS` silence. Walking back from the NEWEST is what keeps a
+    # finished older order out of a live one's span.
+    # INBOUND ONLY. Our per-fan AI nudges ("<name>, still thinking about that
+    # custom idea you pitched") are unique per recipient, so the blast filter
+    # cannot catch them, and one of them opened a live span on a sentence the
+    # fan never said. Only the fan can open an order.
+    anchors = [i for i, m in enumerate(msgs)
+               if not m.is_tip and m.direction == "in" and m.text
+               and any(w in m.text.lower() for w in _ORDER_ANCHOR_WORDS)]
+    if not anchors:
+        return {"lines": [], "count": 0, "opened_at": None,
+                "truncated": False, "reason": "no order talk found in this thread"}
+    start = anchors[-1]
+    for j in range(len(anchors) - 1, 0, -1):
+        prev_at, cur_at = msgs[anchors[j - 1]].at, msgs[anchors[j]].at
+        if prev_at and cur_at and (cur_at - prev_at).days > _ORDER_GAP_DAYS:
+            break
+        start = anchors[j - 1]
+
+    # ── 2. THE SPAN, in order. Tips stay in: they are how the operator sees a
+    # LAYAWAY — a live fan paid $100 at a time against a $700 custom, and a span
+    # showing only words reads as though the job is fully paid.
+    span = [m for m in msgs[start:]
+            if m.is_tip or (len(m.text) >= 12 and _own_words(m.text, m.direction))]
+
+    # ── 3. Print it whole when it is short enough to read; otherwise keep the
+    # spec-bearing lines. WORD-BOUNDARY matching here, unlike the anchor scan:
+    # the spec words are short ("min", "say", "hat") and a substring test makes
+    # "min" match "reminded" and "say" match "says". The anchors are long enough
+    # not to need it.
+    truncated = False
+    if len(span) > _ORDER_MAX_FULL:
+        truncated = True
+        pat = re.compile(r"\b(" + "|".join(_ORDER_SPEC_WORDS) + r")\b")
+        span = [m for m in span if m.is_tip or pat.search(m.text.lower())]
+
+    return {
+        "opened_at": msgs[start].at.isoformat() if msgs[start].at else None,
+        # true = the span was too long to print whole and only spec-bearing
+        # lines survived, so the operator knows there is thread he is not seeing.
+        "truncated": truncated,
+        "count": len(span),
+        "lines": [{"message_id": m.message_id, "from_fan": m.direction == "in",
+                   "is_tip": m.is_tip, "text": m.text,
+                   "at": m.at.isoformat() if m.at else None}
+                  for m in span],
+    }
+
+
 class _BriefBody(BaseModel):
     account_id: str
     fan_id: int
@@ -496,59 +778,74 @@ async def customs_brief(body: _BriefBody = Body(...)) -> dict[str, Any]:
     ctx = await customs_context(account_id=body.account_id, fan_id=body.fan_id,
                                 at=anchor_at, before=_BRIEF_BEFORE,
                                 after=_BRIEF_AFTER)
-    msgs = ctx.get("messages") or []
+    window = ctx.get("messages") or []
+    # The order's own lines from the WHOLE thread. On a layaway the ask sits
+    # weeks behind the tip, outside any window; these carry it in.
+    span = (await customs_order(account_id=body.account_id,
+                                fan_id=body.fan_id)).get("lines") or []
+    by_id = {int(m["message_id"]): m for m in span}
+    for m in window:
+        by_id.setdefault(int(m["message_id"]), m)
+    msgs = sorted(by_id.values(), key=lambda m: m.get("at") or "")
     if not msgs:
         return {"ok": False, "reason": "no stored messages around this tip"}
 
-    # Only what he SAID. Our own sends are the sales pitch, not the order, and
-    # feeding them back invites the model to summarise our marketing copy.
-    said = [m["text"].strip() for m in msgs
-            if m.get("from_fan") and not m.get("is_tip") and (m.get("text") or "").strip()]
-    if not said:
+    # BOTH DIRECTIONS, labelled. The creator routinely SETS the spec ("ten
+    # minutes, no cuts, that covers the hat, the toy") after the fan proposes
+    # something else; a fan-only transcript hands the model the wrong length.
+    def _line(m) -> str:
+        day = (m.get("at") or "")[:10]
+        if m.get("is_tip"):
+            return f"TIP {day}: {m.get('text') or ''}".rstrip()
+        who = "HIM" if m.get("from_fan") else "US"
+        return f"{who} {day}: {(m.get('text') or '').strip()}"
+    lines = [_line(m) for m in msgs
+             if m.get("is_tip") or (m.get("text") or "").strip()]
+    if not any(m.get("from_fan") and not m.get("is_tip") for m in msgs):
         return {"ok": False, "reason": "he never said what he wanted in this window"}
 
-    # ⚠️ KEEP THE OLDEST, NOT THE NEWEST. This was `said[-40:]` and it silently
-    # undid the whole window fix above: the span is deliberately weighted BEHIND
-    # the anchor because the request precedes the money, so the ask sits at the
-    # START of `said` and tail-truncation threw away the one message the brief
-    # exists to read. Verified on a seeded thread — 80 messages of small talk
-    # after the ask and the model never saw it.
-    #
-    # Both ends are kept when it does not fit: the opening carries the request,
-    # and the closing carries any late correction ("actually make it longer").
-    if len(said) <= _BRIEF_MAX_LINES:
-        lines = said
-    else:
+    # Keep BOTH ends when it does not fit: the opening carries the ask, the
+    # closing carries the last correction ("actually make it longer").
+    if len(lines) > _BRIEF_MAX_LINES:
         head = _BRIEF_MAX_LINES * 2 // 3
-        lines = said[:head] + ["…"] + said[-(_BRIEF_MAX_LINES - head):]
-    transcript = "\n".join(f"- {t}" for t in lines)
-    orders_line = (
-        f"He has {len(bursts)} SEPARATE orders outstanding, so there are "
-        f"{len(bursts)} things to record, not one. Say so in the summary and "
-        "split the deliverables across them where his messages make the split "
-        "clear.\n" if len(bursts) > 1 else ""
-    )
+        lines = lines[:head] + ["…"] + lines[-(_BRIEF_MAX_LINES - head):]
+    transcript = "\n".join(lines)
     system = (
-        "You read one fan's messages and write the RECORDING BRIEF for a voice "
-        "note he already paid for. Reply with JSON only: "
-        '{"summary": str, "deliverables": [str], "say_by_name": str|null, '
-        '"uncertain": [str], "found_request": bool}. '
-        "summary: one sentence, what to record. "
-        "deliverables: each distinct thing he asked for, in HIS words where "
-        "possible, shortest form that is still unambiguous. "
-        "say_by_name: a name he wants spoken, or null. "
-        "uncertain: anything genuinely ambiguous that the operator must decide. "
-        + orders_line +
-        "found_request: true ONLY if these messages actually contain him asking "
-        "for something specific. If he never says what he wants here — the "
-        "request was made earlier than this excerpt, or he only discussed price "
-        "— set it false, leave deliverables empty and say in summary that the "
-        "ask is not in this excerpt. A confident guess gets recorded and the "
-        "take is wasted, so silence is the correct answer when you cannot see "
-        "the request. "
+        "You read one OnlyFans fan's chat with the creator and write the WORK "
+        "ORDER for a custom he paid for. The creator's team records it from "
+        "your note alone, so be concrete. Lines are labelled HIM (the fan), US "
+        "(the creator) and TIP. Reply with JSON only: "
+        '{"summary": str, "his_words": [str], '
+        '"call_him": str|null, "found_request": bool}. '
+        "summary: 2-3 plain sentences saying exactly what to make — what it is "
+        "(video or voice note), how long, what to wear or use, what to say and "
+        "how, what to call him. Imperative, like a note to the person holding "
+        "the camera. A US line counts as spec ONLY when it states what THIS "
+        "custom will be — its length, what it covers, what is worn or used — "
+        "and when US sets that after HIM proposed something else, the US line "
+        "is the agreed spec: use it and say so. Everything else US writes — "
+        "sexting, flirting, selling, promises — is NOT the order; never turn it "
+        "into an instruction. Only include wardrobe, props or actions that were "
+        "stated for this custom; do not carry them over from other chat. "
+        "If HIM asked for more than one custom over time, describe only the "
+        "one the most recent tips paid for. Everything in the summary must be "
+        "traceable to a HIM line in his_words or to a US line that states this "
+        "custom's contents; if you cannot point to one, leave it out. "
+        "Write it out in full — never abbreviate ('wear the hat, shirt off, toy "
+        "out', not 'hat/shirt/toy'). "
+        "his_words: the 1-3 HIM messages that ARE the request, copied COMPLETE "
+        "and word for word — the whole message every time, never shortened, "
+        "never trailing off with '...'. "
+        "call_him: the name he wants used, or null. If he asked to be called "
+        "something different later in the chat, the later name wins. "
+        "found_request: true ONLY if these messages contain him asking for "
+        "something specific. If he never says what he wants here — the ask was "
+        "earlier than this excerpt, or he only discussed price — set it false, "
+        "leave todo empty and say in summary that the ask is not in this "
+        "excerpt. A confident guess gets recorded and the take is wasted. "
         "NEVER state, guess, split or total any dollar amount — the system "
-        "already knows what he paid and will show it. Do not invent anything he "
-        "did not ask for; an empty list is better than a plausible guess."
+        "already knows what he paid and shows it. Do not invent anything he "
+        "did not ask for."
     )
     try:
         res = await llm_client.chat(
@@ -579,12 +876,16 @@ async def customs_brief(body: _BriefBody = Body(...)) -> dict[str, Any]:
         # degrades to the old behaviour rather than blanking every brief.
         "found_request": bool(brief.get("found_request", True)),
         "summary": str(brief.get("summary") or "").strip(),
-        "deliverables": [str(x).strip() for x in (brief.get("deliverables") or [])
-                         if str(x).strip()][:10],
-        "say_by_name": (str(brief["say_by_name"]).strip()
-                        if brief.get("say_by_name") else None),
-        "uncertain": [str(x).strip() for x in (brief.get("uncertain") or [])
-                      if str(x).strip()][:5],
+        # WHOLE MESSAGES, enforced here rather than trusted to the prompt: the
+        # live model still returned the back half of a message that begins
+        # "How would I not and…" as if it were whole. Each quote is swapped
+        # for the full stored message that contains it; one that matches
+        # nothing he sent is dropped rather than shown as his.
+        "his_words": _whole_messages(
+            [str(x).strip() for x in (brief.get("his_words") or []) if str(x).strip()],
+            [m for m in msgs if m.get("from_fan") and not m.get("is_tip")])[:3],
+        "call_him": (str(brief["call_him"]).strip()
+                     if brief.get("call_him") else None),
     }
 
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, NamedTuple
 
-from automations import _leash
+from automations import _leash, rhythm
 
 
 class Badge(NamedTuple):
@@ -37,14 +37,76 @@ def _iso(dt: datetime | None) -> str | None:
 ACTIVE = Badge("active", "Active", "The AI answers his next message")
 
 
+class RhythmAway(NamedTuple):
+    """WHICH away-state a `rhythm_wake_at` is, as ONE value.
+
+    These two facts are not peers of the timestamps beside them in
+    `standing_badge` — they QUALIFY `rhythm_wake_at`, and they only ever move
+    together. Carried as two loose keyword arguments, a caller could pass the
+    context and forget `asleep` and get a confidently wrong badge (a sleeping
+    thread labelled "On a break") with no type error anywhere to catch it —
+    `fans.py` derives both in the same block from the same `rhythm_wake`. One
+    value makes the omission unspellable.
+
+    Defaults reproduce the pre-split sentence exactly, so `RhythmAway()` is the
+    badge an un-updated caller was already getting."""
+    #: `rhythm_state.context`. Names the step-out and the scheduled reply outright.
+    context: str | None = None
+    #: Reconstructed by `rhythm.sleeping_pause` — the sleep/break split is stored
+    #: NOWHERE (`decide_availability` writes CONTEXT_UNAVAILABLE for both), so it
+    #: cannot come off the row. See that docstring for where it can be wrong.
+    asleep: bool = False
+
+
+def _away_badge(away: RhythmAway, wake_at: datetime) -> Badge:
+    """WHICH away-state this is. One `rhythm_wake_at` covers four different events and
+    the drawer used to call all four "On a break", which is how a four-hour sleep
+    window got read as a ghost-cycle bug and cost an operator a morning in the DB.
+
+    Ordered by how badly the old copy misdescribed each one, which is also least
+    specific last."""
+    context, asleep = away.context, away.asleep
+    if asleep:
+        return Badge("paused", "Asleep",
+                     "It is the middle of the night on the creator's own clock. "
+                     "The thread wakes at the end of the sleep window, staggered so "
+                     "the whole roster is not answered in the same minute. This is "
+                     "the ONE pause nothing lifts early — not a live ask, not a "
+                     "purchase, not another message from him.",
+                     _iso(wake_at))
+    if context == rhythm.CONTEXT_STEPOUT:
+        return Badge("paused", "Stepped out",
+                     "Human Rhythm sent the creator out for an hour or two — it "
+                     "fires on a count of exchanges, not on anything he did. This is "
+                     "the one silence he is allowed to interrupt: if he keeps "
+                     "writing, the thread comes back early.", _iso(wake_at))
+    if context in (rhythm.CONTEXT_ASK_OPEN, rhythm.CONTEXT_FREE_CHAT):
+        return Badge("paused", "Reply scheduled",
+                     "Not a break — the thread is being answered, it just takes "
+                     "longer than the engine holds a lease for (2 min), so the reply "
+                     "was handed to the scheduler. It lands at the time shown.",
+                     _iso(wake_at))
+    return Badge("paused", "On a break",
+                 "Human Rhythm stepped this thread away to look human. It wakes on "
+                 "its own — a live ask or a recent purchase stops a NEW break from "
+                 "rolling, but neither lifts one already running, and neither "
+                 "reaches the sleep window at all.", _iso(wake_at))
+
+
 def standing_badge(*, engine_on: bool, blacklisted: bool, skip_reason: str | None,
                    rhythm_wake_at: datetime | None,
                    paused_until: datetime | None,
                    companion_until: datetime | None,
-                   post_buy_until: datetime | None) -> Badge:
+                   post_buy_until: datetime | None,
+                   rhythm_away: RhythmAway = RhythmAway()) -> Badge:
     """The durable reasons she is not answering, in the engine's own precedence —
     master switch, blacklist, skip_list, then the three timed states. First hit wins,
-    and every branch here is a fact about stored state rather than a live gate."""
+    and every branch here is a fact about stored state rather than a live gate.
+
+    `rhythm_away` says WHICH away-state the rhythm one is — see `RhythmAway` for why
+    its two facts travel as one value rather than as two arguments among the
+    timestamps. Keyword-only with a default that reproduces the old sentence exactly,
+    so a caller that does not supply it is unchanged."""
     if not engine_on:
         return Badge("off", "AI Upseller off",
                      "The engine's master switch is off for this account.")
@@ -54,10 +116,7 @@ def standing_badge(*, engine_on: bool, blacklisted: bool, skip_reason: str | Non
         return Badge("blocked", f"Skipped ({skip_reason})",
                      "A skip_list row closes the thread to the AI.")
     if rhythm_wake_at is not None:
-        return Badge("paused", "On a break",
-                     "Human Rhythm stepped this thread away to look human. It wakes on "
-                     "its own — a live ask or a recent purchase makes a thread "
-                     "break-proof.", _iso(rhythm_wake_at))
+        return _away_badge(rhythm_away, rhythm_wake_at)
     if paused_until is not None:
         return Badge("paused", "Cooling down", "Per-fan cooldown after a send.",
                      _iso(paused_until))

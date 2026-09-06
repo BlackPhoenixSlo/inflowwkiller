@@ -180,3 +180,10 @@ docker-compose.override.yml
 # them.
 service/priority_lane_stats.json
 priority_lane_stats.json
+
+# HMAC keys — NEVER in this repo (it is public). Leaked once via the Flow A
+# file-copy, which had no dotfile exclusion. The rule was added by d166766 and
+# then silently CLOBBERED by 1b64723, a wholesale `.gitignore` copy from the
+# laptop; restored 2026-09-06 after `git add -A` re-staged the file.
+service/.session_secret
+service/.chatter_secret

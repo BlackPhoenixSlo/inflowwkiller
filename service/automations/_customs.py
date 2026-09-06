@@ -197,6 +197,49 @@ def resolve_floor(min_cents) -> int:
 BURST_MINUTES = 30
 
 
+def _walk_bursts(rows, min_cents: int | None = None) -> dict[tuple, list[tuple]]:
+    """THE burst walk — the ONE definition of "which tips are one order", shared
+    by both public functions below so they cannot drift apart.
+
+    (account, fan) → every qualifying burst NEWEST FIRST, as
+    (total_cents, anchor_at, anchor_msg_id). `rows` arrive as
+    (account_id, fan_id, amount_cents, occurred_at, message_id) ordered
+    `occurred_at DESC`, and the walk depends on that ordering.
+
+    A burst is anchored on its NEWEST tip and swallows everything within
+    BURST_MINUTES of that anchor. The next row out is not "not an order" — it
+    OPENS one, and the walk continues. That last clause is the whole reason this
+    is one function: `orders_per_fan` used to DROP the overflow instead of
+    opening a burst for it, so on a chain of tips each ≤30 min from the one
+    before but spanning more than 30 min end to end, the two functions disagreed
+    about how many orders the fan had placed — while a docstring asserted they
+    shared a rule. Now they cannot: `orders_per_fan` is this walk's FIRST burst.
+
+    A burst is kept only if its TOTAL clears the floor — see `orders_per_fan`
+    for why filtering transactions before summing understates a $60+$60 order.
+    A fan with nothing qualifying is absent, not present-and-empty."""
+    floor = resolve_floor(min_cents)
+    walk: dict[tuple, list[list]] = {}
+    for acct, fid, cents, at, msg_id in rows:
+        if fid is None or at is None:
+            continue
+        key = (acct, int(fid))
+        cents = int(cents or 0)
+        open_burst = walk[key][-1] if key in walk else None
+        # Still inside the burst we are accumulating? Add it on. Otherwise this
+        # row opens a NEW order rather than being discarded.
+        if open_burst is not None and (open_burst[1] - at) <= timedelta(minutes=BURST_MINUTES):
+            open_burst[0] += cents
+            continue
+        walk.setdefault(key, []).append([cents, at, msg_id])
+    out: dict[tuple, list[tuple]] = {}
+    for key, bursts in walk.items():
+        kept = [(int(t), a, m) for t, a, m in bursts if t >= floor]
+        if kept:
+            out[key] = kept
+    return out
+
+
 def orders_per_fan(rows, min_cents: int | None = None) -> dict[tuple, tuple]:
     """(account, fan) → (total_cents, anchor_at, anchor_msg_id) for the fan's most
     recent ORDER, from rows ordered occurred_at DESC as
@@ -215,30 +258,35 @@ def orders_per_fan(rows, min_cents: int | None = None) -> dict[tuple, tuple]:
     question about the ORDER; asking it of each transaction is asking the wrong
     thing about the wrong noun. This is THE definition of "order" — the watch
     (customs_watch.run) marks off it and the /customs queue displays off it, so
-    the two can never disagree about whether a fan bought one."""
+    the two can never disagree about whether a fan bought one.
+
+    ⚠️ THE NEWEST BURST ONLY, and a sub-floor newest burst does NOT promote an
+    older one into its place. `customs_watch` uses this anchor as the DELIVERY
+    CUTOFF, so handing it last week's burst because this week's tip was $20 would
+    mark a fan owed off money he was not owed for and clear it against the wrong
+    instant. So the walk is asked for UNFILTERED bursts, the newest is taken, and
+    the floor is tested on that — which is exactly what this function did before
+    the walk was shared with `bursts_per_fan`."""
     floor = resolve_floor(min_cents)
-    bursts: dict[tuple, tuple] = {}
-    for acct, fid, cents, at, msg_id in rows:
-        if fid is None or at is None:
-            continue
-        key = (acct, int(fid))
-        cents = int(cents or 0)
-        if key not in bursts:         # first wins — the rows arrive newest-first
-            bursts[key] = (cents, at, msg_id)
-            continue
-        total, anchor_at, anchor_msg = bursts[key]
-        # Still inside the burst the anchor belongs to? Add it on. Anything older
-        # is a PREVIOUS order and is not this row's business.
-        if (anchor_at - at) <= timedelta(minutes=BURST_MINUTES):
-            bursts[key] = (total + cents, anchor_at, anchor_msg)
-    return {k: v for k, v in bursts.items() if v[0] >= floor}
+    return {key: bursts[0]
+            for key, bursts in _walk_bursts(rows, min_cents=0).items()
+            if bursts[0][0] >= floor}
 
 
 def bursts_per_fan(rows, min_cents: int | None = None) -> dict[tuple, list[tuple]]:
     """(account, fan) → EVERY qualifying order, newest first, as a list of
-    (total_cents, anchor_at, anchor_msg_id). Same row shape and same burst rule
-    as `orders_per_fan`; the only difference is that it does not throw the older
-    orders away.
+    (total_cents, anchor_at, anchor_msg_id). `_walk_bursts` unchanged — this IS
+    the walk, and `orders_per_fan` is its first element.
+
+    THE BURST RULE IS LITERALLY SHARED NOW, not merely described as shared. It
+    used not to be: `orders_per_fan` DROPPED a tip that fell outside the anchor's
+    window, while this function let that tip OPEN a new burst, so on a chain of
+    tips each ≤30 min from the anchor before it but spanning more than 30 min end
+    to end the two disagreed about the fan's order COUNT — with a docstring here
+    asserting they agreed. One walk makes the claim true by construction.
+
+    The only difference left is which end of the walk each returns: this one
+    keeps every order, `orders_per_fan` keeps the newest.
 
     ⚠️ THIS IS A SIBLING OF `orders_per_fan`, NOT A REPLACEMENT, AND THAT IS
     DELIBERATE. That function has three callers who want different things, and
@@ -264,26 +312,7 @@ def bursts_per_fan(rows, min_cents: int | None = None) -> dict[tuple, list[tuple
 
     Callers must pass rows ordered `occurred_at DESC` — the burst walk depends
     on it, exactly as `orders_per_fan` does."""
-    floor = resolve_floor(min_cents)
-    walk: dict[tuple, list[list]] = {}
-    for acct, fid, cents, at, msg_id in rows:
-        if fid is None or at is None:
-            continue
-        key = (acct, int(fid))
-        cents = int(cents or 0)
-        open_burst = walk[key][-1] if key in walk else None
-        # Still inside the burst we are accumulating? Add it on. Otherwise this
-        # row opens a NEW order — which is the whole point of this function.
-        if open_burst is not None and (open_burst[1] - at) <= timedelta(minutes=BURST_MINUTES):
-            open_burst[0] += cents
-            continue
-        walk.setdefault(key, []).append([cents, at, msg_id])
-    out: dict[tuple, list[tuple]] = {}
-    for key, bursts in walk.items():
-        kept = [(int(t), a, m) for t, a, m in bursts if t >= floor]
-        if kept:
-            out[key] = kept
-    return out
+    return _walk_bursts(rows, min_cents)
 
 
 # The price sentence spliced onto `_voice.CUSTOMS_CONDITIONS`, so every surface

@@ -155,6 +155,13 @@ class PackPlan:
     def ok(self) -> bool:
         return self.refusal is None and bool(self.media)
 
+    @property
+    def attached(self) -> list[int]:
+        """Everything in the message. OF requires `previews ⊆ mediaFiles`, so the free
+        frames are members of the same attachment; `media` stays the PAID slice and is
+        what `_record_vault_sends` stamps."""
+        return list(self.media) + [m for m in self.previews if m not in self.media]
+
 
 async def _live_of_kind(account_id: str, media: list[int],
                         kind: str | None) -> list[int]:
@@ -236,6 +243,58 @@ async def _bought_media(account_id: str, fan_id: int) -> set[int]:
 
 # ── The product row ─────────────────────────────────────────────────
 
+#: The `LIKE` escape character used by `tags_carry`. Backslash, and the pattern
+#: builder escapes it first, so a tag containing one is still matched literally.
+_LIKE_ESC = "\\"
+
+
+def tags_carry(tag: str):
+    """SQL predicate: this row's `tags` JSON array carries `tag` as an ELEMENT.
+
+    THE ONE PLACE THAT DECIDES WHAT "TAGGED X" MEANS. Two readers depend on
+    agreeing — `_singleton_item` below (the WRITE side: which row a lane sells
+    from) and `ai_chatter._offer_caps_ok` (the READ side: which offers are
+    exempt from the per-fan caps). If they disagree, `ensure_ask_item` can hand
+    the hook lane an operator's near-miss row and the caps query then fails to
+    exempt its offers — hook offers land back inside the ask lane's caps, which
+    is operator ruling R2-a broken. One function, so a third caller cannot
+    reintroduce the split.
+
+    `catalog_items.tags` is a JSON array of strings — every writer stores
+    `json.dumps([...])` (`:279`, `:495`, `pack_farewell.py:87`,
+    `scripts_api.py:1238`, `settings_transfer_api.py:944`, `seeds/catalog.py:74`)
+    — so the element `hook_upsell` is on disk as the quoted substring
+    `"hook_upsell"`. Two things are therefore escaped out of the pattern:
+
+    * **The quotes** pin the match to a WHOLE element. `["hook_upsell"]` matches;
+      `["hook_upsell_v2"]` and `["test-hook_upsell"]` do not. A bare
+      `LIKE '%hook_upsell%'` matched all three.
+    * **`_` and `%` are LIKE WILDCARDS**, and both lane tags contain `_`
+      (`hook_upsell`). Unescaped, `%"hook_upsell"%` also matches
+      `["hook-upsell"]` and `["hookXupsell"]` — same length, any character.
+      Escaping them makes the tag literal.
+
+    This matters because operators TYPE these tags: `scripts_api.py:1238` takes
+    any 40 chars, twelve of them, onto rows with `script_id=None` — which is
+    exactly `CATALOG_IS_SINGLE`, the predicate both readers scope with. So an
+    operator's row genuinely does sit in the same result set as a lane's own.
+
+    🚨 NOT CLOSED: CASE. SQLite `LIKE` is ASCII case-insensitive and nothing on
+    the write path lower-cases a tag, so `["Hook_Upsell"]` still matches
+    `hook_upsell` and is still treated as the hook lane's row. That is left
+    alone deliberately — it is the SAFE direction for both readers (a
+    differently-cased spelling of the lane's own tag is adopted by the lane AND
+    exempted from the caps, consistently, because both go through here) and
+    folding case would mean `lower()` on the column in the caps subquery. What
+    is closed is the arbitrary-length superstring class and the wildcard class,
+    which is where the silent over-offering came from.
+    """
+    esc = (tag.replace(_LIKE_ESC, _LIKE_ESC * 2)
+              .replace("%", _LIKE_ESC + "%")
+              .replace("_", _LIKE_ESC + "_"))
+    return CatalogItem.tags.like(f'%"{esc}"%', escape=_LIKE_ESC)
+
+
 async def _singleton_item(s, account_id: str, tag: str) -> CatalogItem | None:
     """The account's ONE standalone `CatalogItem` carrying `tag`, or None.
 
@@ -247,7 +306,7 @@ async def _singleton_item(s, account_id: str, tag: str) -> CatalogItem | None:
         select(CatalogItem).where(
             CatalogItem.account_id == str(account_id),
             CATALOG_IS_SINGLE,
-            CatalogItem.tags.like(f"%{tag}%"))
+            tags_carry(tag))
     )).scalars().first()
 
 
@@ -434,26 +493,58 @@ async def plan_pack(account_id: str, fan_id: int, category: str, rung: str, *,
 # ("the pool is the curated shelf UNION the whole vault") applied to the SEND
 # path, which had only ever been applied to the POOL.
 ASK_CATEGORY = "ask"          # the attribution bucket — NOT a curated category
+#: The ask lane's own catalog row. One per account, and the DEFAULT — every
+#: caller that existed before there was a second tag keeps landing on it.
+ASK_ITEM_TAG = "rung:vault-ask"
+#: The hook upsell's row (plans/hook-upsell §2.3). A SECOND row for the same
+#: kind of send, and the separation is the operator ruling R2-a: hook offers sit
+#: outside the per-fan caps in BOTH directions, so `_offer_caps_ok`'s burned
+#: count must not see them. Sharing the ask row would have made the hook pace
+#: the ask lane and the ask lane pace the hook — the two caps this whole design
+#: is built to keep apart.
+HOOK_CATEGORY = "hook_upsell"
 
-async def ensure_ask_item(account_id: str) -> CatalogItem:
-    """ONE reusable `CatalogItem` for vault-wide ask sends, per account.
+#: The operator-facing row label per lane tag. The label used to be DERIVED inside
+#: `ensure_ask_item` — `"vault · asked for" if tag == ASK_ITEM_TAG else
+#: f"vault · {tag.split(':')[-1]}"` — which is a function branching on the very
+#: parameter it is parameterised by, and the else arm split on a `:` that
+#: `HOOK_CATEGORY` does not contain (it happened to read correctly only because
+#: `split` on a missing separator returns the whole string). A third lane would
+#: have had to guess whether its tag needed the prefix. The label is a property of
+#: the lane, so it lives with the lane's tag; a new tag adds a row here and the
+#: `KeyError` on a forgotten one is the point.
+ITEM_LABELS = {
+    ASK_ITEM_TAG: "vault · asked for",
+    HOOK_CATEGORY: f"vault · {HOOK_CATEGORY}",
+}
+
+
+async def ensure_ask_item(account_id: str, *,
+                          tag: str = ASK_ITEM_TAG) -> CatalogItem:
+    """ONE reusable `CatalogItem` per account per `tag`, for vault-wide sends.
 
     `ContentOffer.item_id` is a non-nullable FK, so a send with no row cannot be
     attributed and cannot answer "did answering his ask make money". One row per
     account rather than one per subject: subjects are the fan's own words and
     unbounded, and a table growing a row per phrase a man types is a leak.
 
+    `tag` is what makes it one row per LANE rather than one per account: a
+    caller sells the same way out of the same vault but wants its offers counted
+    apart. It is a closed set of module constants, never a fan's words — that is
+    the leak this row shape exists to avoid, and a caller-supplied string would
+    reintroduce it one call site away.
+
     `enabled=False` for the same reason `ensure_pack_item` sets it —
     `_offerable_for_fan` puts every enabled standalone into every fan's
     manifest, and this must only ever reach someone who asked.
     """
-    tag = "rung:vault-ask"
     async with get_session() as s:
         row = await _singleton_item(s, account_id, tag)
         if row is None:
             row = CatalogItem(
                 account_id=str(account_id), script_id=None, kind="image_set",
-                label="vault · asked for", enabled=False,
+                label=ITEM_LABELS[tag],
+                enabled=False,
                 # COUNT-FREE and SUBJECT-FREE: one row serves every ask, so any
                 # number or noun stored here is a lie to most of the fans who
                 # receive it. Both live only in the rendered clause.
@@ -533,11 +624,16 @@ async def _ask_claim(account_id: str, fan_id: int, media: list[int], *,
 async def _plan_ask_from(account_id: str, fan_id: int,
                          contract: content_resolver.Contract,
                          media_ids: list[int], cfg: dict, empty: PackPlan,
-                         ending: _AskEnding) -> PackPlan:
+                         ending: _AskEnding, *,
+                         item_tag: str = ASK_ITEM_TAG) -> PackPlan:
     """Price and caption resolved ids. The one spine both endings ride.
 
     `media_kind` is not passed to `_available`: the resolver has already
     enforced it as part of the contract.
+
+    `item_tag` only picks WHICH catalog row carries the attribution — see
+    `ensure_ask_item`. Nothing else about the plan differs by lane, which is
+    exactly why it is one parameter and not a second planner.
     """
     avail_ids = await _available(account_id, fan_id, media_ids,
                                  company=contract.company)
@@ -545,7 +641,7 @@ async def _plan_ask_from(account_id: str, fan_id: int,
         return replace(empty, refusal=REFUSE_TOO_THIN,
                        detail=f"{len(avail_ids)} un-bought")
 
-    item = await ensure_ask_item(account_id)
+    item = await ensure_ask_item(account_id, tag=item_tag)
     priced = await _price_and_compose(account_id, fan_id, avail_ids, item, cfg,
                                       empty, min_items=ending.min_items)
     if priced.refusal is not None:
@@ -574,7 +670,8 @@ async def _plan_ask_from(account_id: str, fan_id: int,
 
 async def plan_ask(account_id: str, fan_id: int,
                    contract: content_resolver.Contract, *,
-                   cfg: dict | None = None) -> PackPlan:
+                   cfg: dict | None = None,
+                   item_tag: str = ASK_ITEM_TAG) -> PackPlan:
     """A priced pack drawn from the WHOLE VAULT, for an ask with no curated rung.
 
     The same spine as `plan_pack` — same price ladder, same value composition,
@@ -600,7 +697,8 @@ async def plan_ask(account_id: str, fan_id: int,
         contract=contract, require_curated=False)
     if res.ok:
         return await _plan_ask_from(account_id, fan_id, contract,
-                                    res.media_ids, cfg, empty, _FITS)
+                                    res.media_ids, cfg, empty, _FITS,
+                                    item_tag=item_tag)
 
     # 🚨 "i don't have that, but this is close" — the 2026-08-11 operator ruling,
     # finally reaching a fan. Until now every refusal here returned nothing and
@@ -632,7 +730,8 @@ async def plan_ask(account_id: str, fan_id: int,
              contract.subject, account_id, fan_id, res.refusal,
              "0" if res.alternatives else len(alts))
     return await _plan_ask_from(account_id, fan_id, contract,
-                                alts, cfg, empty, _SUBSTITUTE)
+                                alts, cfg, empty, _SUBSTITUTE,
+                                item_tag=item_tag)
 
 
 # ── The send ────────────────────────────────────────────────────────
@@ -707,7 +806,7 @@ async def plan_pack_delivery(account_id: str, fan_id: int, category: str,
         # phases split that gap is now a whole reply wide, which makes the
         # re-audit load-bearing rather than belt-and-braces.
         lambda: audit_pack(account_id, category, rung,
-                           plan.media + plan.previews, plan.previews),
+                           plan.attached, plan.previews),
     ), {}
 
 
@@ -783,8 +882,10 @@ async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
                     account_id, fan_id, _why)
         return {"status": "refused", "reason": f"audience:{_why}"}
 
+    # OF: `previews` must be a SUBSET of `mediaFiles`, else 400 "Wrong preview".
+    # `PackPlan.attached` is that set; the locked part is still exactly `plan.media`.
     kwargs: dict = {"price": plan.price_cents / 100, "locked_text": False,
-                    "media_files": list(plan.media)}
+                    "media_files": plan.attached}
     if plan.previews:
         kwargs["previews"] = list(plan.previews)
     try:
@@ -878,13 +979,20 @@ async def _has_bought_from(account_id: str, fan_id: int, category: str) -> bool:
 
 async def plan_ask_delivery(account_id: str, fan_id: int,
                             contract: content_resolver.Contract, *,
-                            cfg: dict | None = None
+                            cfg: dict | None = None,
+                            item_tag: str = ASK_ITEM_TAG
                             ) -> tuple[Delivery | None, dict]:
-    """Decide a whole-vault ask. `(delivery, refusal)` — exactly one is truthy."""
+    """Decide a whole-vault ask. `(delivery, refusal)` — exactly one is truthy.
+
+    `item_tag` names the catalog row the offer is attributed to, and defaults to
+    the ask lane's own. A caller that wants its sends counted apart from the ask
+    lane's passes its own — see `HOOK_CATEGORY` and `ensure_ask_item`.
+    """
     cfg = cfg or {}
     if not cfg.get("pack_send_enabled"):
         return None, {"status": "refused", "reason": REFUSE_DISABLED}
-    plan = await plan_ask(account_id, fan_id, contract, cfg=cfg)
+    plan = await plan_ask(account_id, fan_id, contract, cfg=cfg,
+                          item_tag=item_tag)
     if not plan.ok:
         log.info("ask refused account=%s fan=%s subject=%r: %s %s",
                  account_id, fan_id, contract.subject, plan.refusal, plan.detail)
