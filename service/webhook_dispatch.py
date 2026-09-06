@@ -24,7 +24,7 @@ Design notes:
     ({"enabled": bool}); absent/NULL → OFF. The global kill-switch is the env
     var W7_WEBHOOK_DISPATCH_DISABLED (set to 1/true to disable everywhere).
   • Memory: the live detector must NEVER run on jaka (its inbound is stranger/
-    promo spam). The default-OFF gate enforces that — enable Ava first.
+    promo spam). The default-OFF gate enforces that — enable Lexi first.
 """
 from __future__ import annotations
 
@@ -45,6 +45,18 @@ from db.models import (
 import automation_executor as ax
 from automation_registry import kind_family
 from of_shapes import giphy_dm_id, has_video
+# The widest pause `picture_back_target` can draw, and therefore the image_reply
+# dedup window: it must SPAN that pause, or a replay arriving while the first job
+# is still pending sees nothing queued and enqueues a second freebie.
+#
+# IMPORTED, not retyped. The correctness of the dedup is "this number >= the
+# widest target", and while the number was written out here that condition was the
+# accidental equality of two independent literals in two files: raising the
+# ceiling to 120 would have made replays double-send a freebie with every suite
+# green. Same remedy `TIP_LEDGER_PREFIX` already got one file over. Aliased
+# because the two names are two FACTS that happen to coincide — the alias is
+# where "and they must" is written down.
+from automations.pacing import PICBACK_CEIL_S as _PICBACK_DEDUP_WINDOW_S
 
 log = logging.getLogger("of-relay.webhook_dispatch")
 
@@ -243,6 +255,70 @@ async def _wake_after(delay_s: float) -> None:
         pass
 
 
+# ── The human pause before a media reaction lands ────────────────────
+#
+# The picture IS the reply, and a picture is not typed: the whole pause is DARK,
+# so nothing needs to be awake for it. We draw a target, put it on the job's
+# `run_at`, and let the executor pick the job up when it comes due. Holding it
+# inline instead would serialise every reaction on the account and burn one of the
+# executor's four GLOBAL run slots for a minute of doing nothing. See
+# plans/image-reply/PLAN.md §D3 and `pacing.picture_back_target`.
+
+async def _message_created_at(account_id: str, fan_id: int,
+                              message_id: int) -> datetime | None:
+    """When HIS message actually landed — the anchor the pause is measured from.
+
+    None when the row is not there (a webhook that outran the persist); the caller
+    then falls back to `now`, which is the same thing to within a second."""
+    async with get_session() as s:
+        row = await s.get(Message, (str(account_id), int(fan_id), int(message_id)))
+    return getattr(row, "created_at", None) if row is not None else None
+
+
+def _deferred_run_at(now: datetime, trigger_at: datetime | None,
+                     target_s: float) -> datetime:
+    """When the reaction job should run, so the FAN experiences `target_s`.
+
+    ⚠️ THE POINT OF THIS FUNCTION: the target is measured from HIS message, not
+    from now, so everything already spent — the vision describe above us, the
+    queue, the webhook hop — is counted INSIDE it rather than added on top. A
+    describe that ate 20s of a 40s target leaves 20s left to wait, not 40. Double-
+    counting it was the sharpest arithmetic error the plan's review caught (§D3,
+    DA MAJOR 5): the number the fan feels is trigger→picture, and a design that
+    only controls hold-LENGTH does not control that number at all.
+
+    Two clamps, both load-bearing:
+      max(now, …)         a describe SLOWER than the whole target means the pause
+                          is already spent. Run now; never a negative wait.
+      min(…, now+target)  a trigger timestamp in the FUTURE (OF clock skew — and
+                          FakeOF's fixed `createdAt` in the tests, the same footgun
+                          shape) would otherwise push the picture arbitrarily far
+                          out. The target is the MOST we will ever wait, whatever
+                          the clocks claim.
+
+    Pure — no clock read, no DB — so the arithmetic is testable without a job."""
+    target_s = max(0.0, float(target_s or 0.0))
+    ceiling = now + timedelta(seconds=target_s)
+    if trigger_at is None:
+        return ceiling
+    return min(max(now, trigger_at + timedelta(seconds=target_s)), ceiling)
+
+
+async def _media_reply_pace_target(account_id: str, fan_id: int, message_id: int,
+                                   *, seed_prefix: str) -> float:
+    """Draw this photo's pause, or 0.0 when the operator turned the knob off.
+
+    Seeded on the TRIGGER, so a webhook replay of the same photo draws the same
+    target and cannot walk the picture further out on every retry."""
+    from automations.tip_reward_config import _load_config
+    cfg = await _load_config(account_id)
+    if not cfg.get("media_reply_pace_enabled", True):
+        return 0.0
+    from automations import pacing
+    seed = f"{seed_prefix}:{account_id}:{int(fan_id)}:{int(message_id)}"
+    return pacing.picture_back_target(random.Random(seed))
+
+
 async def _fan_in_resolution(account_id: str, fan_id: int) -> bool:
     """True iff this fan has an IN-PROGRESS make_right resolution — the multi-turn
     apology→free→…→PPV exchange owns his replies until it closes, so the normal
@@ -350,19 +426,26 @@ async def _fan_paused_until(account_id: str, fan_id: int) -> datetime | None:
     return until
 
 
-async def _has_imminent_pending_job(
+async def _imminent_pending_job(
     account_id: str, kind: str, fan_id: int, within_s: float
-) -> bool:
-    """Per-FAN dedup: a pending (account, kind) job already targeting THIS fan and
-    due within `within_s` seconds means a reaction is already queued — skip a
-    second enqueue. Per-fan (not per-kind) because W7 is fan-scoped now: two
-    different fans replying must each get their own job. The window spans our
-    response delay so two quick replies from the SAME fan don't double-queue."""
+) -> tuple[datetime, dict] | None:
+    """The pending (account, kind) job already targeting THIS fan and due within
+    `within_s` seconds — `(run_at, payload)` — or None if there is none.
+
+    Per-fan (not per-kind) because W7 is fan-scoped now: two different fans
+    replying must each get their own job. The window spans our response delay so
+    two quick replies from the SAME fan don't double-queue.
+
+    Returns the LATEST-due match, not the first row the DB happened to hand back,
+    because the one caller that reads the `run_at` uses it as a FLOOR — the words
+    it schedules must land behind every picture that is already queued, not just
+    behind one of them. Most callers only want the boolean and take
+    `_has_imminent_pending_job` below."""
     soon = datetime.utcnow() + timedelta(seconds=within_s)
     async with get_session() as s:
         rows = (
             await s.execute(
-                select(ScheduledJob.payload_json).where(
+                select(ScheduledJob.run_at, ScheduledJob.payload_json).where(
                     ScheduledJob.account_id == str(account_id),
                     # kind_family: a pre-rename pending job must still dedup —
                     # this guard is what stands between a fan and a double send.
@@ -371,21 +454,60 @@ async def _has_imminent_pending_job(
                     ScheduledJob.run_at <= soon,
                 )
             )
-        ).scalars().all()
+        ).all()
     fid = int(fan_id)
-    for pj in rows:
+    best: tuple[datetime, dict] | None = None
+    for run_at, pj in rows:
         try:
             p = json.loads(pj or "{}")
         except Exception:
             continue
-        if fid in (p.get("only_fan_ids") or []) or p.get("test_fan") == fid:
-            return True
-    return False
+        # Three shapes because three producers name the fan differently: the chat
+        # engines take a LIST (`only_fan_ids`), the funnel takes `test_fan`, and
+        # the reaction lanes (image_reply / tip_reward) are single-fan jobs that
+        # carry a bare `fan_id`. Missing that third key made this function answer
+        # "nothing queued" for every reaction job — a dedup that silently never
+        # deduped the one lane whose replays actually double-SEND.
+        if not (fid in (p.get("only_fan_ids") or [])
+                or p.get("test_fan") == fid
+                or p.get("fan_id") == fid):
+            continue
+        at = run_at or datetime.utcnow()
+        if best is None or at > best[0]:
+            best = (at, p)
+    return best
 
 
-async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> None:
+async def _has_imminent_pending_job(
+    account_id: str, kind: str, fan_id: int, within_s: float
+) -> bool:
+    """Is a reaction already queued for this fan? → skip a second enqueue.
+
+    The predicate form of `_imminent_pending_job`, for the callers that only ask
+    the yes/no question."""
+    return await _imminent_pending_job(account_id, kind, fan_id, within_s) is not None
+
+
+async def on_inbound_message(account_id: str, fan_id: int, message_id: int, *,
+                             extra_payload: dict | None = None,
+                             not_before: datetime | None = None) -> None:
     """React to one inbound fan DM: enqueue + wake the owning sweep so the bot
-    replies in seconds instead of at the next tick. Never raises."""
+    replies in seconds instead of at the next tick. Never raises.
+
+    `extra_payload` merges extra keys into the CHAT-ENGINE payload (it is ignored
+    for reply_mass_funnel, which takes `test_fan` and nothing else). Its one caller
+    today is the media lane: `on_inbound_image` hands the words job off to us after
+    the vision describe, carrying `intent_fan_ids` when the image-closer flag is on.
+    That flag used to enqueue its OWN ai_chatter job alongside the transcoder's —
+    two jobs racing off one photo, one of them photo-blind. One job now, sighted,
+    with the closer's intent riding on it. See plans/image-reply/PLAN.md §D2.
+
+    `not_before` FLOORS the job's `run_at`. Its one caller is the same media lane,
+    for the one exit where a picture is already queued behind us: the words must
+    follow the picture, not race it (`tip_reward._hand_off_words`), and the
+    ordinary `run_at` here is `now + _response_delay`, which defaults to zero.
+    A floor and not a replacement — the operator delay and the cooldown deferral
+    still apply on top, whichever lands later."""
     try:
         if _global_kill_switch():
             return
@@ -434,6 +556,10 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
             run_at = paused_until + timedelta(seconds=delay)
         else:
             run_at = now + timedelta(seconds=delay)
+        if not_before is not None and run_at < not_before:
+            # Never EARLIER than the caller's floor; the cooldown deferral above
+            # may already have pushed us past it, in which case it does nothing.
+            run_at = not_before
         wait_s = max(0.0, (run_at - now).total_seconds())
 
         # Dedup over the FULL wait (cooldown remainder + delay) so a second
@@ -448,7 +574,7 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
         # `only_fan_ids` (gates still apply — see each automation's run()).
         payload = (
             {"test_fan": int(fan_id)} if kind == "reply_mass_funnel"
-            else {"only_fan_ids": [int(fan_id)]}
+            else {"only_fan_ids": [int(fan_id)], **(extra_payload or {})}
         )
         await ax.enqueue_job(account_id, kind, payload=payload, run_at=run_at)
         # Wake now if due immediately; otherwise wake once the (possibly deferred)
@@ -570,13 +696,33 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
       • image_reply_enabled  → enqueue ONE free vault item from the tip folder's
         'under $10' (basic) tier — the tip_reward `image_reply` mode, per-fan
         throttled (also dedups webhook replays of the same image).
-      • image_closer_enabled → kick ai_chatter for this fan NOW, flagging the
-        image as buying intent (`intent_fan_ids` — it drives the cadence gate's
-        pic tier; the photo carries no text the intent regexes can match).
-        Requires ai_chatter enabled; with it off this flag is inert.
+      • image_closer_enabled → flag the image as buying intent on the words job
+        (`intent_fan_ids` — it drives the cadence gate's pic tier; the photo
+        carries no text the intent regexes can match). Requires ai_chatter
+        enabled; with it off this flag is inert.
 
-    Gated SEPARATELY from the reply (W7) and tip hooks: an image reply / closer
-    pivot should fire even on a fan no chat sweep would answer. Never raises.
+    THE WORDS. `event_transcoder` no longer fires `on_inbound_message` for a media
+    DM (see its `is_media_dm`): the words for this photo are OUR responsibility,
+    because only this path knows when the vision describe has landed. Firing both
+    made the text photo-blind — the W7 job ran ~1s after the photo, before the
+    describe wrote `messages.image_desc`, and she answered an empty line.
+
+    Whoever finishes with the photo LAST hands the words off:
+      • all three flags off, or the fan has no describe budget → we hand off
+        immediately (an ordinary media DM must still get its ordinary reply);
+      • describe on, pic lane off → we hand off right after the describe returns;
+      • pic lane on → `tip_reward` hands off in its own `finally`, after the
+        picture, on every exit path (sent, throttled, no media, disabled, error);
+      • the describe raised, or the whole coroutine was CANCELLED mid-describe
+        (a relay restart, a redeploy) → the `except BaseException` hands off
+        best-effort. Losing the words because vision hiccuped — or because we
+        were redeployed while waiting on it — is the one outcome worth catching
+        that widely; see the handler for why the re-raise makes it safe.
+
+    Gated SEPARATELY from the tip hook: an image reply / closer pivot should fire
+    even on a fan no chat sweep would answer. Raises nothing of its own; a
+    TEARDOWN (`CancelledError`, `KeyboardInterrupt`, `SystemExit`) is handed back
+    to its raiser AFTER the words have been handed off.
 
     `has_media=False` = the DM carried no media, only a Giphy id (see
     event_transcoder). We still describe it — free, off Giphy's public title — but
@@ -606,44 +752,171 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
                 # A media-less DM IS the gif case, already established above.
                 is_gif=not has_media)
 
+        # `intent_fan_ids` only means something to ai_chatter, and only when it is
+        # the engine that answers him. Resolve it BEFORE any hand-off so every exit
+        # path below carries the same payload.
+        if run_closer:
+            from automations.ai_chatter import is_enabled as _ai_enabled
+            if not await _ai_enabled(account_id):
+                run_closer = False  # closer flag on but ai_chatter off → inert
+                log.debug("image_closer inert (ai_chatter disabled) account=%s fan=%s",
+                          account_id, fan_id)
+        extra = {"intent_fan_ids": [int(fan_id)]} if run_closer else None
+
         if not (send_img or run_closer or describe_on):
+            # Nothing to do with the photo itself — but the transcoder deferred the
+            # words to us, so a media DM on an all-flags-off account must still get
+            # its ordinary reply. This is the regression guard for the whole change.
+            await on_inbound_message(account_id, fan_id, message_id,
+                                     extra_payload=extra)
             return
 
         # Vision-describe the photo FIRST and BLOCK on it (a few seconds, reads as
         # human typing) — the description is cached on messages.image_desc, and the
-        # closer we kick below reads it straight back into its history as
+        # words job we hand off below reads it straight back into its history as
         # "[he sent: …]". Awaiting here is what lets the FIRST reply rate the
         # picture instead of a later one. Never raises; a describe miss just leaves
-        # image_desc NULL and the closer proceeds photo-blind (prior behavior).
+        # image_desc NULL and the reply proceeds photo-blind (prior behavior).
         if describe_on:
             from inbound_describe import describe_inbound_message  # lazy: avoid cycle
             await describe_inbound_message(account_id, int(message_id), describe_seed)
 
-        woke = False
         if send_img:
+            # The pic lane runs, so IT owns the hand-off — its `finally` calls
+            # on_inbound_message after the picture, on every exit path. Two sends,
+            # hers, in order: the picture, then the words about it.
+            #
+            # Dedup FIRST: a webhook replay of the same photo would otherwise chain
+            # a second deferred job behind the first and send two freebies a minute
+            # apart. The pic lane's own per-fan cooldown catches the same replay,
+            # but only after the job has been claimed and a slot spent — and with
+            # `image_reply_cooldown_hours: 0` (a documented setting) it does not
+            # catch it at all. The window spans the longest target we can draw.
+            #
+            # ⚠️ The match is (account, kind-family, FAN) — `_imminent_pending_job`
+            # never reads `trigger_message_id`, so this suppresses the freebie for a
+            # genuinely NEW second photo inside 90s as well as for a replay. That is
+            # deliberate: two freebies a minute apart is the failure, and one is the
+            # right answer to two photos in one breath. Only the PICTURE is
+            # suppressed — the words still reach him, one way or the other.
+            pending = await _imminent_pending_job(
+                account_id, "image_reply", fan_id,
+                within_s=_PICBACK_DEDUP_WINDOW_S)
+            if pending is not None:
+                pending_at, pending_payload = pending
+                log.info("image_reply_dedup account=%s fan=%s msg=%s (one already queued)",
+                         account_id, fan_id, message_id)
+                # WHO says the words. This exit used to be the one of the five that
+                # owned the photo and handed nothing on — but handing off
+                # unconditionally is worse, because the pending job's own `finally`
+                # is the enqueuer that knows WHEN the picture landed and we do not.
+                # Ours would be due at `now + _response_delay` (0 by default) while
+                # the picture is up to 90s out: the words would go first, ai_chatter
+                # would set its per-fan cooldown, and the freebie would land
+                # WORDLESS — the exact failure `_phantom`/`bound_to_pic` exists to
+                # prevent — and our earlier job would dedup away the correct,
+                # cooldown-deferred one the pic lane was about to enqueue.
+                #
+                # So: speak only for a pending job that will not speak for itself
+                # (`force`, `dry_run`, or no trigger message — `tip_reward`'s own
+                # guard, asked rather than re-typed), and even then never before
+                # the picture it belongs behind. The pending job's hand-off is
+                # fan-scoped and its gather sees BOTH inbound rows, so in the
+                # ordinary case this photo is answered by it too.
+                from automations.tip_reward import hands_off_words  # lazy: cycle
+                if not hands_off_words(pending_payload):
+                    await on_inbound_message(account_id, fan_id, message_id,
+                                             extra_payload=extra,
+                                             not_before=pending_at)
+                return
+
+            # The pause. Deferred, never held: `run_at` in the future costs no slot
+            # and no thread, and the describe above us is counted INSIDE the target
+            # rather than added to it (see `_deferred_run_at`).
+            now = datetime.utcnow()
+            target_s = await _media_reply_pace_target(
+                account_id, fan_id, message_id, seed_prefix="picback")
+            run_at = _deferred_run_at(
+                now, await _message_created_at(account_id, fan_id, message_id),
+                target_s)
+            wait_s = max(0.0, (run_at - now).total_seconds())
             await ax.enqueue_job(
-                account_id, "tip_reward",
+                account_id, "image_reply",
                 payload={"fan_id": int(fan_id), "image_reply": True,
-                         "trigger_message_id": int(message_id)},
+                         "trigger_message_id": int(message_id),
+                         "pace_target_s": round(target_s, 2),
+                         # `extra`, not a second copy of its expression: it was
+                         # resolved above precisely so every exit path carries the
+                         # same payload, and this is the exit whose payload
+                         # `tip_reward._hand_off_words` reads back out to rebuild
+                         # it. A key added to `extra` reached three exits and not
+                         # this one.
+                         **(extra or {})},
+                run_at=run_at,
             )
-            woke = True
-        if run_closer:
-            from automations.ai_chatter import is_enabled as _ai_enabled
-            if await _ai_enabled(account_id):
-                await ax.enqueue_job(
-                    account_id, "ai_chatter",
-                    payload={"only_fan_ids": [int(fan_id)],
-                             "intent_fan_ids": [int(fan_id)]},
-                )
-                woke = True
+            # Wake AT the due time, not now: the 30s fallback tick would otherwise
+            # add up to another half-minute on top of a pause we just drew to the
+            # second. `_schedule_wake` keeps a strong ref (a GC'd wake task is a
+            # bug this file has already been bitten by).
+            if wait_s > 0:
+                _schedule_wake(wait_s)
             else:
-                run_closer = False  # closer flag on but ai_chatter off → inert
-                log.debug("image_closer inert (ai_chatter disabled) account=%s fan=%s",
-                          account_id, fan_id)
-        if woke:
-            ax.wake_supervisor()
+                ax.wake_supervisor()
+            log.info("image_reply_deferred account=%s fan=%s msg=%s target=%.1fs wait=%.1fs",
+                     account_id, fan_id, message_id, target_s, wait_s)
+        else:
+            # No picture is coming; the describe (if any) has landed. We are the
+            # last one holding the photo, so the words are ours to hand off.
+            await on_inbound_message(account_id, fan_id, message_id,
+                                     extra_payload=extra)
         log.info("image_dispatch account=%s fan=%s msg=%s reply=%s closer=%s describe=%s",
                  account_id, fan_id, message_id, send_img, run_closer, describe_on)
-    except Exception:
-        log.warning("image_dispatch_failed account=%s fan=%s",
-                    account_id, fan_id, exc_info=True)
+    except BaseException as exc:
+        # ⚠️ `BaseException`, not `Exception`, and the re-raise below is what makes
+        # that safe. `asyncio.CancelledError` is a BaseException, and this coroutine
+        # spends SECONDS awaiting a live vision call inside a fire-and-forget task —
+        # so a relay restart, a redeploy or a supervisor cancel lands here far more
+        # often than any hiccup does. Under `except Exception:` the cancel walked
+        # straight through, the hand-off never ran, nothing was logged, and the
+        # fan's reply was gone permanently: `event_transcoder` no longer fires
+        # `on_inbound_message` for a media DM, so this really is the last line
+        # between a media DM and silence. (`describe_inbound_message`'s own guard
+        # is `except Exception:` too, and its docstring's "NEVER raises" is true
+        # for Exception and false for a cancel — so the cancel reaches us intact.)
+        #
+        # `send_welcome`'s admission loop already reasons exactly this way about
+        # its own children; the reasoning simply had not crossed the file boundary.
+        # A BaseException that is not an Exception is a TEARDOWN — a cancel, a
+        # SIGINT, a SystemExit. Hand the words off, then give it back to whoever
+        # raised it: swallowing one here would be a worse bug than the one this
+        # `except` widened to catch.
+        teardown = not isinstance(exc, Exception)
+        log.warning("image_dispatch_failed account=%s fan=%s teardown=%s",
+                    account_id, fan_id, teardown, exc_info=True)
+        # Best-effort: a crash anywhere above (a describe hiccup, a config read)
+        # must not cost the fan his TEXT reply — the transcoder is no longer
+        # firing it for him. Nested guard because on_inbound_message is itself
+        # wrapped, and this is the last line between a media DM and silence.
+        #
+        # No `extra_payload`: the crash may have come before `run_closer` was even
+        # resolved, and losing the closer's intent hint is a far smaller loss than
+        # losing the reply. If a hand-off already happened before the crash, this
+        # second call is absorbed by on_inbound_message's own per-fan dedup.
+        #
+        # A plain await, even on the teardown path: a cancel that has already been
+        # DELIVERED (which is what put us in this handler) leaves no pending one
+        # behind, so the enqueue below runs to completion and the durable
+        # `scheduled_jobs` row is written before we hand the teardown back. Only a
+        # second, harder cancel can interrupt it — logged, not shielded, because a
+        # shielded task we then abandon by re-raising is an orphan the loop
+        # complains about and nobody awaits.
+        try:
+            await on_inbound_message(account_id, fan_id, message_id)
+        except Exception:  # pragma: no cover — defensive
+            log.warning("image_dispatch handoff failed account=%s fan=%s",
+                        account_id, fan_id, exc_info=True)
+        except asyncio.CancelledError:  # pragma: no cover — a second cancel
+            log.warning("image_dispatch handoff cancelled account=%s fan=%s",
+                        account_id, fan_id)
+        if teardown:
+            raise

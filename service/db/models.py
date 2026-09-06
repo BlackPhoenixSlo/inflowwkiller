@@ -411,6 +411,22 @@ class Fan(Base):
     subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
     subscription_status: Mapped[str | None] = mapped_column(String)
     is_followed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # WHEN auto_follow's money gate last READ this fan's profile and found nothing
+    # to do — `_classify` said `already_following`. The backfill's progress marker,
+    # and deliberately NOT the ping ledger (`FollowPingState`), which means "we
+    # fired a notification at him": examining a fan is not notifying him, and
+    # folding the two into one timestamp would let the follow sweep starve the
+    # re-follow ping of exactly the fans that ping exists for (every pingable fan
+    # is, by definition, one we already follow).
+    #
+    # Without it `_all_stored_fan_ids`'s `ORDER BY last_message_received_at DESC
+    # LIMIT headroom` window never advances past an already-followed head: those
+    # fans stamped nothing, were excluded by nothing, and re-occupied the head on
+    # every tick forever, while the never-messaged tier — which sorts LAST by
+    # construction — stayed unreachable at any cap.
+    #
+    # Nullable/additive: init_db self-heals it via ALTER TABLE (no migration).
+    follow_examined_at: Mapped[datetime | None] = mapped_column(DateTime)
     # OF chat-level "Mute notifications" (isMutedNotifications on the /chats item —
     # the creator silenced this chat). Persisted from the scrape; when a muted fan
     # is also a creator we follow (subscribedBy) the automations skip-list them so

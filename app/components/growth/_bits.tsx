@@ -85,13 +85,32 @@ export function runStatsChunks(stats?: Record<string, unknown> | null): StatChun
   // was. `candidates` alone read as "8 ready to go" on a rule whose gate
   // refused all eight, and it said that for six days.
   //
-  // Gated on `examined`, which ONLY the gate-running preview emits. An older
-  // relay fills `would_follow` with the raw, un-gated pool, so rendering it as
-  // "8 would notify" would restate the very lie this replaced — with more
-  // confidence than the wording it replaced. Until that relay ships, say
-  // nothing rather than something wrong.
-  const gated = n("examined") !== null;
-  const wouldNotify = gated ? (len("would_follow") ?? len("would_ping")) : null;
+  // Gated on `no_price_skipped`, a counter ONLY the gate-running preview emits.
+  // An older relay fills `would_follow` with the raw, un-gated pool, so
+  // rendering it as "8 would notify" would restate the very lie this replaced —
+  // with more confidence than the wording it replaced. Until that relay ships,
+  // say nothing rather than something wrong.
+  //
+  // NOT `examined`: the money_gate-off preview emits `examined` too, so keying
+  // off it rendered an ungated run — one that will BUY every priced profile it
+  // reaches — as an ordinary gated plan, just missing its money-skip chunks.
+  // An absent "paid profiles skipped" reads as "there were none", not "the
+  // check is switched off", which is the opposite of the truth.
+  const ungated = stats.money_gate === false;
+  const gated = n("no_price_skipped") !== null;
+  const wouldNotify = gated || ungated ? (len("would_follow") ?? len("would_ping")) : null;
+  // ⚠️ MONEY. The ungated run reads no profile, so nothing here can name the
+  // price — only that some of these follows WILL be charged. Loudest chunk in
+  // the row, and first, because it is the one the operator must not miss.
+  if (ungated) {
+    const charged = n("unpriced_follows") ?? wouldNotify ?? n("followed");
+    out.push({
+      text: charged !== null
+        ? `money gate OFF — ${charged} follows will be charged`
+        : "money gate OFF — paid profiles WILL be charged",
+      tone: "err",
+    });
+  }
   if (wouldNotify !== null) {
     out.push({
       text: `${wouldNotify} would notify`,
@@ -110,6 +129,14 @@ export function runStatsChunks(stats?: Record<string, unknown> | null): StatChun
   if (refollowed) out.push({ text: `re-followed ${refollowed}` });
   const already = n("already_following");
   if (already) out.push({ text: `${already} already followed`, tone: "warn" });
+  // A follow run that walked its whole pool and notified NOBODY. Without this the
+  // shape is `status ok · followed 0 · N candidates` — indistinguishable from a
+  // quiet day, which is how a permanently pinned backfill window hid for six
+  // days. `warn`, next to "already followed", because it is usually that counter
+  // (or a head of paid/unreadable profiles) explaining the zero.
+  if (stats.pool_exhausted === true) {
+    out.push({ text: "whole pool checked, nobody new to notify", tone: "warn" });
+  }
   const paid = n("paid_profile_skipped");
   if (paid) out.push({ text: `${paid} paid profiles skipped` });
   const noPrice = n("no_price_skipped");

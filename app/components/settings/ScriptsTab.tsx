@@ -30,12 +30,15 @@ import {
   type CatalogItemT, type TextSuggestionT,
 } from "@/hooks/useCatalog";
 import {
-  ConfigLoadError, INPUT, ItemsTable, NEW_ITEM, RhythmSection, dollars,
-  useSellerConfig, useSellerStyle,
+  ConfigLoadError, INPUT, ItemsTable, NEW_ITEM, RhythmSection, TextingStyleCard,
+  dollars, useSellerConfig,
 } from "@/components/settings/sellerShared";
 import ReengageBuyersTab from "@/components/settings/ReengageBuyersTab";
 import MakeRightTab from "@/components/settings/MakeRightTab";
 import type { AiChatterConfig } from "@/hooks/useCatalog";
+import StickySaveBar, {
+  SaveRow, type SaveControl,
+} from "@/components/settings/StickySaveBar";
 
 const LT_NUM = "w-16 rounded border border-border bg-bg px-1.5 py-0.5 text-sm";
 
@@ -97,7 +100,35 @@ const SPEND_RULES = [
 export default function ScriptsTab({ accountId }: { accountId: string | null }) {
   const cfgQ = useAiChatterConfig(accountId);
   const { cfg, set, tz, saveCfg, saveCfgM, configLoaded } = useSellerConfig(accountId);
-  const style = useSellerStyle(accountId);
+
+  /** THE config save control, built once and rendered twice — in flow at the
+   *  bottom of the config Card, and again in the pinned bar that is the LAST
+   *  CHILD OF THAT SAME CARD. One object, so the gate, the label, the feedback
+   *  and the warning below cannot drift apart.
+   *
+   *  `canSave` is `configLoaded`, the data-loss guard `useSellerConfig` in
+   *  sellerShared.tsx documents: a save on a config that never arrived REPLACES
+   *  the account's stored blob with placeholders. */
+  const save: SaveControl = {
+    onSave: () => saveCfg(),
+    saving: saveCfgM.isPending,
+    canSave: configLoaded,
+    label: "Save config",
+    size: "sm",
+    saved: saveCfgM.isSuccess,
+    error: saveCfgM.isError
+      ? `${saveCfgM.error?.message || "Save failed"} — nothing was stored.`
+      : null,
+  };
+
+  /** The one warning that sits beside Save — "this is already live". The pinned
+   *  bar renders the SAME node, because the operator most likely to save from
+   *  the pin is the one who never scrolled back to the in-flow row to read it. */
+  const liveWarning = cfg.enabled ? (
+    <span className="text-xs text-amber-400">
+      live — replaces Auto-AI-chat for fans under the gate
+    </span>
+  ) : null;
 
   // Content library — the base chatter sells from this catalog (Upseller just tunes how).
   const scriptsQ = useCatalogSingles(accountId);
@@ -700,67 +731,23 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
           houseDefault={cfgQ.data?.default_sleep_window ?? ["02:00", "06:00"]}
         />
 
-        {/* ── texting style ── */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm border-t border-border pt-2">
-          <span className="text-xs text-fg-dim">Texting style:</span>
-          <label className="flex items-center gap-1.5">
-            <input type="checkbox" checked={style.humanStyle}
-              onChange={(e) => style.setHumanStyle(e.target.checked)} />
-            Human style (bubbles + humanizer)
-          </label>
-          <label className="flex items-center gap-1.5">
-            <input type="checkbox" checked={style.typosOn}
-              onChange={(e) => style.setTyposOn(e.target.checked)} />
-            Typos
-          </label>
-          <label className="flex items-center gap-1.5">
-            <input type="checkbox" checked={style.nonnativeOn}
-              onChange={(e) => style.setNonnativeOn(e.target.checked)} />
-            Non-native English
-          </label>
-          <label className="flex items-center gap-1.5"
-            title="Sometimes detach the '?' from the word before it — “you like it ?”. Part of the non-native register, so it only applies while that is on; its own box because it is the one visible artifact you may want off while keeping the rest.">
-            <input type="checkbox" checked={style.spacingOn} disabled={!style.nonnativeOn}
-              onChange={(e) => style.setSpacingOn(e.target.checked)} />
-            Space before ?
-          </label>
-          <label className="flex items-center gap-1.5"
-            title="Some replies end with a cat reaction gif — occasionally the gif IS the reply. Hand-picked pack, capped in code to one per fan every few hours.">
-            <input type="checkbox" checked={style.catStickers}
-              onChange={(e) => style.setCatStickers(e.target.checked)} />
-            Cat stickers 🐱
-          </label>
-          <label className="flex items-center gap-1.5"
-            title="Before a reply sends, check it against what this account has already told THIS fan (the pinned facts + the drawer's 'What this fan was told') and fix a contradiction. Only fires on replies that actually say something about the creator — costs a second AI call on those.">
-            <input type="checkbox" checked={style.consistencyOn}
-              onChange={(e) => style.setConsistencyOn(e.target.checked)} />
-            Never contradict what the creator already said
-          </label>
-          <Button size="sm" variant="ghost" disabled={style.saveStyleM.isPending}
-            onClick={style.saveStyle}>
-            Save style
-          </Button>
-          {style.saveStyleM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
-        </div>
+        <SaveRow {...save}>{liveWarning}</SaveRow>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <Button size="sm" disabled={saveCfgM.isPending || !configLoaded}
-            onClick={() => saveCfg()}>
-            <Save size={14} className="mr-1" /> Save config
-          </Button>
-          {saveCfgM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
-          {saveCfgM.isError && (
-            <span className="text-xs text-red-500">
-              {saveCfgM.error?.message || "Save failed"} — nothing was stored.
-            </span>
-          )}
-          {!!cfg.enabled && (
-            <span className="text-xs text-amber-400">
-              live — replaces Auto-AI-chat for fans under the gate
-            </span>
-          )}
-        </div>
+        {/* The pinned twin, and it is the LAST CHILD OF THIS CARD on purpose.
+         *  `sticky` only pins while its own containing block is on screen, so
+         *  the container is the statement of scope — and this Card is now the
+         *  only thing `saveCfg()` writes. Hung one level up (the tab's outer
+         *  div, as it first was) the same bar stayed pinned over the
+         *  Singles/Bundles library, the offer log, "Re-engage buyers" and "Make
+         *  It Right" — four surfaces with their own Save buttons and their own
+         *  stores. The texting-style row was the same mistake one Card smaller:
+         *  it lived in HERE, with its own "Save style" writing a different
+         *  blob, so a bar labelled "Save config" hovered over checkboxes it
+         *  does not save. It is its own Card below now. */}
+        <StickySaveBar {...save}>{liveWarning}</StickySaveBar>
       </Card>
+
+      <TextingStyleCard accountId={accountId} />
 
       {/* ── content library — the seller works from this whether or not the Upseller
           is on. Tune HOW it sells (pricing, escalation) on the 💰 AI Upseller tab. ── */}
@@ -803,7 +790,11 @@ export default function ScriptsTab({ accountId }: { accountId: string | null }) 
             onClick={() => saveSinglesM.mutate(singles)}>
             <Save size={14} className="mr-1" /> Save singles ({singles.length})
           </Button>
-          {saveSinglesM.isSuccess && <span className="text-xs text-green-400">saved ✓</span>}
+          {/* Same two words, same shade, as every other confirmation on the
+           *  automations tabs (SaveRow in StickySaveBar.tsx owns the spelling).
+           *  A different store, but "your click landed" should not be said two
+           *  ways on one page. */}
+          {saveSinglesM.isSuccess && <span className="text-xs text-emerald-500">Saved ✓</span>}
         </div>
         {suggestM.isError && (
           <div className="text-[11px] text-warn">Couldn&apos;t fill: {suggestM.error.message}</div>

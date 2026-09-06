@@ -1,9 +1,18 @@
 "use client";
 
 /**
- * sellerShared — pieces shared by the two seller tabs:
+ * sellerShared — the two seller tabs' shared pieces, plus the parts of them
+ * that are big enough to want a name of their own:
  *   • 🤖 AI Chatter  (ScriptsTab)  — how the account talks / who it talks to / its pacing
  *   • 💰 AI Upseller (UpsellerTab) — the selling brain + content
+ *
+ * MOST of what follows has both tabs as consumers. `TextingStyleCard` /
+ * `useSellerStyle` have one (ScriptsTab) and live here anyway: they are the
+ * seller surface's OTHER store — style_config_json, next to the
+ * ai_chatter_config_json everything else here writes — and splitting the pair
+ * that has to stay distinguishable from `useSellerConfig` across two files is
+ * how they drift. If a second file ever wants only that card, that is the
+ * moment to move it out, not before.
  *
  * Both tabs read and write the SAME `ai_chatter_config_json` (the save REPLACES the
  * whole blob, it does not merge). The container renders one tab at a time — a tab
@@ -16,7 +25,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, ChevronDown, Image as ImageIcon, Save, Trash2 } from "lucide-react";
+import { BookOpen, ChevronDown, Image as ImageIcon, Trash2 } from "lucide-react";
 
 import { Button, Card, Textarea } from "@/components/ui/primitives";
 import { VaultPicker } from "@/components/chat/VaultPicker";
@@ -29,6 +38,9 @@ import { cn } from "@/lib/utils";
 // Display only — this tab READS the account's clock and never writes it.
 import { utcLabel, zoneLabel } from "@/lib/creatorClock";
 import { useSaveStyleConfig, useStyleConfig } from "@/hooks/useStyleConfig";
+import {
+  SaveRow, loadGateNote, type SaveControl,
+} from "@/components/settings/StickySaveBar";
 import {
   useAiChatterConfig,
   useSaveAiChatterConfig,
@@ -978,22 +990,20 @@ export function RhythmSection({ cfg, set, tz, utcOffset, derived, effective,
 /** The pack editor. Takes NO lane: the copy names roles, and the
  *  lines themselves arrive in `pack` already resolved for the account's voice by
  *  `script_packs.shipped_pack` on the server — which is the half that matters,
- *  because editing one box persists the whole box onto the account. */
-export function ScriptPackCard({ pack, help, text, setText, onSave, saving, saved, error,
-  canSave = true }: {
+ *  because editing one box persists the whole box onto the account.
+ *
+ *  Its save props ARE `SaveControl` — this card is where that contract was
+ *  written, and StickySaveBar's `SaveRow` was named slot for slot after it. So
+ *  the row at the bottom is that `SaveRow`, not a fourth hand-rolled copy of
+ *  the same button + ✓ + error span. */
+export function ScriptPackCard({
+  pack, help, text, setText, label = "Save lines", size = "sm", ...save
+}: SaveControl & {
   pack: Record<string, string[]>;
   /** {slot: "when it fires"} — from the server, which owns the slot schema. */
   help: Record<string, string>;
   text: Record<string, string>;
   setText: (slot: string, v: string) => void;
-  onSave: () => void;
-  saving: boolean;
-  saved: boolean;
-  /** Why the last save was rejected. Without it a failed save looks like nothing
-   *  happened, and the operator walks away believing the lines are stored. */
-  error?: string | null;
-  /** False while the config hasn't loaded — saving then REPLACES it with placeholders. */
-  canSave?: boolean;
 }) {
   const slots = Object.keys(pack);
   return (
@@ -1049,13 +1059,7 @@ export function ScriptPackCard({ pack, help, text, setText, onSave, saving, save
         })}
       </div>
 
-      <div className="flex items-center gap-2">
-        <Button size="sm" disabled={saving || !canSave} onClick={onSave}>
-          <Save size={14} className="mr-1" /> Save lines
-        </Button>
-        {saved && <span className="text-xs text-green-400">saved ✓</span>}
-        {error && <span className="text-xs text-red-500">{error}</span>}
-      </div>
+      <SaveRow {...save} label={label} size={size} />
     </Card>
   );
 }
@@ -1254,7 +1258,28 @@ export function useSellerConfig(accountId: string | null) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [cfg, cfgQ.data, packOverrides]);
 
-  const set = (p: Partial<AiChatterConfig>) => setCfg((c) => ({ ...c, ...p }));
+  /** Edit the form — and drop the last save's verdict on the floor while doing
+   *  it. React Query latches `isSuccess` until the next mutate() or reset(), and
+   *  `!isPending` does not clear it, so without this the tabs' "saved ✓" survived
+   *  every subsequent edit. That was survivable while it sat in a row you had to
+   *  scroll to; it is not now that the same flag also drives a bar pinned to the
+   *  bottom of the viewport, where it reads as a verdict on what is on screen.
+   *  Same seam TipRewardTab and PPVLibraryTab already call markDirty(). */
+  const set = (p: Partial<AiChatterConfig>) => {
+    if (saveCfgM.isSuccess || saveCfgM.isError) saveCfgM.reset();
+    setCfg((c) => ({ ...c, ...p }));
+  };
+  /** The same, for the pack editors — and this is the one the raw setter above
+   *  must NOT be, because pack text is not decoration: `packOverrides` is folded
+   *  into `buildSparse`, so typing in a pack box is unsaved work `saveCfg()`
+   *  would write and a surviving "Saved ✓" denies. Only the EDIT path is
+   *  wrapped; the effect that seeds `packText` from a landed config keeps the
+   *  raw setter, or the refetch a successful save triggers would clear the ✓
+   *  that save had just earned. */
+  const setPackTextEdited: typeof setPackText = (next) => {
+    if (saveCfgM.isSuccess || saveCfgM.isError) saveCfgM.reset();
+    setPackText(next);
+  };
   /** Save. An optional `patch` is applied to state AND folded into the saved config
    *  synchronously (for one-click presets like "Enable upseller"). */
   const saveCfg = (patch?: Partial<AiChatterConfig>) => {
@@ -1281,7 +1306,7 @@ export function useSellerConfig(accountId: string | null) {
 
   return {
     cfgQ, saveCfgM, configLoaded, eff, cfg, setCfg, set, tz, starterSingles, slotHelp,
-    shippedPack, packText, setPackText, packOverrides, sparseCfg, saveCfg,
+    shippedPack, packText, setPackText: setPackTextEdited, packOverrides, sparseCfg, saveCfg,
   };
 }
 
@@ -1316,7 +1341,106 @@ export function useSellerStyle(accountId: string | null) {
     cat_stickers: catStickers, consistency_ai_chatter: consistencyOn,
     nonnative_spacing_ai_chatter: spacingOn,
   });
-  return { saveStyleM, humanStyle, setHumanStyle, typosOn, setTyposOn, nonnativeOn, setNonnativeOn,
-           catStickers, setCatStickers, consistencyOn, setConsistencyOn,
-           spacingOn, setSpacingOn, saveStyle };
+  /** Tick a box — and drop the last save's verdict while doing it. React Query
+   *  latches `isSuccess` until the next mutate() or reset(), and `!isPending`
+   *  does not clear it, so without this "Saved ✓" outlives the state it
+   *  describes: untick Typos and the card still says the six flags are stored.
+   *  The same seam `useSellerConfig`'s `set()` wraps forty lines up, and the
+   *  same split — only the EDIT path is wrapped. The effect above keeps the RAW
+   *  setters, or the refetch a successful save triggers would clear the ✓ that
+   *  save had just earned. */
+  const edited = (setter: (v: boolean) => void) => (v: boolean) => {
+    if (saveStyleM.isSuccess || saveStyleM.isError) saveStyleM.reset();
+    setter(v);
+  };
+  return { styleQ, saveStyleM,
+           humanStyle, setHumanStyle: edited(setHumanStyle),
+           typosOn, setTyposOn: edited(setTyposOn),
+           nonnativeOn, setNonnativeOn: edited(setNonnativeOn),
+           catStickers, setCatStickers: edited(setCatStickers),
+           consistencyOn, setConsistencyOn: edited(setConsistencyOn),
+           spacingOn, setSpacingOn: edited(setSpacingOn),
+           saveStyle };
+}
+
+/** The texting-style opt-ins, and their own Save.
+ *
+ *  A CARD OF ITS OWN because it is a STORE of its own: these boxes write
+ *  style_config_json through `saveStyle`, while everything around them on the
+ *  AI Chatter tab writes ai_chatter_config_json through `saveCfg`. They sat
+ *  inside that config Card until the pinned Save bar arrived — and a sticky bar
+ *  is scoped to its container, so "Save config" hovered permanently over these
+ *  six checkboxes promising to store edits it never writes. Rule 3 in
+ *  StickySaveBar.tsx, and the same separation AutoreplyTab keeps between its
+ *  Auto Convo Card and StyleSection.
+ *
+ *  Its Save stays `ghost`: it is the small writer on the page, and a second
+ *  primary button would read as competing with the tab's own Save. */
+export function TextingStyleCard({ accountId }: { accountId: string | null }) {
+  const style = useSellerStyle(accountId);
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+        <span className="text-xs text-fg-dim">Texting style:</span>
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={style.humanStyle}
+            onChange={(e) => style.setHumanStyle(e.target.checked)} />
+          Human style (bubbles + humanizer)
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={style.typosOn}
+            onChange={(e) => style.setTyposOn(e.target.checked)} />
+          Typos
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={style.nonnativeOn}
+            onChange={(e) => style.setNonnativeOn(e.target.checked)} />
+          Non-native English
+        </label>
+        <label className="flex items-center gap-1.5"
+          title="Sometimes detach the '?' from the word before it — “you like it ?”. Part of the non-native register, so it only applies while that is on; its own box because it is the one visible artifact you may want off while keeping the rest.">
+          <input type="checkbox" checked={style.spacingOn} disabled={!style.nonnativeOn}
+            onChange={(e) => style.setSpacingOn(e.target.checked)} />
+          Space before ?
+        </label>
+        <label className="flex items-center gap-1.5"
+          title="Some replies end with a cat reaction gif — occasionally the gif IS the reply. Hand-picked pack, capped in code to one per fan every few hours.">
+          <input type="checkbox" checked={style.catStickers}
+            onChange={(e) => style.setCatStickers(e.target.checked)} />
+          Cat stickers 🐱
+        </label>
+        <label className="flex items-center gap-1.5"
+          title="Before a reply sends, check it against what this account has already told THIS fan (the pinned facts + the drawer's 'What this fan was told') and fix a contradiction. Only fires on replies that actually say something about the creator — costs a second AI call on those.">
+          <input type="checkbox" checked={style.consistencyOn}
+            onChange={(e) => style.setConsistencyOn(e.target.checked)} />
+          Never contradict what the creator already said
+        </label>
+        {/* The shared control, not a sixth hand-rolled save row — its
+          *  neighbour `ScriptPackCard`, further up this same file, was
+          *  converted for exactly that reason. Adopting it is what puts an
+          *  ERROR span on this save:
+          *  hand-rolled, a failed "Save style" PUT was completely silent, while
+          *  the `StyleSection` in AutoreplyTab this card's note cites as prior
+          *  art has always rendered one. `canSave` comes with it — the six
+          *  flags are sent explicitly on every save, so the relay's merge
+          *  (service/style_config_api.py:211) writes all six, and saving before
+          *  the load lands would write the seeded fallbacks over the operator's
+          *  real flags. No `RetryLoad` beside it, unlike the four config tabs:
+          *  this query is `refetchOnMount: "always"` on a 5s staleTime
+          *  (hooks/useStyleConfig.ts:89-90), so leaving the tab and coming back
+          *  already retries it. */}
+        <SaveRow
+          onSave={style.saveStyle}
+          saving={style.saveStyleM.isPending}
+          canSave={!!style.styleQ.data}
+          gateNote={loadGateNote(style.styleQ)}
+          saved={style.saveStyleM.isSuccess}
+          error={style.saveStyleM.isError
+            ? (style.saveStyleM.error?.message || "Save failed")
+            : null}
+          label="Save style" size="sm" variant="ghost"
+        />
+      </div>
+    </Card>
+  );
 }

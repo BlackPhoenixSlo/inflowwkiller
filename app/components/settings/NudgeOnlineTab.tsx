@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Radio, Play, Rocket, Eye, ChevronDown, Plus, X, Image as ImageIcon } from "lucide-react";
+import { Radio, Play, Rocket, Eye, ChevronDown, Plus, Save, X, Image as ImageIcon } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
@@ -40,6 +40,7 @@ import {
   type NudgeSlots,
   type NudgeSlotEntry,
 } from "@/hooks/useNudgeConfig";
+import StickySaveBar, { type GateNote } from "@/components/settings/StickySaveBar";
 
 const SELECT_CLS =
   "w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
@@ -83,6 +84,57 @@ export default function NudgeOnlineTab() {
   const previewM = useNudgePreview();
   const busy = createM.isPending || updateM.isPending || saveCfgM.isPending;
 
+  /** THE save gate, hoisted so the in-flow Save and the pinned bar read one
+   *  expression instead of two copies of it.
+   *
+   *  `cfgQ.isLoading || !cfgQ.data` is the load half, and it is a DATA-LOSS
+   *  guard. The form below only exists inside the `cfgQ.isLoading ? … : <Card>`
+   *  ternary, but the pinned bar is a sibling of that ternary and renders
+   *  throughout the fetch — and `busy` is false during a fetch, because it only
+   *  watches the three MUTATIONS. So a bar gated on `busy || !accountId` alone
+   *  was live while the form it saves was not on screen, and one click ran
+   *  buildConfig() over `form`/`slots` still at their `useState({})` seeds and
+   *  PUT `{slots:{}}` to /admin/nudge-config — a whole-blob replace that wipes
+   *  the account's nudge config. `!cfgQ.data` also covers the failed-fetch case
+   *  (and the no-account case, where the query is disabled and never "loading").
+   *
+   *  `rulesQ` is the OTHER half, guarding a different store. save() branches
+   *  create-vs-update on `rule`, and `rule` is null until the rule list lands —
+   *  so a save in that window POSTs a SECOND nudge_online rule beside the one it
+   *  meant to edit. /admin/automation-rules enforces no (account_id, kind)
+   *  uniqueness, so the account really does end up running two 60s detectors:
+   *  fans get nudged twice and later edits reach only one of the pair.
+   *
+   *  `data !== undefined`, deliberately NOT `isSuccess`. This query polls every
+   *  30s and refetches on window focus, and a failed BACKGROUND refetch flips
+   *  `isSuccess` false while `data` stays populated — an `isSuccess` gate would
+   *  take both Save controls away from an operator three screens into an edit,
+   *  with nothing on screen to explain it, until a later poll happened to
+   *  succeed. `data` is undefined only before the first list arrives, which is
+   *  exactly the window that is dangerous. `isPlaceholderData` is the account-
+   *  switch case: the query keeps the PREVIOUS account's rules while the new
+   *  ones load, and saving against those would edit another account's rule. */
+  const canSave =
+    !!accountId && !cfgQ.isLoading && !!cfgQ.data
+    && rulesQ.data !== undefined && !rulesQ.isPlaceholderData;
+  const saveDisabled = busy || !canSave;
+  /** …and THE label, hoisted for the same reason the gate is: it is a statement
+   *  about which branch save() will take, and the two controls must not answer
+   *  it differently. */
+  const saveLabel = rule ? "Save changes" : "Create automation";
+
+  /** Why Save is off, when the reason is not on screen. Both controls are grey
+   *  for as long as the two queries take, and a permanently-pinned grey button
+   *  with nothing beside it is indistinguishable from a broken one. `failed`
+   *  picks the colour in ONE place (SaveRow) rather than a ternary per bar:
+   *  waiting is dim, a failed load is red. */
+  const gateNote: GateNote | null = canSave || !accountId ? null : (
+    cfgQ.isError || rulesQ.isError
+      ? { failed: true,
+          text: "Couldn't load this account's nudge settings — Save stays off so it can't write defaults over them or add a second detector." }
+      : { failed: false, text: "Loading this account's nudge settings…" }
+  );
+
   const eff: NudgeConfig = useMemo(() => {
     const d = cfgQ.data?.defaults ?? {};
     const c = cfgQ.data?.config ?? {};
@@ -97,6 +149,16 @@ export default function NudgeOnlineTab() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  /** The SAVE's own verdict, both halves — as opposed to anything else that
+   *  writes `err`/`msg`. The pinned bar needs its own pair because both of those
+   *  are shared with the other buttons on this tab: `msg` carries "✓ Ran one
+   *  detector pass…" from "Run now", and `err` carries "Run failed: …" and
+   *  "Preview failed: …". A bar labelled Save that turns red because a PREVIEW
+   *  failed is narrating someone else's action, and it does it by replacing the
+   *  ✓ of the save that actually did land. Cleared on the next edit so a
+   *  permanently-visible control can't keep claiming a stale verdict. */
+  const [saveOk, setSaveOk] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
 
   // Roll-out checklist (every model checked by default, jaka included).
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -134,8 +196,16 @@ export default function NudgeOnlineTab() {
     setJsonDraft(JSON.stringify(so, null, 2));
   }, [cfgQ.data, accountId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const set = <K extends keyof NudgeConfig>(k: K, v: NudgeConfig[K]) =>
+  /** Every edit invalidates the last save's verdict. The pinned bar holds that
+   *  verdict permanently in view, so it must never outlive the state it
+   *  describes. `msg` goes with it: the in-flow row renders it ("✓ Saved.") and
+   *  would otherwise still be claiming a save the bar has already dropped. */
+  const clearVerdict = () => { setSaveOk(false); setSaveErr(null); setMsg(null); };
+
+  const set = <K extends keyof NudgeConfig>(k: K, v: NudgeConfig[K]) => {
+    clearVerdict();
     setForm((f) => ({ ...f, [k]: v }));
+  };
   const num = (k: keyof NudgeConfig, fallback = 0): number => {
     const v = form[k];
     return typeof v === "number" ? v : fallback;
@@ -143,6 +213,7 @@ export default function NudgeOnlineTab() {
 
   // Friendly slot edits keep the JSON view in sync (single source = `slots`).
   const applySlots = (next: NudgeSlots) => {
+    clearVerdict();
     setSlots(next);
     setJsonDraft(JSON.stringify(next, null, 2));
     setJsonErr(null);
@@ -175,8 +246,11 @@ export default function NudgeOnlineTab() {
   }, [form, slots, eff, cfgQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function save() {
-    setErr(null); setMsg(null);
-    if (!accountId) return;
+    setErr(null); setMsg(null); setSaveOk(false); setSaveErr(null);
+    // Belt to the buttons' braces: a save here is a whole-blob REPLACE, so
+    // never write from a form that was never seeded. The same guard
+    // `useSellerConfig` keeps inside saveCfg for the seller tabs.
+    if (!accountId || !canSave) return;
     try {
       const config = buildConfig();
       await saveCfgM.mutateAsync(config);
@@ -194,8 +268,10 @@ export default function NudgeOnlineTab() {
         });
       }
       setMsg("✓ Saved.");
+      setSaveOk(true);
     } catch (e) {
-      setErr((e as Error)?.message || "Save failed");
+      const m = (e as Error)?.message || "Save failed";
+      setErr(m); setSaveErr(m);
     }
   }
 
@@ -541,8 +617,14 @@ export default function NudgeOnlineTab() {
           {err && <div className="text-sm text-err">{err}</div>}
 
           <div className="flex items-center gap-2 pt-1">
-            <Button onClick={save} disabled={busy || !accountId}>
-              {rule ? "Save changes" : "Create automation"}
+            {/* Same gate, same label and same pending word as the pinned twin
+             *  below — the two are one control rendered twice. (The row itself
+             *  is not a SaveRow: its feedback lives in the separate `err`/`msg`
+             *  blocks above and below, which a SaveRow would duplicate ~8px
+             *  away from where they already are.) */}
+            <Button onClick={save} disabled={saveDisabled}>
+              <Save size={14} />
+              {busy ? "Saving…" : saveLabel}
             </Button>
             {rule && (
               <Button variant="ghost" onClick={runNow} disabled={runM.isPending}
@@ -668,6 +750,33 @@ export default function NudgeOnlineTab() {
           }}
         />
       )}
+      {/* Pinned Save. The in-flow row above stays exactly where it is; this is
+       *  a second control on the same handler, for a form that runs several
+       *  screens deep.
+       *
+       *  It reads the SAME `canSave` the in-flow button does, and that gate
+       *  carries the load half — see the const's own note. This bar is a
+       *  sibling of the `cfgQ.isLoading ? … : <Card>` ternary, so unlike the
+       *  in-flow button it is on screen during the fetch, which is exactly how
+       *  it once shipped live over an unseeded form.
+       *
+       *  Neither `msg` NOR `err` is piped in here, and that is the whole point
+       *  of `saveOk`/`saveErr`. Both are written by the other buttons on this
+       *  tab — "✓ Ran one detector pass…" and "Run failed: …" from Run now,
+       *  "Preview failed: …" from the preview — so a bar labelled Save that
+       *  shows them narrates someone else's action, and a red one replaces the
+       *  ✓ of the save that actually landed. The in-flow row still shows both
+       *  where they belong. */}
+      <StickySaveBar
+        hostPadding={0}
+        onSave={save}
+        saving={busy}
+        canSave={canSave}
+        label={saveLabel}
+        saved={saveOk}
+        error={saveErr}
+        gateNote={gateNote}
+      />
     </div>
   );
 }

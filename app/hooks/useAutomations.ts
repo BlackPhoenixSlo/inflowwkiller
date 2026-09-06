@@ -205,6 +205,24 @@ export function useDeleteRule(accountId: string | null) {
 
 /** Compose-only preview of what an automation would send for one fan — text +
  *  chosen image id, NO send (mirrors /admin/automation-preview). send_welcome only. */
+/** The welcome burst's bubble ROLES, exactly as the server spells them.
+ *
+ *  ONE list, because this is a wire vocabulary and the panel now makes a
+ *  DECISION on it (`welcomeGapIndex` reads `"gap"` to know whether a preview has
+ *  an activity line to pin), not just a caption. Server side the same four
+ *  strings are owned by `send_welcome.pacing.WELCOME_ROLES`, and a rename there
+ *  degrades a role to `pacing`'s documented "unknown role -> paced as tail"
+ *  fallback rather than erroring — a typo and a deliberate default look the same
+ *  from here. `test_send_welcome.case_welcome_role_vocabulary_is_pinned_to_the_panel`
+ *  reads this declaration and fails if the two ever drift.
+ *
+ *  `gif` never appears in a preview's `bubble_roles` (the GIF rides in its own
+ *  `gif_id` field, carrying no text) but it IS part of the sender's vocabulary,
+ *  so it stays in the list the server test compares against.
+ */
+export const WELCOME_ROLES = ["opener", "gap", "tail", "gif"] as const;
+export type WelcomeRole = (typeof WELCOME_ROLES)[number];
+
 export interface AutomationPreviewResult {
   account_id: string;
   kind: string;
@@ -224,9 +242,31 @@ export interface AutomationPreviewResult {
   /** send_welcome only: this slot has an operator-pinned line — bubble 2 is that
    *  exact line (what will ship), not a fresh roll. */
   pinned?: boolean;
+  /** send_welcome only: may the operator KEEP the previewed activity line?
+   *
+   *  The server's own bit, not a client re-derivation. A pin is a stored ACTIVITY
+   *  line, and `time_only` composes a CLOCK line into the same slot wearing the
+   *  same `gap` role — so `bubble_roles` cannot answer this and the gate that
+   *  tried to went on to store a pin that never ships, cannot be un-pinned from
+   *  the panel, and becomes the slot's permanent activity line once the checkbox
+   *  comes off. Absent (an older response) ⇒ no button, which is the safe side. */
+  pinnable?: boolean;
   /** send_welcome only: the picked GIF's giphy id, echoed back. Its own field and
    *  NOT a `bubbles` entry — bubble 4 carries no text, so it renders as an image. */
   gif_id?: string | null;
+  /** send_welcome only: what each entry of `bubbles` IS — one per bubble, in
+   *  order, echoed by the server. See `WELCOME_ROLES` above.
+   *
+   *  A welcome burst is VARIABLE-LENGTH: `skip_time_bubble` drops the middle
+   *  bubble, and so does a time-of-day slot the creator never filled in. In both
+   *  the operator's question becomes `bubbles[1]`, so nothing about the LENGTH
+   *  tells you what any bubble is. The caption reads these instead of counting. */
+  bubble_roles?: WelcomeRole[];
+  /* No `skip_time_bubble` here. The server used to echo it "for the panel's
+   * checkbox wiring", but the checkbox reads the RULE's payload
+   * (`welcomeRule.payload?.skip_time_bubble`) and nothing ever read the preview's
+   * copy. `bubble_roles` answers the question a consumer actually has — is there
+   * an activity bubble in THIS preview — for every reason a burst can lack one. */
 }
 
 export function useAutomationPreview() {
@@ -247,12 +287,19 @@ export function useAutomationPreview() {
       config?: Record<string, unknown> | null;
       /** send_welcome: Regenerate bypasses a pinned slot line to sample a fresh one. */
       ignore_pin?: boolean;
-      /** send_welcome: 2nd bubble = day/time + location only (no activity line). */
-      time_only?: boolean;
-      /** send_welcome: operator question appended word-for-word as the 3rd bubble. */
-      question?: string | null;
-      /** send_welcome: giphy id of the GIF sent as the 4th bubble; null = none. */
-      gif_id?: string | null;
+      /**
+       * send_welcome: THE RULE PAYLOAD to compose against — the form's live,
+       * unsaved knobs (`time_only`, `skip_time_bubble`, `question`, `gif_id`,
+       * and whatever is added next), read server-side with the SENDER's own
+       * expressions.
+       *
+       * One object rather than a field per knob, deliberately. Each knob used to
+       * be threaded through eight hops, one of which is a Pydantic model that
+       * silently DROPS whatever it does not declare — so forgetting a hop showed
+       * the operator a burst nobody would receive, with nothing red anywhere.
+       * A dict cannot be forgotten.
+       */
+      payload?: Record<string, unknown> | null;
     }
   >({
     mutationFn: (vars) => relay.post("/admin/automation-preview", vars),

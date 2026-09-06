@@ -28,6 +28,9 @@ import {
   useSaveStyleConfig,
   type StyleConfig,
 } from "@/hooks/useStyleConfig";
+import StickySaveBar, {
+  RetryLoad, SaveRow, loadGateNote, type SaveControl,
+} from "@/components/settings/StickySaveBar";
 
 /** The "human texting style" opt-in — one checkbox per automation. */
 const STYLE_AUTOMATIONS: { key: keyof StyleConfig; label: string; hint: string }[] = [
@@ -299,9 +302,53 @@ export default function AutoreplyTab({ accountId }: { accountId: string | null }
   if (cfgQ.isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
 
   const enabled = !!form.enabled;
-  const set = (patch: Partial<AutoreplyConfig>) => setForm((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<AutoreplyConfig>) => {
+    // Any edit makes the "Saved ✓"/error feedback stale, and the pinned bar
+    // holds that feedback permanently in view — so it must only ever describe
+    // what is currently stored. React Query latches `isSuccess` until the next
+    // mutate() or reset(); `!isPending` does not clear it. Same seam as
+    // TipRewardTab's and PPVLibraryTab's markDirty().
+    if (saveM.isSuccess || saveM.isError) saveM.reset();
+    setForm((f) => ({ ...f, ...patch }));
+  };
   const cents = (dollars: number) => Math.round(dollars * 100);
   const dollars = (c?: number) => Math.round(((c ?? 0) / 100) * 100) / 100;
+
+  /** The load gate. This tab early-returns while the config is FETCHING but not
+   *  when the fetch FAILED — every input then falls back to a hardcoded literal
+   *  and one Save would PUT those literals over the account's stored blob, the
+   *  same whole-blob replace `useSellerConfig` documents for the seller tabs.
+   *  It gets its own named slot on the control below so it cannot go missing
+   *  unnoticed the way it did when this was one opaque `disabled` boolean.
+   *  `!!data`, not `data !== undefined`: a 200 with an empty body arrives as
+   *  `null`, and that un-seeded form is the whole point of the gate. No
+   *  `isSuccess` conjunct either — React Query only writes `data` from a
+   *  successful fetch, so it would add nothing but false negatives when a
+   *  background refetch fails over settings that loaded fine. `loadGateNote`
+   *  in StickySaveBar.tsx carries the long form. */
+  const configLoaded = !!cfgQ.data;
+  /** …said out loud. `loadGateNote` reads the same three states `configLoaded`
+   *  collapses and words each one honestly — in particular it does NOT tell an
+   *  operator whose settings loaded fine 90 seconds ago that they "never
+   *  loaded" just because one background refetch failed. */
+  const gateNote = loadGateNote(cfgQ);
+
+  /** THE tab's save control, built once and rendered twice: in flow at the
+   *  bottom of the Card, and again in the pinned bar that is the LAST CHILD OF
+   *  THAT SAME CARD. The label names the form on purpose — this tab renders
+   *  three buttons that would otherwise all be called "Save". */
+  const save: SaveControl = {
+    onSave: () => saveM.mutate(form),
+    saving: saveM.isPending,
+    canSave: configLoaded,
+    label: "Save Auto Convo settings",
+    saved: saveM.isSuccess,
+    error: saveM.isError ? (saveM.error?.message || "Save failed") : null,
+    gateNote,
+  };
+  /** Beside that note, in BOTH controls: without it the only way out of a failed
+   *  fetch is reloading the page. */
+  const retry = gateNote ? <RetryLoad q={cfgQ} /> : null;
 
   return (
     <div className="space-y-5">
@@ -399,20 +446,22 @@ export default function AutoreplyTab({ accountId }: { accountId: string | null }
         </div>
       </fieldset>
 
-      <div className="flex items-center gap-3 pt-1">
-        <Button onClick={() => saveM.mutate(form)} disabled={saveM.isPending}>
-          {saveM.isPending ? "Saving…" : "Save"}
-        </Button>
-        {saveM.isSuccess && !saveM.isPending && (
-          <span className="text-xs text-emerald-500">Saved ✓</span>
-        )}
-        {saveM.isError && (
-          <span className="text-xs text-red-500">{saveM.error?.message || "Save failed"}</span>
-        )}
+      <SaveRow {...save} className="gap-3 pt-1">
+        {retry}
         <div className="ml-auto">
           <EditRawJsonButton surface="autoreply-config" accountId={accountId} />
         </div>
-      </div>
+      </SaveRow>
+
+      {/* The pinned twin, and it is the LAST CHILD OF THIS CARD on purpose.
+       *  Hung one level up — a sibling of <StyleSection/>, as it first was — it
+       *  stayed pinned while the operator scrolled into the texting-style
+       *  checkboxes, which are a SEPARATE form with a separate mutation
+       *  (style_config_json) and a Save of their own. The nearest control then
+       *  said "Saved ✓" over style edits it had never written. `sticky` pins
+       *  only while its own containing block is on screen, so living inside the
+       *  Card it saves is what makes the promise true. */}
+      <StickySaveBar {...save}>{retry}</StickySaveBar>
     </Card>
     <StyleSection accountId={accountId} />
     </div>

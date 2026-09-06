@@ -26,6 +26,7 @@ from typing import NamedTuple
 
 import llm_client
 from automation_registry import LEGACY_KINDS
+from tip_ledger import TIP_LEDGER_PREFIX
 from db.engine import get_session
 from db.models import AccountAiConfig, Fan, Message, SkipList, Transaction
 from sqlalchemy import and_, func, or_, select
@@ -130,7 +131,7 @@ async def send_dropping_bad_media(
     Why this is not merely nice-to-have: a sender only advances its durable state
     on a RETURNED send, so a single permanently-bad vault id re-fires the same
     undeliverable message every tick, forever, burning an LLM call each time.
-    Account ACCOUNT_ID sat at 39-eligible / 0-sent for days on one bad night-slot
+    Account 572370157 sat at 39-eligible / 0-sent for days on one bad night-slot
     image, and the run stats showed only "errors: 6" — nothing named the cause.
     The text is the point of these messages; the picture is a garnish, so ship
     the text.
@@ -283,6 +284,44 @@ OPERATOR_STOP_REASONS = frozenset(
 )
 
 
+# ── Reactions that are NOT her turn ─────────────────────────────────────────
+# An outbound row whose `automation_kind` is one of these is a REACTION to
+# something HE did — a freebie answering his photo, a bundle answering his tip.
+# It is a real send (it belongs in the history the model reads, and she must know
+# she sent it), but it did not ANSWER him, so it must not close the turn.
+#
+# Two gates used to read it as an answer, and both had to be fixed together or
+# the bug just moves: `ai_chatter._gather` / `welcome_chatter_for_info._gather`
+# move `last_dir` to "out" (the free half — she never generates), and
+# `ai_chatter._thread_moved_on` counts it as `already_answered` (the METERED half
+# — she generates, then the reply is dropped on the wire, every tick, until he
+# speaks again). A fix to one alone converts a free bug into a paid one.
+#
+# Deliberately NOT in here: `make_right`, `autoreply`, `send_welcome`,
+# `ai_chatter`, `ai_upseller`. Those answer IN WORDS — sending over them
+# double-replies, which is the failure this set's exclusion is meant to avoid,
+# not cause. (`send_welcome` has its own, narrower exemption: it is the
+# caller-driven `ignore_welcome` flag on `_thread_moved_on`, live only on the
+# turn-handoff job that a welcome bubble itself caused. A welcome is not a
+# reaction to anything he did — it lands before he has said a word.)
+# What such a row looks like in the transcript the model reads. Needed because a
+# reaction row is usually TEXTLESS on the wire — `write_outbound_attribution`
+# stores the caption (default "") with `media_count=0`, so an untagged
+# `image_reply` renders as a blank line and she cannot tell she already sent
+# him something. Phrased as the fan experienced it, not as plumbing.
+_REACTION_TAG = {
+    "image_reply": "[you sent him a pic back]",
+    "tip_reward": "[you sent him his tip reward]",
+}
+# DERIVED, not restated. Both engines do `if automation_kind in
+# TURN_NEUTRAL_KINDS: tag = _REACTION_TAG[automation_kind]` — a subscript, not a
+# `.get` — so a third kind added to a hand-written frozenset and forgotten in the
+# dict is a KeyError INSIDE `_gather`: a whole-sweep crash on both engines, not a
+# one-fan drop. The two collections are the same set; only one of them needs to
+# exist, and this way the membership test cannot outrun the tag.
+TURN_NEUTRAL_KINDS = frozenset(_REACTION_TAG)
+
+
 # ── Self-healing fans.source classification ─────────────────────────────────
 # `fans.source` is what tells the muted-creator auto-skip AND the welcome_chatter_for_info /
 # gen_info / ai_chatter promo-spam guards that a chat is a peer-creator
@@ -323,7 +362,7 @@ def source_self_heal_set(subscribed_on, subscribed_by) -> dict:
     free page the model follows fans back, so ordinary fans carry the flag. The
     original upgrade-only rule made that label permanent (`creator_we_follow` is
     not in _WEAK_SOURCES), and a fan who later subscribed could never wash it
-    off. Live fallout: 71 of Ava's 73 so-labelled fans were real, and the
+    off. Live fallout: 71 of Lexi's 73 so-labelled fans were real, and the
     promo-spam guards had been refusing to answer them since 2026-06-17 — one had
     86 inbound messages and was asking "why you ignore me?". `subscribedOn` is
     proof he is OUR fan, so it always wins. We still never downgrade 'fan'."""
@@ -347,7 +386,7 @@ def source_self_heal_set(subscribed_on, subscribed_by) -> dict:
 # OF's rich-text mass-message editor, so their sends carry editor spans, bold/
 # italic sales copy, or a link back to their page ("FLASH SALE!!", "UNLOCK THIS
 # BUNDLE", onlyfans.com/…). A real fan types into the plain chat box and his
-# message arrives as bare <p>text</p> — across 73 of Ava's flagged fans only 3
+# message arrives as bare <p>text</p> — across 73 of Lexi's flagged fans only 3
 # ever emitted one of these, against 44 of jaka's 63 known blasters.
 _PROMO_MARKERS = ("m-editor-", "onlyfans.com", "<strong>", "<em>")
 
@@ -932,7 +971,7 @@ def detect_bot_accusation(text: str | None) -> bool:
 # silence — it was worse. `CONTENT_ASK_RE` matches the bare substring "wanna see", with
 # no reading of WHO offers WHAT, so "You wanna see my cock?" scored as a BUYING signal
 # and the engine answered a man reaching for his phone with a sales pitch. Receipt,
-# Dana fan FAN_ID on 2026-08-08 01:45:50:
+# Isabelle fan 326419277 on 2026-08-08 01:45:50:
 #     him  "You wanna see my cock?"
 #     her  "u keep askn" / "dont u" / "tell me more about that highway life first"  + $8 PPV
 # She thinks HE is the one asking. He offered three times over three days and was
@@ -985,7 +1024,7 @@ _PIC_OFFER_NOT_HIS_RE = re.compile(
 # A PROMO always has a call to BUY, and a blast addresses a crowd rather than him —
 # that, not anatomy, is what separates a peer creator pitching her page from a fan
 # reaching for his phone. Anatomy cannot do this job: the male-creator accounts
-# (blake/blake/buznizjohn) have female fans whose offers of themselves are just as
+# (Lucas1/Lucas2/buznizjohn) have female fans whose offers of themselves are just as
 # real, so a female-anatomy blocklist would silence exactly the fans it should serve.
 # `load_promo_spam_ids` is the durable guard and it runs first, but it is deliberately
 # conservative — "a chatty creator-bot that types plain text is not caught" — so this
@@ -1298,7 +1337,7 @@ NONNATIVE_MISSPELLINGS = {
     "theirs": "thers",
     "subscription": "subscribtion",
     "telegram": "tegelgram",
-    # Harvested from the graded vault's own sent messages (2026-07-25): every misspelling
+    # Harvested from SofiaPaid's own sent messages (2026-07-25): every misspelling
     # below is one she repeats verbatim across separate conversations, which is
     # exactly the fingerprint this layer wants — not a one-off thumb slip.
     #   'beautifull' ×3  "Its so beautifull , expensive but beautifull"
@@ -1337,14 +1376,14 @@ def _match_case(src: str, repl: str) -> str:
 
 # A space before '?' — "Do you like it ?" — is the loudest habit in the creator's
 # own sent messages, and one the bot has never once produced: measured 2026-07-25
-# over the graded vault's outbound, 187 of her 728 question-carrying messages have it
+# over SofiaPaid's outbound, 187 of her 728 question-carrying messages have it
 # against 0 of 3,336 bot sends. Unlike the misspelling dict this is NOT applied
 # every time — she does it on about a QUARTER of her questions, and always-on
 # would read as a broken keyboard rather than a habit. So it rolls per '?' run
 # against the caller's seeded rng (same seed as the thumb-typo pass → the same
 # reply always renders the same way).
 #
-# Not universal across creators: Dana's 106 question messages have zero. It
+# Not universal across creators: Isabelle's 106 question messages have zero. It
 # rides the per-account non-native flag for that reason.
 _NONNATIVE_SPACE_Q_RATE = 0.26
 _Q_RUN_RE = re.compile(r"(?<=[^\W\d_])(\?+)")
@@ -1666,7 +1705,7 @@ def _humanize_typos_impl(parts: list[str], rng, *, protect=(),
 
     # collect eligible words across all bubbles, pick one. Scan WHOLE
     # whitespace-tokens (not bare alpha runs) so a word embedded in a handle /
-    # link / price ("@lexi_xo", "onlyfans.com/ava", "$25") is never touched —
+    # link / price ("@lexi_xo", "onlyfans.com/lexi", "$25") is never touched —
     # the token's core must be purely alphabetic after stripping edge punctuation.
     cands = []  # (bubble_idx, core_start, core_end, word)
     for bi, p in enumerate(parts):
@@ -2198,6 +2237,149 @@ def coerce_ids(raw: object) -> set[int]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+# ── send_welcome's turn handoff, engine side (plans/welcome-pacing §C3) ──
+#
+# ONE definition of the two rules both chat engines need, because they had two
+# and the two were already drifting apart. The operator never chooses which
+# engine answers a rescued fan — `send_welcome._handoff_engine` does, from
+# account config three files away — so a fan must not get a different answer
+# because of which one happened to own him.
+#
+# Each engine still owns the ONE thing that is genuinely its own: what "took the
+# turn" means on its lane. ai_chatter treats a mass blast as transparent (it does
+# not move `last_dir`); welcome_chatter_for_info has no broadcast concept at all
+# and a blast does take the turn there. Passing that answer IN, rather than
+# re-deriving it here, is what keeps the guard consistent with each lane's own
+# turn gate instead of quietly more permissive than it.
+
+
+def welcome_window_after_outbound(current: bool, *, took_the_turn: bool,
+                                  automation_kind: str | None) -> bool:
+    """`out_since_in_all_welcome` after one OUTBOUND row.
+
+    The question it answers is "since he last spoke, has anything ANSWERED him
+    other than the welcome bubble that ate his reply?" — which is what makes the
+    handoff job self-verifying: if a human or another automation got there first
+    in the ~3 minutes before the job runs, the job is a no-op instead of a second
+    voice.
+
+    A row that did not take the turn is transparent (a reaction says nothing; on
+    ai_chatter's lane a blast does not answer him either). A row that DID take
+    the turn closes the window unless it is the welcome bubble itself — that is
+    the one send that leaves the handoff valid, because it is the send that
+    caused it."""
+    if not took_the_turn:
+        return current
+    return current and automation_kind == "welcome"
+
+
+def inbound_is_words(body: str | None) -> bool:
+    """Did this INBOUND row carry WORDS? — `send_welcome._newest_worded_inbound`'s
+    predicate, written once, in Python, for the engines that must agree with it.
+
+    That function is the one that decides to abort a welcome burst and enqueue the
+    handoff job, and it asks TWO things of the raw `Message.body` (`:1088-1091`):
+
+        Message.body != "",
+        Message.body.notlike(f"{TIP_LEDGER_PREFIX}%"),
+
+    Both clauses matter and both are easy to lose. The first is the operator's own
+    rule (2026-09-06, *"dont stop on single tip only on text"*): a caption-less
+    photo is NOT words, so `stop_on_reply` deliberately lets the rest of the burst
+    land over it — which means a wordless row can be, and routinely is, NEWER than
+    the words the handoff exists to answer. The second is `transaction_ingest`'s
+    own bookkeeping row: `transaction_ingest` writes a bare tip into the thread as
+    an inbound `"💸 Sent a $5.00 tip"` up to five minutes late, and that string is
+    OURS, not his. Treating it as his line hands every downstream intent detector
+    — content-ask, escalation, decline, haggle — and the prompt's "his line" a
+    piece of our own accounting to answer.
+
+    ⚠️ Takes the RAW body, before any lane renders it. The rendering is exactly
+    where the two engines diverged: `welcome_chatter_for_info` SYNTHESISES text for
+    a caption-less photo (`_history_text` → "[he sent: a selfie in a car]") and
+    ai_chatter does not, so the same fan on the same thread answered this question
+    differently depending on which engine happened to own him. There is nothing
+    lane-specific about "did he say something"; only the raw row can be asked.
+
+    One deliberate narrowing: the SQL's `body != ""` counts a WHITESPACE-ONLY body
+    as words and the `.strip()` here does not. The seam may be narrower and must
+    be — it hands this row's rendering to the model as his line, and a blank fan
+    line is the failure `admit_turn_handoff`'s own docstring names. It may never be
+    WIDER: admitting on a row the burst never aborted for is the whole defect.
+
+    ⚠️ THIS PREDICATE IS ONLY HALF THE SEAM, and the other half is not optional.
+    A body made ONLY of tags — `"<br>"`, `"<p></p>"` — is non-empty, so the SQL
+    counts it as words (it really does abort the burst and enqueue the job) and so
+    does this function: the two AGREE, which is why the never-wider assertion
+    cannot see it. But every lane RENDERS the body before storing it, and a
+    tags-only body renders to `""`, so an unguarded assignment overwrites his real
+    earlier words with nothing and both engines then drop him. Each `_gather`
+    therefore stores `last_worded_in` only when this predicate says yes AND the
+    lane's own rendering of the body is non-empty — see the call sites in
+    `ai_chatter._gather` and `welcome_chatter_for_info._gather`. Rendering is the
+    one thing that is legitimately per-lane, so the emptiness check has to live
+    where the rendering does; what may not differ is the QUESTION, and that is
+    here.
+
+    🔗 `test_welcome_chatter_for_info.case_words_predicate_matches_the_sql` drives
+    this against the real `_newest_worded_inbound` over a body matrix, and then
+    drives both real `_gather`s over the same matrix so the stored value is pinned
+    too. If the SQL grows a third clause, that case is what goes red."""
+    b = (body or "").strip()
+    # `.lower()` on both sides because SQLite's LIKE is case-insensitive for ASCII
+    # and `str.startswith` is not: the SQL clause excludes "💸 sent a $5.00 tip"
+    # and a case-sensitive compare here called it his words — the one input on
+    # which this copy was WIDER than the original, which is the one direction it
+    # may never be. (`TIP_LEDGER_PREFIX` has no `%` or `_`, so the LIKE pattern
+    # carries no wildcard for this to disagree with either.)
+    return bool(b) and not b.lower().startswith(TIP_LEDGER_PREFIX.lower())
+
+
+def admit_turn_handoff(c, *, fan_id: int, handoff_ids: set[int]) -> bool:
+    """Does send_welcome's handoff job admit this fan past the turn gate — and if
+    so, REWRITE him to the truth it asserts. Returns whether it did.
+
+    Three conditions, all required: he is named in the job, he actually SAID
+    something, and every turn-taking outbound since he said it was a welcome
+    bubble.
+
+    ⚠️ "Said something" is `c.last_worded_in` BEING NON-EMPTY — his newest inbound
+    row that passed `inbound_is_words`, which is `_newest_worded_inbound`'s own
+    two-clause predicate. It is deliberately NOT his newest inbound of any kind.
+    The job was enqueued because his newest WORDED inbound was talked over; every
+    wordless row he sends afterwards (a caption-less selfie, a bare tip the ledger
+    poll writes in five minutes later) is latest-wins on both lanes and would
+    otherwise change this answer — dropping him on ai_chatter, "rescuing" him on
+    welcome_chatter_for_info with the photo tag as his line, or admitting him on
+    both with our own tip bookkeeping as his line.
+
+    It used to be `fan_msg_n > 0`, which is a different question on each lane and
+    the WRONG one on welcome_chatter_for_info, where that counter only moves for
+    `is_substantive_msg` text. So an emoji-only reply — "😍", the single most
+    likely thing a new subscriber types — truncated his burst AND then no-op'd the
+    rescue for it: the two halves of one feature disagreeing about what a reply is,
+    and the fan getting the worst of both. An emoji is words here, as it is there.
+
+    It is also the value the REWRITE needs, which is why one condition does both
+    jobs: downstream reads `last_body` gated on `last_dir`, so a candidate admitted
+    with nothing to say hands the model an empty fan line.
+
+    🔗 Read off the CANDIDATE and not taken as an argument — the same way
+    `out_since_in_all_welcome` is. `last_worded_in` is written by exactly one line
+    in each `_gather`, under this module's own predicate, on the same row it
+    renders; there is no string a lane can pass in, so there is no string a lane
+    can pass in wrong. That was the whole of the defect: two lanes, two names
+    (`last_in_text` / `last_in_body`), two VALUES, behind a helper asserting they
+    were one. `welcome_window_after_outbound` above is the shape — the lane hands
+    over the one thing that is genuinely its own, and the seam owns the rule."""
+    if not (fan_id in handoff_ids and (c.last_worded_in or "").strip()
+            and c.out_since_in_all_welcome):
+        return False
+    c.last_dir = "in"
+    c.last_body = c.last_worded_in
+    return True
 
 
 # ── Word restriction (port of V1 TgAiChattingShare/word_filter.py) ────

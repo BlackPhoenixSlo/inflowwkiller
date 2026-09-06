@@ -31,6 +31,9 @@ import {
 } from "@/hooks/useVaultAiConfig";
 import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
 import { cn } from "@/lib/utils";
+import StickySaveBar, {
+  SaveRow, type SaveControl,
+} from "@/components/settings/StickySaveBar";
 
 const INPUT_BASE =
   "bg-bg border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-accent";
@@ -215,6 +218,25 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
 
   const sm = genM.data?.summary;
 
+  /** THE tab's save control, built once and rendered twice — in flow at the
+   *  bottom of the config Card, and again in the pinned bar at the end of the
+   *  tab. One object, so gate, label and feedback cannot drift apart.
+   *
+   *  `canSave` is `dirty`, which is ALSO this tab's load gate: `dirty` returns
+   *  false while `cfg` is undefined, so a save can never post the empty tier
+   *  bands over a config that never arrived. */
+  const save: SaveControl = {
+    onSave,
+    saving: saveM.isPending,
+    canSave: dirty,
+    saved: saveM.isSuccess && !dirty,
+    error: saveM.isError ? (saveM.error?.message || "Save failed") : null,
+  };
+  /** Shown by both controls, so neither reads as if it is waiting on a click. */
+  const noChanges = !dirty && !saveM.isSuccess ? (
+    <span className="text-[11px] text-fg-dim/70">No unsaved changes.</span>
+  ) : null;
+
   return (
     <div className="space-y-4 max-w-4xl">
       <Card className="p-4 space-y-6">
@@ -369,28 +391,7 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
           </div>
         </fieldset>
 
-        <div className="hidden md:flex items-center gap-3 pt-1">
-          <Button onClick={onSave} disabled={saveM.isPending || !dirty}>
-            {saveM.isPending ? "Saving…" : "Save"}
-          </Button>
-          {saveM.isSuccess && !dirty && <span className="text-xs text-emerald-500">Saved ✓</span>}
-          {saveM.isError && (
-            <span className="text-xs text-red-500">{saveM.error?.message || "Save failed"}</span>
-          )}
-          {!dirty && !saveM.isSuccess && (
-            <span className="text-[11px] text-fg-dim/70">No unsaved changes.</span>
-          )}
-        </div>
-
-        <div className="hidden max-md:flex sticky bottom-0 z-20 -mx-4 px-4 py-3 items-center gap-3 flex-wrap bg-panel/95 backdrop-blur border-t border-border pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
-          <Button onClick={onSave} disabled={saveM.isPending || !dirty}>
-            {saveM.isPending ? "Saving…" : "Save"}
-          </Button>
-          {saveM.isSuccess && !dirty && <span className="text-xs text-emerald-500">Saved ✓</span>}
-          {saveM.isError && (
-            <span className="text-xs text-red-500">{saveM.error?.message || "Save failed"}</span>
-          )}
-        </div>
+        <SaveRow {...save} className="hidden md:flex gap-3 pt-1">{noChanges}</SaveRow>
       </Card>
 
       {/* ── Generate + preview ───────────────────────────────────────────── */}
@@ -513,6 +514,21 @@ export default function VaultAiTab({ accountId }: { accountId: string | null }) 
           )}
         </div>
       </Card>
+
+      {/* The pinned twin. Was `hidden max-md:flex` — phones only — and then, on
+       *  the first pass at un-gating it, a child of the config Card above.
+       *  `sticky` resolves against its containing block, so from in there it
+       *  stopped pinning the moment that Card scrolled past: the Save vanished
+       *  for the whole "Preview the arc" Card below, which is ~40% of the tab
+       *  and the one place that tells you unsaved price bands won't show. Last
+       *  child of the OUTER container, which holds no other Save.
+       *
+       *  `hostPadding={0}`: that outer container is `max-w-4xl`, i.e. NARROWER
+       *  than the ReadyMadePanel Card it sits in. A `-mx-4` would reach the
+       *  Card's inner edge on the left and stop hundreds of px short of it on
+       *  the right, running the border-t out mid-Card — the same asymmetry the
+       *  nudge tabs' `max-w-2xl` columns have. */}
+      <StickySaveBar {...save} hostPadding={0}>{noChanges}</StickySaveBar>
     </div>
   );
 }

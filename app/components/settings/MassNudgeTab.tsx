@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Megaphone, Play, Rocket, Eye, ChevronDown, Plus, X, Image as ImageIcon } from "lucide-react";
+import { Megaphone, Play, Rocket, Eye, ChevronDown, Plus, Save, X, Image as ImageIcon } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { EditRuleJsonButton } from "@/components/automations/EditRuleJsonModal";
@@ -32,6 +32,7 @@ import {
   type MassNudgeConfig,
 } from "@/hooks/useMassNudge";
 import type { NudgeSlots, NudgeSlotEntry } from "@/hooks/useNudgeConfig";
+import StickySaveBar, { type GateNote } from "@/components/settings/StickySaveBar";
 
 const SELECT_CLS =
   "w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
@@ -101,6 +102,49 @@ export default function MassNudgeTab() {
   const previewM = useMassNudgePreview();
   const busy = createM.isPending || updateM.isPending;
 
+  /** THE save gate, hoisted so the in-flow Save and the pinned bar read one
+   *  expression instead of two copies of it.
+   *
+   *  The rule list is the load half. This tab has no loading branch: the whole
+   *  form renders from `ruleToForm(null)` defaults while that list is still in
+   *  flight, and `busy` only watches the two MUTATIONS, so a gate of
+   *  `busy || !accountId` alone leaves both Save controls live over a form that
+   *  has not been seeded yet. Worse, `rule` is null until the list lands, so
+   *  that save takes the CREATE branch and posts a second automation beside the
+   *  one it was meant to edit — /admin/automation-rules enforces no
+   *  (account_id, kind) uniqueness, so the duplicate is real and both copies
+   *  run. The pinned bar makes the click reachable from every scroll position,
+   *  so the gate stops being theoretical.
+   *
+   *  `data !== undefined`, deliberately NOT `isSuccess`. This query polls every
+   *  30s and refetches on window focus, and a failed BACKGROUND refetch flips
+   *  `isSuccess` false while `data` stays populated — an `isSuccess` gate would
+   *  take both Save controls away from an operator three screens into an edit,
+   *  with nothing on screen to explain it, until a later poll happened to
+   *  succeed. `data` is undefined only before the first list arrives, which is
+   *  exactly the window that is dangerous. `isPlaceholderData` is the account-
+   *  switch case: the query keeps the PREVIOUS account's rules while the new
+   *  ones load, and saving against those would edit another account's rule. */
+  const canSave =
+    !!accountId && rulesQ.data !== undefined && !rulesQ.isPlaceholderData;
+  const saveDisabled = busy || !canSave;
+  /** …and THE label, hoisted for the same reason the gate is: it is a statement
+   *  about which branch save() will take, and the two controls must not answer
+   *  it differently. */
+  const saveLabel = rule ? "Save changes" : "Create automation";
+
+  /** Why Save is off, when the reason is not on screen. Both controls are grey
+   *  for as long as the rule list takes, and a permanently-pinned grey button
+   *  with nothing beside it is indistinguishable from a broken one. `failed`
+   *  picks the colour in ONE place (SaveRow) rather than a ternary per bar:
+   *  waiting is dim, a failed load is red. */
+  const gateNote: GateNote | null = canSave || !accountId ? null : (
+    rulesQ.isError
+      ? { failed: true,
+          text: "Couldn't load this account's automations — Save stays off so a second one isn't created by mistake." }
+      : { failed: false, text: "Loading this account's automations…" }
+  );
+
   const [form, setForm] = useState<Form>(ruleToForm(null));
   const [slots, setSlots] = useState<NudgeSlots>(DEFAULT_SLOTS);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(DEFAULT_SLOTS, null, 2));
@@ -109,6 +153,17 @@ export default function MassNudgeTab() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  /** The SAVE's own verdict, both halves — as opposed to anything else that
+   *  writes `err`/`msg`. The pinned bar needs its own pair because both of those
+   *  are shared with the other buttons on this tab: `msg` carries "✓
+   *  Broadcasting to online fans now…" from "Send now", and `err` carries "Run
+   *  failed: …" and "Preview failed: …". A bar labelled Save that turns red
+   *  because a PREVIEW failed is narrating someone else's action, and it does it
+   *  by replacing the ✓ of the save that actually did land. Cleared on the next
+   *  edit so a permanently-visible control cannot keep claiming a stale
+   *  verdict. */
+  const [saveOk, setSaveOk] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
 
   // Preview + image picking.
   const [previewHour, setPreviewHour] = useState<number | "">("");
@@ -139,9 +194,19 @@ export default function MassNudgeTab() {
     setJsonDraft(JSON.stringify(s, null, 2));
   }, [rule?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
+  /** Every edit invalidates the last save's verdict. The pinned bar holds that
+   *  verdict permanently in view, so it must never outlive the state it
+   *  describes. `msg` goes with it: the in-flow row renders it ("✓ Saved.") and
+   *  would otherwise still be claiming a save the bar has already dropped. */
+  const clearVerdict = () => { setSaveOk(false); setSaveErr(null); setMsg(null); };
+
+  const set = <K extends keyof Form>(k: K, v: Form[K]) => {
+    clearVerdict();
+    setForm((f) => ({ ...f, [k]: v }));
+  };
 
   const applySlots = (next: NudgeSlots) => {
+    clearVerdict();
     setSlots(next);
     setJsonDraft(JSON.stringify(next, null, 2));
     setJsonErr(null);
@@ -173,8 +238,11 @@ export default function MassNudgeTab() {
   }
 
   async function save() {
-    setErr(null); setMsg(null);
-    if (!accountId) return;
+    setErr(null); setMsg(null); setSaveOk(false); setSaveErr(null);
+    // Belt to the buttons' braces: with no rule list read back yet this
+    // would CREATE a duplicate automation instead of editing the one that
+    // is already there, from a form still holding its seed defaults.
+    if (!accountId || !canSave) return;
     const every_seconds = Math.max(60, Math.round(form.everyMinutes) * 60);
     const payload = buildPayload() as unknown as Record<string, unknown>;
     try {
@@ -187,8 +255,10 @@ export default function MassNudgeTab() {
         });
       }
       setMsg("✓ Saved.");
+      setSaveOk(true);
     } catch (e) {
-      setErr((e as Error)?.message || "Save failed");
+      const m = (e as Error)?.message || "Save failed";
+      setErr(m); setSaveErr(m);
     }
   }
 
@@ -365,7 +435,15 @@ export default function MassNudgeTab() {
         {err && <div className="text-sm text-err">{err}</div>}
 
         <div className="flex items-center gap-2 pt-1">
-          <Button onClick={save} disabled={busy || !accountId}>{rule ? "Save changes" : "Create automation"}</Button>
+          {/* Same gate, same label and same pending word as the pinned twin
+           *  below — the two are one control rendered twice. (The row itself is
+           *  not a SaveRow: its feedback lives in the separate `err`/`msg`
+           *  blocks above and below, which a SaveRow would duplicate ~8px away
+           *  from where they already are.) */}
+          <Button onClick={save} disabled={saveDisabled}>
+            <Save size={14} />
+            {busy ? "Saving…" : saveLabel}
+          </Button>
           {rule && (
             <Button variant="ghost" onClick={runNow} disabled={runM.isPending} title="Broadcast one now (bypasses the timer)">
               <Play className="size-4" /> {runM.isPending ? "Sending…" : "Send now"}
@@ -462,6 +540,28 @@ export default function MassNudgeTab() {
           }}
         />
       )}
+      {/* Pinned Save. The in-flow row above stays exactly where it is; this is
+       *  a second control on the same handler, for a form that runs several
+       *  screens deep. It reads the SAME `canSave` the in-flow button does,
+       *  load half included — see the const's own note.
+       *
+       *  Neither `msg` NOR `err` is piped in here, and that is the whole point
+       *  of `saveOk`/`saveErr`. Both are written by the other buttons on this
+       *  tab — "✓ Broadcasting to online fans now…" and "Run failed: …" from
+       *  Send now, "Preview failed: …" from the preview — so a bar labelled
+       *  Save that shows them narrates someone else's action, and a red one
+       *  replaces the ✓ of the save that actually landed. The in-flow row still
+       *  shows both where they belong. */}
+      <StickySaveBar
+        hostPadding={0}
+        onSave={save}
+        saving={busy}
+        canSave={canSave}
+        label={saveLabel}
+        saved={saveOk}
+        error={saveErr}
+        gateNote={gateNote}
+      />
     </div>
   );
 }

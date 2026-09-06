@@ -40,6 +40,9 @@ import {
   type PriceMatrix,
   type PreviewPpvToFeedResult,
 } from "@/hooks/usePpvLibraryConfig";
+import StickySaveBar, {
+  RetryLoad, SaveRow, loadGateNote, type SaveControl,
+} from "@/components/settings/StickySaveBar";
 
 /** Size-free base so the mono caption editors can append their OWN font size.
  *  These class strings are plain template concatenation (no twMerge), so a size
@@ -526,6 +529,48 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
   });
 
   const incomplete = ppvs.filter((p) => p.enabled && p.media_ids.length === 0).length;
+
+  /** The load gate. The early return above covers a config that is still
+   *  FETCHING, not one whose fetch FAILED — the PPV list would then be empty
+   *  and a save would PUT that empty catalogue over the account's stored one.
+   *  Its own named slot on the control below, so it stays visible.
+   *  `!!data`, not `data !== undefined`: a 200 with an empty body arrives as
+   *  `null`, and that un-seeded form is the whole point of the gate. No
+   *  `isSuccess` conjunct either — React Query only writes `data` from a
+   *  successful fetch, so it would add nothing but false negatives when a
+   *  background refetch fails over settings that loaded fine. `loadGateNote`
+   *  in StickySaveBar.tsx carries the long form. */
+  const configLoaded = !!cfgQ.data;
+  /** …said out loud. `loadGateNote` words each of the three states that gate
+   *  closes on honestly — in particular it does not claim this catalogue "never
+   *  loaded" when one background refetch failed over a catalogue that did. */
+  const gateNote = loadGateNote(cfgQ);
+
+  /** THE tab's save control, built once and rendered twice — in the row below
+   *  (which pins itself under 768px) and in the desktop-only bar at the end of
+   *  the Card. One object, so the two cannot drift apart. */
+  const save: SaveControl = {
+    onSave: () => saveM.mutate(buildConfig()),
+    saving: saveM.isPending,
+    canSave: configLoaded,
+    saved: saveM.isSuccess,
+    error: saveM.isError ? (saveM.error?.message || "Save failed") : null,
+    gateNote,
+  };
+
+  /** "Saving this changes nothing" — shown by BOTH controls. On this tab the
+   *  in-flow row's copy is only visible below 768px in pinned form, i.e. the
+   *  desktop pin was the ONE place an operator could save without ever reading
+   *  it. The Retry rides along for the same reason: without it a failed fetch
+   *  has no way out but a page reload. */
+  const rowExtras = (
+    <>
+      {enabled && incomplete > 0 && (
+        <span className="text-xs text-warn">{incomplete} enabled PPV(s) have no content yet.</span>
+      )}
+      {gateNote && <RetryLoad q={cfgQ} />}
+    </>
+  );
 
   return (
     <Card className="p-4 space-y-5 max-w-3xl">
@@ -1385,22 +1430,16 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
 
       {/* With ~20 PPV cards this Save sits ~15,000px down the scroll, so below
        *  768px the row pins to the bottom of the viewport. Every sticky/paint
-       *  utility is `max-md:`-scoped, so at >=768px this is still exactly
-       *  `flex items-center gap-3 pt-1` in normal flow. `-mx-4 px-4` bleeds to
-       *  the host Card's own p-4 (note: this Card is p-4, not p-5). */}
-      <div className="flex items-center gap-3 pt-1 max-md:sticky max-md:bottom-0 max-md:z-20 max-md:flex-wrap max-md:-mx-4 max-md:px-4 max-md:py-3 max-md:pb-[calc(env(safe-area-inset-bottom)+0.75rem)] max-md:bg-panel/95 max-md:backdrop-blur max-md:border-t max-md:border-border">
-        <Button onClick={() => saveM.mutate(buildConfig())} disabled={saveM.isPending}>
-          {saveM.isPending ? "Saving…" : "Save"}
-        </Button>
-        {saveM.isSuccess && !saveM.isPending && <span className="text-xs text-emerald-500">Saved ✓</span>}
-        {saveM.isError && <span className="text-xs text-red-500">{saveM.error?.message || "Save failed"}</span>}
-        {enabled && incomplete > 0 && (
-          <span className="text-xs text-warn">{incomplete} enabled PPV(s) have no content yet.</span>
-        )}
+       *  utility is `max-md:`-scoped, so at >=768px this is still a plain row in
+       *  normal flow — which is why the shared bar at the end of the Card is
+       *  `pin="desktop-only"`. `-mx-4 px-4` bleeds to the host Card's own p-4
+       *  (note: this Card is p-4, not p-5). */}
+      <SaveRow {...save} className="gap-3 pt-1 max-md:sticky max-md:bottom-0 max-md:z-20 max-md:-mx-4 max-md:px-4 max-md:py-3 max-md:pb-[calc(env(safe-area-inset-bottom)+0.75rem)] max-md:bg-panel/95 max-md:backdrop-blur max-md:border-t max-md:border-border">
+        {rowExtras}
         <div className="ml-auto">
           <EditRawJsonButton surface="ppv-library-config" accountId={accountId} />
         </div>
-      </div>
+      </SaveRow>
 
       {picker !== null && accountId && (
         <VaultPicker
@@ -1429,6 +1468,13 @@ export default function PPVLibraryTab({ accountId }: { accountId: string | null 
           }}
         />
       )}
+      {/* Desktop-only pin: the Save row above (the `max-md:sticky` one) already
+       *  pins below 768px, so this hands the pin to the width that never had
+       *  one. Same `save` object, same warning — the desktop pin was the one
+       *  place an operator could save without ever seeing "no content yet". */}
+      <StickySaveBar {...save} pin="desktop-only">
+        {rowExtras}
+      </StickySaveBar>
     </Card>
   );
 }

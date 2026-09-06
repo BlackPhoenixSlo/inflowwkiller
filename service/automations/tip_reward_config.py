@@ -94,6 +94,15 @@ _DEFAULTS: dict = {
                                        # doesn't drain a folder; also dedups webhook
                                        # replays. 0 → every inbound image (replay risk).
     "image_reply_caption": "",         # optional caption ('' → media-only)
+    # ── The human pause before a media reaction lands ────────────────────────
+    # ON: the picture is DEFERRED to 30-90s after his photo (drawn per-photo, see
+    # pacing.picture_back_target) instead of firing the instant the job is claimed,
+    # and the "…is typing" bar stays DARK for it — she is in her camera roll, not
+    # typing. The vision describe is counted INSIDE that target, not added on top.
+    # OFF restores the instant send. Governs the tip-bundle lane too when that
+    # lands. Default ON: the pause is the point, and image_reply itself ships OFF,
+    # so no live account moves until an operator turns the lane on.
+    "media_reply_pace_enabled": True,
     # ── Hot-thread proactive teaser (SELECTED here, SENT by ai_chatter) ───────
     # When ai_chatter's thread_heat says the thread is HOT and no priced offer is
     # already going out this turn, attach a few UNSEEN vault items to the reply she
@@ -209,7 +218,7 @@ _DEFAULTS: dict = {
     # to a free one, or `teaser_convo_unbought_reset_h` passes.
     #
     # This is the brake whose absence produced the worst behaviour in the system:
-    # measured 2026-08-01 on Dana, fan FAN_ID received EIGHTY-FIVE consecutive
+    # measured 2026-08-01 on Isabelle, fan 374095202 received EIGHTY-FIVE consecutive
     # $3.00 locked messages across three days and unlocked none of them. Under
     # fluctuate-down (08-19) there is almost always a cheaper ask to send again, so
     # this breaker is the ONLY thing that guarantees a wall of ignored asks ends.
