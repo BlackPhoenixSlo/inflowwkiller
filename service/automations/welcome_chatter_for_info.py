@@ -94,7 +94,7 @@ from ._common import (
     load_voice_blocks,
     STYLE_3LINE, STYLE_BRIEF, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
-    admit_turn_handoff, inbound_is_words,                # the welcome turn handoff, §C3
+    admit_turn_handoff, worded_inbound_text,             # the welcome turn handoff, §C3
     welcome_window_after_outbound,
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
     content_payer_fans,
@@ -703,20 +703,19 @@ async def _gather(account_id: str,
         if direction == "in":
             c.last_in_at = created_at
             c.last_in_body = text
-            # …and separately, WORDS. The predicate reads the RAW body (this lane
-            # renders a caption-less photo as "[he sent: …]", which is not him
-            # speaking) and lives in `_common` so both engines ask it identically.
+            # …and separately, WORDS. ONE call, ONE composite, shared with
+            # `ai_chatter._gather` — see `worded_inbound_text`.
             #
-            # The second clause is `_strip_html(body)` and NOT `text`, which is
-            # the difference between the two engines agreeing and not. A tags-only
-            # body renders to "" — the SQL and the predicate both call it words,
-            # so his real earlier words would be overwritten with nothing — and
-            # `text` on this lane is not empty for such a row when a describe is
-            # attached: it is "[he sent: a selfie]", our own synthesis, which
-            # ai_chatter would never store. Gating on the BODY's rendering keeps
-            # the two lanes answering with the same string. See `inbound_is_words`.
-            if inbound_is_words(body) and _strip_html(body):
-                c.last_worded_in = text
+            # ⚠️ `_strip_html(body)`, NOT `text`. `text` is this lane's HISTORY
+            # LINE and carries "[he sent: a selfie in a car]" for any described
+            # row, which is our own synthesis and not him speaking; ai_chatter has
+            # no such suffix, so storing `text` here made the two lanes hold
+            # different strings for the same row — and `admit_turn_handoff` copies
+            # this one into `c.last_body`, the model's "his line". The describe is
+            # not lost: it is already in `c.messages` via `_history_text`.
+            worded = worded_inbound_text(body, _strip_html(body))
+            if worded is not None:
+                c.last_worded_in = worded
             # A new inbound RESTARTS the window the handoff guard measures.
             c.out_since_in_all_welcome = True
         else:

@@ -22,16 +22,17 @@
  * fan and skips paid pages. NOT "can never spend money": `money_gate: false` is
  * a documented knob (`auto_follow._run_follow`), it has no checkbox here, and a
  * rule carrying it follows priced pages blind at this account's expense. The
- * last-run line says so in red when it happens (`_bits.runStatsChunks`), which
- * is the only place this panel can. "Specific fan ids"
- * was dropped from the UI (operators pasted ids that went stale); the engine
- * still honors targets.source="fan_ids" for API callers.
+ * last-run line says so in red when it happens (`lib/runStats.runStatsChunks`),
+ * which is the only place this panel can. "Specific fan ids" was dropped from
+ * the UI (operators pasted ids that went stale); the engine still honors
+ * targets.source="fan_ids" for API callers.
  */
 
 import { useEffect, useMemo, useState } from "react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
-import { RunStats, errMsg, isDryRun } from "@/components/growth/_bits";
+import { errMsg } from "@/components/growth/_bits";
+import { RunStats, isDryRun } from "@/lib/runStats";
 import { boolKnob } from "@/lib/boolKnob";
 import {
   useAutomationRules, useCreateRule, useUpdateRule, useRunRuleNow,
@@ -371,9 +372,17 @@ export default function AutoFollowTab({ accountId }: { accountId: string | null 
     return SOURCE_SPECS[f.source].targets(f);
   };
 
-  /** The knobs this panel OWNS — never the whole payload. Everything else on the
-   *  rule (money_gate, hand-set targets.fan_ids, keys added by the typed rules
-   *  editor) is preserved by the spread in `save()`. */
+  /** The scalar knobs this panel OWNS — never the whole payload, and never
+   *  `targets`. Everything else on the rule (money_gate, hand-set
+   *  targets.fan_ids, keys added by the typed rules editor) is preserved by the
+   *  spread in `save()`.
+   *
+   *  `targets` is deliberately absent. It obeys a different rule from every
+   *  other key here — replaced wholesale or not written at all, never merged —
+   *  and putting it in this object meant `save()` had to spend three branches
+   *  un-doing its own spread, reading `"targets" in …` off two different
+   *  objects to work out what it had just done. It is applied once, positively,
+   *  by `applyTargets()` below. */
   const payload = useMemo(() => {
     const p: Record<string, unknown> = {
       action: form.action, daily_cap: form.dailyCap, dry_run: form.dryRun,
@@ -387,10 +396,26 @@ export default function AutoFollowTab({ accountId }: { accountId: string | null 
     if (form.action === "ping" || form.action === "follow") {
       p.min_days_between_pings = form.actionGapDays;
     }
-    const t = targetsFor(form);
-    if (t) p.targets = t;
     return p;
   }, [form]);
+
+  /** Write the pool this form describes onto `p` — the ONLY place `targets` is
+   *  decided.
+   *
+   *  Untouched pool → say nothing, so whatever the rule already stores survives
+   *  verbatim (a source this panel had to infer, a hand-set `fan_ids` list).
+   *  Touched → replace wholesale, because a source change from smart_list to
+   *  expired must DROP `smart_list_id` or the engine resolves a pool the
+   *  dropdown is not showing; and an action with no pool of its own (`ping`
+   *  derives one) must drop the key entirely rather than leave the previous
+   *  action's object behind, inert but ready to come back to life on a switch. */
+  function applyTargets(p: Record<string, unknown>, dirty: boolean) {
+    if (!dirty) return p;
+    const t = targetsFor(form);
+    if (t) p.targets = t;
+    else delete p.targets;
+    return p;
+  }
 
   async function save() {
     setErr(null); setMsg(null);
@@ -403,33 +428,19 @@ export default function AutoFollowTab({ accountId }: { accountId: string | null 
         // else on the rule — `money_gate: false` reverted to True, a hand-set
         // `targets.fan_ids` vanished, and `min_days_between_pings` snapped back to
         // 14, retuning a running backfill. Spread first, exactly as
-        // `BrainPanel.saveWelcome` does.
-        //
-        // `targets` is the one key the spread must NOT merge into: a source
-        // change from smart_list to expired has to DROP `smart_list_id`, and a
-        // change away from recent_active has to drop `days`, or the engine
-        // resolves a pool the dropdown is not showing. So it is replaced
-        // WHOLESALE — but only when the operator actually touched the pool.
-        // Untouched, it is left alone entirely, which is what stops a rule whose
-        // source this panel had to infer (absent, or a legacy value it snapped)
-        // from being silently rewritten by a save of some unrelated field.
-        const merged: Record<string, unknown> = { ...(rule.payload ?? {}), ...payload };
-        if (!targetsDirty) {
-          if ("targets" in (rule.payload ?? {})) merged.targets = rule.payload.targets;
-          else delete merged.targets;
-        } else if (!("targets" in payload)) {
-          // The operator changed the pool to one that HAS no targets — `ping`
-          // derives its own. Without this the spread kept the previous action's
-          // `targets` on the payload: inert to `_run_ping`, but a stale object
-          // the form no longer describes, and one that comes back to life the
-          // moment the action is switched back.
-          delete merged.targets;
-        }
+        // `BrainPanel.saveWelcome` does. `targets` rides in separately; the
+        // spread never touches it, because `payload` no longer carries it.
+        const merged = applyTargets(
+          { ...(rule.payload ?? {}), ...payload },
+          targetsDirty,
+        );
         await updateM.mutateAsync({ id: rule.id, every_seconds, payload: merged, is_enabled: form.enabled });
       } else {
+        // A brand-new rule has nothing to preserve, so its pool is always the
+        // one the form describes.
         await createM.mutateAsync({
           account_id: accountId, kind: "auto_follow", name: "Auto-follow / Auto-like",
-          every_seconds, payload, is_enabled: form.enabled,
+          every_seconds, payload: applyTargets({ ...payload }, true), is_enabled: form.enabled,
         });
       }
       // The stored targets now match the form, so the next save has nothing to
@@ -451,8 +462,29 @@ export default function AutoFollowTab({ accountId }: { accountId: string | null 
       savedAction === "ping" ? "UNFOLLOW + RE-FOLLOW real fans"
       : savedAction === "follow" ? "FOLLOW real fans"
       : "LIKE real messages";
+    // ⚠️ MONEY. `money_gate` is what makes follow/ping read a fan's subscribe
+    // price and skip the paid ones; with it off, every priced creator in the
+    // pool is BOUGHT. `gated_follow`'s own docstring measures a 711-fan backfill
+    // at ≈$177. There is no control for this knob anywhere in the app — it
+    // arrives on a rule by hand or from a legacy row, and the panel's spread now
+    // faithfully PRESERVES it — so this confirm is the only place it is ever put
+    // in front of the operator. `BrainPanel.saveWelcome` gates its own
+    // follow-back spend the same way, for the same reason.
+    // A dry run spends nothing whatever the gate says, so the warning is scoped
+    // to the run that actually acts — a spend warning on a preview is the kind
+    // of false alarm that teaches an operator to skim past the real one.
+    const moneyGateOff =
+      !savedDryRun
+      && (savedAction === "follow" || savedAction === "ping")
+      && !boolKnob(rule.payload.money_gate, true);
+    const spendWarning = moneyGateOff
+      ? "\n\n⚠️ The price-check (money_gate) is also OFF on this rule, so fans are "
+        + "followed WITHOUT reading their price first: every paid creator in the "
+        + "pool CHARGES THIS ACCOUNT their subscription price. A full backfill of "
+        + "711 fans has cost ≈$177."
+      : "";
     if (!savedDryRun && !window.confirm(
-      `Run now uses the LAST SAVED config, which has dry-run OFF — this will ${verb} on OnlyFans. Continue?`,
+      `Run now uses the LAST SAVED config, which has dry-run OFF — this will ${verb} on OnlyFans.${spendWarning}\n\nContinue?`,
     )) return;
     try {
       await runM.mutateAsync(rule.id);

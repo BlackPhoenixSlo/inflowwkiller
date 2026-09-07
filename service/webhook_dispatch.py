@@ -719,6 +719,19 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
         were redeployed while waiting on it — is the one outcome worth catching
         that widely; see the handler for why the re-raise makes it safe.
 
+    ⚠️ KNOWN OPEN, and the version of this in `a06eef7`'s commit message cites
+    the WRONG EVIDENCE on both halves — restated here, where the next change to
+    this seam will actually find it. The defect: a photo followed by a TEXT
+    inverts the same words-after-picture invariant by ~45s (the text's own job
+    fires immediately while the photo lane is still holding the words). Still
+    open; nothing in the 2026-09-05→07 range widened it.
+    What that message got wrong: it says `event_transcoder.py` "has zero diff
+    lines" — it changed in that same range (`af1fbea`, +20) and exactly on this
+    words-vs-picture routing seam; and it says HEAD "had no `not_before` at all",
+    when `not_before` was introduced BY `a06eef7` itself (`grep -c not_before`
+    over this file across the range: 0 0 0 5 5). The verdict survives the bad
+    evidence, but a reader who takes it at face value skips the re-check.
+
     Gated SEPARATELY from the tip hook: an image reply / closer pivot should fire
     even on a fan no chat sweep would answer. Raises nothing of its own; a
     TEARDOWN (`CancelledError`, `KeyboardInterrupt`, `SystemExit`) is handed back

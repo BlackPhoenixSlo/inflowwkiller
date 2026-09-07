@@ -228,6 +228,31 @@ async def _quiet_fan_ids(account_id: str, quiet_days: int, limit: int) -> list[i
     return [int(r[0]) for r in rows]
 
 
+def _all_stored_pool_q(account_id: str, *, exclude: set[int] | None = None,
+                       examined_before: datetime | None = None):
+    """THE backfill-pool predicate — "which of this account's fans is the
+    `all_stored` sweep still entitled to reach", as a SELECT with no ordering and
+    no LIMIT.
+
+    Written once because it has TWO consumers that must agree: `_all_stored_fan_ids`
+    (the head this tick works on) and `_all_stored_eligible_count` (how many are
+    left, which the operator reads as "3663 eligible" beside the tick's
+    "20 candidates"). They used to be two hand-copied WHERE clauses forty lines
+    apart — the distance at which a reader assumes they are in sync — and a fourth
+    clause added to one of them would have over-reported the remaining pool
+    forever, on an operator-facing number, with nothing going red.
+
+    Both filters are the progress marker; see `_all_stored_fan_ids` for what each
+    half is for and why the parameter count is safe."""
+    q = select(Fan.fan_id).where(Fan.account_id == str(account_id))
+    if exclude:
+        q = q.where(Fan.fan_id.not_in([int(f) for f in exclude]))
+    if examined_before is not None:
+        q = q.where(or_(Fan.follow_examined_at.is_(None),
+                        Fan.follow_examined_at < examined_before))
+    return q
+
+
 async def _all_stored_fan_ids(account_id: str, limit: int,
                               exclude: set[int] | None = None,
                               examined_before: datetime | None = None) -> list[int]:
@@ -300,16 +325,11 @@ async def _all_stored_fan_ids(account_id: str, limit: int,
     truncated to a safe prefix — a silently dropped tail would re-follow those
     fans, which is the bug this argument exists to prevent.
     """
-    q = (select(Fan.fan_id)
-         .where(Fan.account_id == str(account_id))
+    q = (_all_stored_pool_q(account_id, exclude=exclude,
+                            examined_before=examined_before)
          .order_by(Fan.last_message_received_at.desc().nullslast(),
                    Fan.fan_id.desc())
          .limit(limit))
-    if exclude:
-        q = q.where(Fan.fan_id.not_in([int(f) for f in exclude]))
-    if examined_before is not None:
-        q = q.where(or_(Fan.follow_examined_at.is_(None),
-                        Fan.follow_examined_at < examined_before))
     async with get_session() as s:
         rows = (await s.execute(q)).all()
     return [int(r[0]) for r in rows]
@@ -321,15 +341,9 @@ async def _all_stored_eligible_count(account_id: str,
     """How many fans the backfill pool has left to reach — the SAME predicate as
     `_all_stored_fan_ids` with the `LIMIT` taken off.
 
-    Written for the DRY-RUN report. A preview never stamps
-    `follow_examined_at` (that is `_follow_batch`'s job and a plan does not act),
-    so every dry tick re-reads the identical `LIMIT headroom` head of the table
-    and returns the identical plan — measured: 3 dry ticks, 0 stamps, byte-for-byte
-    the same output. The preview was therefore reporting `candidates: 20` on an
-    account with 3663 fans to get through, forever, and an operator reading it had
-    no way to see that the window was standing still. This number is how he sees
-    it: `20 candidates` against `3663 eligible` is a report, `20 candidates` alone
-    was a forecast that happened to be wrong every time after the first.
+    Written for the DRY-RUN report, where `candidates` alone is a forecast that
+    is wrong every time after the first — see the ⚠️ A DRY RUN DOES NOT ADVANCE
+    THE WINDOW note in `_run_follow`, which is the one statement of that fact.
 
     ⚠️ EMITTED ON THE LIVE PATH TOO, and it was not — which made it worthless on
     every rule actually draining. `AutoFollowTab`'s `drainHint` reads it off
@@ -345,17 +359,14 @@ async def _all_stored_eligible_count(account_id: str,
     `client.get_user`, which is a different function.
 
     Measured at the START of a tick on both paths, so it stays comparable with
-    `candidates` (also `len(pool)` at the start) — `_bits.runStatsChunks` compares
-    the two. On a live tick that means "left to reach as this tick began", so it
-    falls by up to `_headroom(cap)` per tick rather than by exactly the number
-    followed.
+    `candidates` (also `len(pool)` at the start) — `app/lib/runStats.tsx`'s
+    `runStatsChunks` compares the two. On a live tick that means "left to reach
+    as this tick began", so it falls by up to `_headroom(cap)` per tick rather
+    than by exactly the number followed.
     """
-    q = select(func.count()).select_from(Fan).where(Fan.account_id == str(account_id))
-    if exclude:
-        q = q.where(Fan.fan_id.not_in([int(f) for f in exclude]))
-    if examined_before is not None:
-        q = q.where(or_(Fan.follow_examined_at.is_(None),
-                        Fan.follow_examined_at < examined_before))
+    q = select(func.count()).select_from(
+        _all_stored_pool_q(account_id, exclude=exclude,
+                           examined_before=examined_before).subquery())
     async with get_session() as s:
         return int((await s.execute(q)).scalar() or 0)
 
@@ -562,7 +573,12 @@ def _classify(u: dict, *, unfollow_first: bool) -> str:
     # MONEY GATE — subscribe PAYS unless the profile is free. Only an explicit
     # 0 passes; a missing/unreadable price is a SKIP, not a benefit of the doubt.
     price = u.get("subscribePrice")
-    if not isinstance(price, (int, float)):
+    # `isinstance(price, bool)` FIRST: `bool` is a subclass of `int` in python, so
+    # a `subscribePrice: false` from OF passed the number check and then compared
+    # equal to 0 — read as "free", followed, and charged if it was not.
+    # `automation_rules_api._coerce_whole` already guards this exact footgun on
+    # the payload side; the money gate did not.
+    if isinstance(price, bool) or not isinstance(price, (int, float)):
         return "no_price"
     if float(price) != 0:
         return "paid_profile"
@@ -730,30 +746,64 @@ async def _preview_batch(
     return counts, would, errors
 
 
+def _pool_exhausted(pool: list[int], counts: Counter, errors: int,
+                    *, examined: int | None = None) -> bool:
+    """"This tick walked its window and notified NOBODY" — the ONE definition,
+    for the live path and the preview alike.
+
+    It used to be written twice with two different meanings forty lines apart,
+    and a reader comparing the dry-run chunk to the live one had no way to know
+    they were not the same claim.
+
+    "Notified nobody", NOT "every fan was already_following". The pinned head has
+    two shapes and the narrower test only saw one: a head of `paid_profile` +
+    `no_price` pins the window just as hard (those verdicts never expire, where
+    an `already_following` stamp does), and on that shape `already_following` is
+    0 — so the counter read False on exactly the state it exists to name.
+    Notifying is what this action is FOR, so its absence is the honest test.
+
+    `errors` disqualifies it: a pool we could not READ is not a pool we have
+    finished with, and errors have their own chunk.
+
+    ⚠️ `examined` is the PREVIEW's extra leg and the live path has no use for it.
+    `_preview_batch` reads at most `cap` fans by design, so "nobody would be
+    notified" is only "the window is spent" when the look actually covered the
+    whole window; on a bigger pool it means "nobody in the first `cap`", which is
+    a different and much weaker claim that `examined of N candidates` already
+    makes. The live `_follow_batch` breaks only at the cap AFTER a notification,
+    so a run that notified nobody necessarily walked the whole pool and the leg
+    would always hold — passing it there would be noise, not rigour."""
+    if not pool or errors:
+        return False
+    if examined is not None and examined < len(pool):
+        return False
+    return sum(counts[o] for o in _NOTIFY_OUTCOMES) == 0
+
+
 def _preview_result(pool: list[int], cap: int, counts: Counter,
-                    errors: int) -> dict:
-    """The shared shape of both dry-run reports."""
+                    errors: int, *, action: str) -> dict:
+    """The shared shape of both dry-run reports.
+
+    ⚠️ `action` is not decoration. `pool_exhausted` is a FOLLOW-BACKFILL claim —
+    the UI renders it as "nobody new to notify", copy written for a 3663-fan
+    backfill whose window has stopped advancing. The ping action derives its own
+    pool from silence and has no window to pin, so the key rode out of here onto
+    ping previews untested and unmeant. It is emitted for `"follow"` only; give
+    ping its own claim and its own words before adding it back."""
     examined = min(len(pool), max(cap, 0))
-    notified = sum(counts[o] for o in _NOTIFY_OUTCOMES)
     return {
         "candidates": len(pool),
         "examined": examined,
         "already_following": counts["already_following"],
         "paid_profile_skipped": counts["paid_profile"],
         "no_price_skipped": counts["no_price"],
-        # The live run's own "walked everything, notified nobody" bit, on the
-        # preview too. It was live-path only, so the ONE chunk that explains a
-        # pinned window was unreachable from dry run — this tab's default and its
-        # recommended posture, and the posture the six-day no-op was hiding in.
-        #
-        # STRICTER than the live version, because a preview stops early by design:
-        # `_preview_batch` reads at most `cap` fans, so "nobody would be notified"
-        # is only "the whole pool is spent" when the look actually covered the
-        # whole pool. On a bigger pool it means "nobody in the first `cap`", which
-        # is a different and much weaker claim, and `examined of N candidates`
-        # already says that one.
-        "pool_exhausted": bool(pool) and examined >= len(pool)
-                          and notified == 0 and not errors,
+        # The live run's own bit, on the preview too. It was live-path only, so
+        # the ONE chunk that explains a pinned window was unreachable from dry
+        # run — this tab's default and its recommended posture, and the posture
+        # the six-day no-op was hiding in.
+        **({"pool_exhausted": _pool_exhausted(pool, counts, errors,
+                                              examined=examined)}
+           if action == "follow" else {}),
         "errors": errors,
         "cap": cap,
     }
@@ -884,11 +934,25 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
     pool = [f for f in pool if f not in hard_skip][:headroom]
 
     # How many fans the backfill still has to reach, measured before this tick
-    # touches anything. `None` when the rule is not walking `all_stored` at all,
-    # which is the only state in which the panel is entitled to show no number.
+    # touches anything.
+    #
+    # ⚠️ ONLY when `all_stored` is the WHOLE rule, not merely one of its sources.
+    # `candidates` beside it is the MERGED pool, and the UI compares the two
+    # (`runStats` renders the chunk on `eligible > candidates`). On
+    # `["expired", "all_stored"]` that comparison is between two different
+    # populations — measured: 9 candidates, 3 eligible, six of the candidates not
+    # in the eligible population at all — so the honest answer for a stacked rule
+    # is no number, which is what `None` says.
+    #
+    # ⚠️ `| hard_skip` is not a tidy-up. The pool above drops hard-skipped fans in
+    # python (they must be dropped for EVERY source, including the `fan_ids` one
+    # that is exempt from the cooldown, so this cannot move into `_merge_pools`'s
+    # `exclude`), and the count did not — so `eligible` over-reported by the whole
+    # hard-skip list on every account that has one. Same predicate, same
+    # exclusions, or the two numbers are not comparable and the chunk lies.
     eligible = (await _all_stored_eligible_count(
-        account_id, exclude=recently, examined_before=examined_before)
-        if "all_stored" in sources else None)
+        account_id, exclude=recently | hard_skip, examined_before=examined_before)
+        if sources == ["all_stored"] else None)
 
     if dry_run:
         # ⚠️ A DRY RUN DOES NOT ADVANCE THE WINDOW. Only `_follow_batch` stamps
@@ -923,7 +987,7 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
         return {"action": "follow", "dry_run": True, "source": source,
                 "would_follow": would,
                 **({"eligible": eligible} if eligible is not None else {}),
-                **_preview_result(pool, cap, counts, errors)}
+                **_preview_result(pool, cap, counts, errors, action="follow")}
 
     counts, _, errors = await _follow_batch(account_id, client, pool, cap,
                                             unfollow_first=False,
@@ -932,19 +996,9 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
     # looks like from the outside — and it is otherwise indistinguishable from a
     # quiet one: `status ok`, `followed: 0`, no error. That shape went unnoticed
     # for six days once already (the dry-run preview), so it gets a name in the
-    # stats rather than a shrug, and `_bits.runStatsChunks` renders it.
-    #
-    # "Notified nobody", NOT "every fan was already_following". The pinned head
-    # has two shapes and the narrower test only saw one of them: a head made of
-    # `paid_profile` + `no_price` pins the window just as hard (those verdicts
-    # never expire, where an `already_following` stamp does), and on that shape
-    # `already_following` is 0 — so the counter read False on exactly the state it
-    # exists to name. Notifying is what this action is FOR, so its absence is the
-    # honest test. The `break` at the cap needs one notification, so a run that
-    # notified nobody necessarily walked the whole pool.
-    #
-    # `errors` disqualifies it: a pool we could not READ is not a pool we have
-    # finished with, and errors have their own chunk.
+    # stats rather than a shrug, and `runStats.runStatsChunks` renders it. The
+    # definition — including why it is "notified nobody" and not "all already
+    # following" — is `_pool_exhausted`, shared with the preview.
     #
     # ⚠️ SCOPE, which the NAME oversells: `pool` here is the headroom-truncated
     # slice (`[:_headroom(cap)]`, cap × 5 fans), not the table. On a 3663-fan
@@ -953,8 +1007,7 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
     # says that. The UI copy is scoped to match ("nobody new to notify in this
     # batch"); it used to read "whole pool checked", which was false on every
     # truncated tick and contradicted `eligible` in the same line.
-    notified = sum(counts[o] for o in _NOTIFY_OUTCOMES)
-    pool_exhausted = bool(pool) and notified == 0 and not errors
+    pool_exhausted = _pool_exhausted(pool, counts, errors)
     return {"action": "follow", "dry_run": False, "source": source,
             "money_gate": money_gate,
             "candidates": len(pool), "followed": counts["followed"],
@@ -991,7 +1044,7 @@ async def _run_ping(account_id: str, payload: dict, *, cap: int, dry_run: bool,
                                                      unfollow_first=True)
         return {"action": "ping", "dry_run": True, "quiet_days": quiet_days,
                 "min_days_between_pings": gap_days, "would_ping": would,
-                **_preview_result(pool, cap, counts, errors)}
+                **_preview_result(pool, cap, counts, errors, action="ping")}
 
     counts, stranded, errors = await _follow_batch(account_id, client, pool, cap,
                                                    unfollow_first=True)
@@ -1108,7 +1161,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         cap=_int_knob(payload, "daily_cap", _DEFAULT_DAILY_CAP, lo=0, hi=_MAX_DAILY_CAP),
         # SAFE by default, and safe for `null` too — `bool(payload.get(k, True))`
         # is False for a stored `null` and would run this LIVE while the panel,
-        # the toast and `_bits.tsx` all still read it as a dry run.
+        # the toast and `app/lib/runStats.tsx`'s `isDryRun` all still read it as
+        # a dry run.
         dry_run=bool_knob(payload, "dry_run", True),
         targets=payload.get("targets") or {},
         hard_skip=await load_hard_skip_ids(account_id),

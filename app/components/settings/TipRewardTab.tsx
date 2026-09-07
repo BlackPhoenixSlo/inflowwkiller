@@ -608,8 +608,8 @@ export default function TipRewardTab({ accountId }: { accountId: string | null }
                 </span>
                 <span className="block text-[11px] text-fg-dim/70">
                   30-90s from his photo, drawn fresh each time rather than a fixed
-                  delay — and she is <b>not</b> shown as typing while it runs,
-                  because she is picking a picture, not writing one. Off sends the
+                  delay — and the typing bar stays <b>off</b> while it runs,
+                  because a picture is being picked, not written. Off sends the
                   instant the job is picked up. The same switch governs tip reward
                   bundles.
                 </span>

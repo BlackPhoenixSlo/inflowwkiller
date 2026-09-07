@@ -55,9 +55,13 @@ log = logging.getLogger("of-relay.automation.common")
 # already depends on transitively, which is a price worth naming rather than
 # denying.
 #
-# ⚠️ SCOPE: automation RULE PAYLOADS, which is the store where a `null` survives
-# — `_validate_payload_for_kind` SKIPS a None value instead of rejecting it. The
-# class is closed there and pinned by
+# ⚠️ SCOPE: automation RULE PAYLOADS, the store where a `null` USED to survive.
+# The boundary now POPS a null for a catalogued knob instead of skipping it
+# (`automation_rules_api._validate_payload_for_kind`, pinned by
+# `test_automation_rules_api.case_a_null_for_a_catalogued_knob_is_dropped_at_the_boundary`),
+# so nothing NEW can store one. The null clause below is therefore a defence
+# against HISTORY — rules written before that line still carry stored nulls —
+# and it stays pinned by
 # `test_automation_rules_api.case_every_catalogued_bool_honours_its_default`.
 #
 # It is NOT closed for `account_ai_config.style_config_json`, which still holds
@@ -93,13 +97,15 @@ def bool_knob(payload: dict | None, key: str, default: bool) -> bool:
         payload.get(k, True)         # `null` → None → falsy, same hole, and it
                                      # does not even return a bool.
 
-    `_validate_payload_for_kind` (automation_rules_api) SKIPS a None value
-    instead of rejecting it, so `null` is the one non-boolean that reaches
-    storage for a catalogued bool. Every surface that reads "absent or null ⇒
-    the declared default" — the catalog, BrainPanel, RuleEditor — then disagrees
-    with the automation about what the rule does. On `money_gate` and
-    `follow_back_gate` that disagreement SPENDS MONEY; on `dry_run` it turns a
-    "plans only, nothing sent" toast into real sends.
+    `_validate_payload_for_kind` (automation_rules_api) used to SKIP a None
+    value instead of rejecting it, which made `null` the one non-boolean that
+    reached storage for a catalogued bool. That boundary now POPS the key, so no
+    NEW rule can store one — the null clause here defends rules written before
+    that line, and stored nulls do not expire. Every surface that reads "absent
+    or null ⇒ the declared default" — the catalog, BrainPanel, RuleEditor — must
+    still agree with the automation about what such a rule does. On `money_gate`
+    and `follow_back_gate` that disagreement SPENDS MONEY; on `dry_run` it turns
+    a "plans only, nothing sent" toast into real sends.
 
     A key that is present-but-null says nothing, so it means what absent means.
 
@@ -511,6 +517,29 @@ async def load_hard_skip_ids(account_id) -> set[int]:
     plus ladder_stop. Use for priced/proactive sends and list-broadcasts; the
     always-answer touches use load_operator_stop_ids below instead."""
     return await _load_skip_ids(account_id, HARD_SKIP_REASONS)
+
+
+async def is_hard_skipped(account_id, fan_id: int) -> bool:
+    """Is THIS ONE fan on the account's hard-skip list? — `load_hard_skip_ids`'s
+    question for a single fan, without materialising the answer for everyone else.
+
+    A sender that already holds the whole set should keep using it. This is for
+    the read that happens per-FAN and inside a paced burst — `send_welcome`'s turn
+    handoff, which asks it on the abort path with up to six bursts in flight and
+    was loading the account's entire hard-skip set to answer a boolean each time.
+    The freshness argument for reading it there rather than reusing the run's own
+    snapshot is right (a restriction can land mid-burst); what was wrong was
+    building a set to test one membership."""
+    from sqlalchemy import select
+    async with get_session() as s:
+        row = (await s.execute(
+            select(SkipList.fan_id).where(
+                SkipList.account_id == str(account_id),
+                SkipList.fan_id == int(fan_id),
+                SkipList.reason.in_(tuple(HARD_SKIP_REASONS)),
+            ).limit(1)
+        )).first()
+    return row is not None
 
 
 async def load_operator_stop_ids(account_id) -> set[int]:
@@ -2392,13 +2421,9 @@ def inbound_is_words(body: str | None) -> bool:
     does this function: the two AGREE, which is why the never-wider assertion
     cannot see it. But every lane RENDERS the body before storing it, and a
     tags-only body renders to `""`, so an unguarded assignment overwrites his real
-    earlier words with nothing and both engines then drop him. Each `_gather`
-    therefore stores `last_worded_in` only when this predicate says yes AND the
-    lane's own rendering of the body is non-empty — see the call sites in
-    `ai_chatter._gather` and `welcome_chatter_for_info._gather`. Rendering is the
-    one thing that is legitimately per-lane, so the emptiness check has to live
-    where the rendering does; what may not differ is the QUESTION, and that is
-    here.
+    earlier words with nothing and both engines then drop him. Do not call this
+    function directly from a `_gather` — call `worded_inbound_text` below, which
+    is the whole composite.
 
     🔗 `test_welcome_chatter_for_info.case_words_predicate_matches_the_sql` drives
     this against the real `_newest_worded_inbound` over a body matrix, and then
@@ -2412,6 +2437,44 @@ def inbound_is_words(body: str | None) -> bool:
     # may never be. (`TIP_LEDGER_PREFIX` has no `%` or `_`, so the LIKE pattern
     # carries no wildcard for this to disagree with either.)
     return bool(b) and not b.lower().startswith(TIP_LEDGER_PREFIX.lower())
+
+
+def worded_inbound_text(body: str | None,
+                        rendered_body: str | None) -> str | None:
+    """THE WHOLE COMPOSITE both `_gather`s apply to an inbound row: the string to
+    store as `last_worded_in`, or None to leave the previous one standing.
+
+    `inbound_is_words` is only half of it (see its ⚠️). The other half is "and the
+    rendering is not empty", and while that half lived at the two call sites the
+    two lanes wrote it differently — which put DIFFERENT STRINGS on the same row:
+
+        body="<p>is that you babe</p>", image_desc="a selfie of a man in a car"
+          ai_chatter  last_worded_in : 'is that you babe'
+          wcfi        last_worded_in : 'is that you babe [he sent: a selfie …]'
+
+    `admit_turn_handoff` copies this into `c.last_body`, which is what the reply
+    prompt shows the model as HIS LINE and what every intent detector parses — so
+    the same fan on the same thread got a different rescued line depending on
+    which engine `_handoff_engine` happened to pick. The `[he sent: …]` half is
+    OUR SYNTHESIS, not him speaking, and handing it to a detector as his words is
+    the same class of mistake as the tip-ledger row this predicate excludes.
+
+    ⚠️ `rendered_body` is the rendering of the BODY ALONE — `_strip_html(body)` on
+    both lanes, which is why they can now agree. It is NOT the lane's history
+    line: `welcome_chatter_for_info._history_text` appends the image describe, and
+    `ai_chatter` does not. Passing a history line here re-opens the divergence
+    this function exists to close.
+
+    🔗 `test_welcome_chatter_for_info.case_words_predicate_matches_the_sql` drives
+    both real `_gather`s over a body matrix — including the words-AND-described
+    row, which is the only shape that can see this."""
+    rendered = (rendered_body or "").strip()
+    if not rendered:
+        # A tags-only body: the SQL and the predicate both call it words, so the
+        # burst really was aborted for it — but storing "" would wipe the words
+        # the handoff exists to answer, and both engines would then drop him.
+        return None
+    return rendered if inbound_is_words(body) else None
 
 
 def admit_turn_handoff(c, *, fan_id: int, handoff_ids: set[int]) -> bool:

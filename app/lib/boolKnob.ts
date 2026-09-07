@@ -9,9 +9,12 @@
  *
  *  ⚠️ `== null`, deliberately loose. It catches BOTH `undefined` (the key was
  *  never written) and `null`, and `null` is not hypothetical: the rules API's
- *  `_validate_payload_for_kind` SKIPS a None value rather than rejecting it, so
- *  `null` is the one non-boolean that reaches storage for a bool knob. The two
- *  spellings that look like this one are wrong for exactly that value:
+ *  `_validate_payload_for_kind` used to SKIP a None value rather than rejecting
+ *  it, which made `null` the one non-boolean that reached storage for a bool
+ *  knob. That boundary now POPS the key, so no NEW rule can store one — this
+ *  null clause defends rules written before that line, and stored nulls do not
+ *  expire. The two spellings that look like this one are wrong for exactly that
+ *  value:
  *
  *      Boolean(v)                 // null → false, ignoring the default
  *      v === undefined ? d : !!v  // null → false, ignoring the default

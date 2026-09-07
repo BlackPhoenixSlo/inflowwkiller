@@ -37,7 +37,7 @@ import {
 } from "@/hooks/useAutomations";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { WelcomeGifField } from "@/components/automations/WelcomeGifField";
-import { RunStats } from "@/components/growth/_bits";
+import { RunStats } from "@/lib/runStats";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
@@ -92,20 +92,43 @@ const WELCOME_QUESTION_DEFAULT = "what's yours?";
 // is the whole polarity decision. Each of these knobs used to be read with a
 // hand-written comparison — `!== false` for the on-by-default five, `=== true`
 // for `skip_time_bubble` — which had to be re-derived, correctly, at every new
-// knob. `boolKnob(v, WELCOME_DEFAULTS.k)` asks the question once: a value that
-// SAYS nothing (absent, or a stored `null`) means what this table says, and only
-// an explicit `false` turns a knob off. `null` is not hypothetical —
-// `_validate_payload_for_kind` skips None rather than rejecting it, so it is the
-// one non-boolean that reaches storage, and on `follow_back_gate` the two
-// possible answers are "we price-check every new subscriber" and "we buy a
-// subscription to every priced creator who subscribes".
+// knob. `boolKnob(v, WELCOME_ABSENT_MEANS.k)` asks the question once: a value that
+// SAYS nothing (absent, or a stored `null`) means what this table says. Anything
+// else is read with PYTHON truthiness, because the relay is the side that acts:
+// an explicit `false` turns a knob off and so do `0`, `""`, `[]` and `{}` — the
+// last two are truthy in JavaScript, and `boolKnob` deliberately does not follow
+// JavaScript there. `null` is not hypothetical — `_validate_payload_for_kind`
+// used to skip None rather than rejecting it, making it the one non-boolean that
+// reached storage. That boundary now POPS the key, so no NEW rule can store one;
+// this read defends rules written before that line, and stored nulls do not
+// expire. On `follow_back_gate` the two possible answers are "we price-check
+// every new subscriber" and "we buy a subscription to every priced creator who
+// subscribes".
 //
 // It is called DIRECTLY here. There used to be a one-line `welcomeBool(v, d)`
 // wrapper in this file that did nothing but forward to it — the private alias
 // beside a shared name, which is the shape the relay half spent a pass deleting
 // (`send_welcome._bool_knob`), and this same file already called `boolKnob`
 // directly in two other places.
-const WELCOME_DEFAULTS = {
+/** The welcome knob set, named ONCE.
+ *
+ *  This list used to be written out by hand in seven places in this file — six
+ *  `useState` hooks, two seed branches, two save payloads and a preview payload
+ *  — and it had drifted twice. Every site below now spreads or indexes this
+ *  type instead, so the compiler carries the list. */
+export type WelcomeKnobs = {
+  time_only: boolean;
+  skip_time_bubble: boolean;
+  human_pace: boolean;
+  stop_on_reply: boolean;
+  follow_back: boolean;
+  follow_back_gate: boolean;
+};
+
+/** What a BRAND-NEW rule is born with — the payload `saveWelcome`'s create
+ *  branch stamps, and therefore what an untouched form must show. Mirrors the
+ *  relay catalog's `default` for each key. */
+const WELCOME_CREATE_DEFAULTS: WelcomeKnobs = {
   time_only: true,
   skip_time_bubble: false,
   human_pace: true,
@@ -113,6 +136,46 @@ const WELCOME_DEFAULTS = {
   follow_back: true,
   follow_back_gate: true,
 };
+
+/** What the SENDER does with an ABSENT key — the second argument to `boolKnob`
+ *  when reading an existing rule, so a checkbox shows what `send_welcome`
+ *  actually does rather than what a fresh rule would have got.
+ *
+ *  ⚠️ These are NOT the same table, and `time_only` is why. A creation default
+ *  is stamped into the payload; a read default is applied to a payload that
+ *  never carried the key. `send_welcome.run` reads an absent `time_only` as
+ *  **OFF** on purpose (`bool_knob(payload, "time_only", False)`, the TODO
+ *  C-N7 at that read site), so that sixteen legacy rules cannot acquire the
+ *  clock-only bubble retroactively — and
+ *  `test_automation_rules_api._BOOL_DEFAULT_MISMATCH_ON_PURPOSE` asserts the
+ *  mismatch STAYS. Reading it here as ON drew "short clock line" ticked on a
+ *  legacy rule while the sender sent the activity line, and then the update
+ *  branch stamped `time_only: true` — converting the rule to clock-only on a
+ *  save of some unrelated field. That is half of the C-N7 hazard, closed here.
+ *  Every other knob agrees on both sides, which is why this is a one-key
+ *  override rather than a second hand-written list to drift. */
+const WELCOME_ABSENT_MEANS: WelcomeKnobs = {
+  ...WELCOME_CREATE_DEFAULTS,
+  time_only: false,
+};
+
+/** The knob names, as data — for the one place that has to LOOP over them
+ *  (seeding the form from a stored payload).
+ *
+ *  ⚠️ `as`, NOT `satisfies`: `Object.keys` is typed `string[]`, so this line is
+ *  an assertion and the compiler checks nothing about it. What keeps it honest
+ *  is the source it reads — `WELCOME_CREATE_DEFAULTS` is annotated
+ *  `WelcomeKnobs`, so a knob added to the type and forgotten THERE is the
+ *  compile error, and this list follows whatever that object holds. */
+const welcomeKnobKeys = Object.keys(WELCOME_CREATE_DEFAULTS) as (keyof WelcomeKnobs)[];
+
+/** Which welcome knobs the PREVIEW endpoint is sent. Typed against
+ *  `WelcomeKnobs`, so a knob renamed or removed is a compile error here rather
+ *  than a key the server silently ignores. See the ⚠️ at the preview call for
+ *  the rule that decides membership. */
+const PREVIEW_KNOBS = [
+  "time_only", "skip_time_bubble",
+] as const satisfies readonly (keyof WelcomeKnobs)[];
 
 // send_followup's default per-step silence thresholds (hours) — mirrors
 // send_followup._STEP_THRESHOLDS_H {1:26, 2:64, 3:256}. Shown when the rule has
@@ -152,7 +215,7 @@ const WELCOME_ROLE_TAIL: WelcomeRole = "tail"; // the operator's question, word-
  *  into index 1" all at once.
  *
  *  It replaced five clauses and a hardcoded `bubbles[1]`, three of which read
- *  LIVE form state (`welcomeTimeOnly` / `welcomeSkipTimeBubble` /
+ *  LIVE form state (`welcomeKnobs.time_only` / `welcomeKnobs.skip_time_bubble` /
  *  `welcomeQuestion`) against a preview from the last Preview click. Clearing the
  *  question box after previewing made the button appear — which reads as "now you
  *  can pin" — and pinned the QUESTION as the slot's activity line, so the fan
@@ -359,48 +422,43 @@ export default function BrainPanel() {
 
   const [welcomeEnabled, setWelcomeEnabled] = useState(false);
   const [welcomeMinutes, setWelcomeMinutes] = useState(WELCOME_DEFAULT_EVERY_S / 60);
-  // Bubble 2 = the short clock line ("it's Thursday afternoon in US") instead of
-  // the activity line. Lives on the rule's payload.time_only, like the follow-up's
-  // with_image — so it saves with the Welcome section's own button.
-  const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(WELCOME_DEFAULTS.time_only);
-  // Drop bubble 2 altogether — greeting(+image) → question → GIF. Lives on the
-  // rule's payload.skip_time_bubble, defaulted OFF on BOTH sides, so a rule saved
-  // before this knob existed cannot acquire the behaviour by being re-saved.
+  // The six welcome booleans, in ONE state object. What each one means:
   //
-  // ⚠️ No polarity here, and none in the three knobs below: every one of them is
-  // read by `boolKnob(v, WELCOME_DEFAULTS[k])`. Writing `=== true` / `!== false`
-  // into a new knob's comment is how the next one gets it hand-derived again —
-  // and `null` (which the API stores) answers differently to both spellings.
-  const [welcomeSkipTimeBubble, setWelcomeSkipTimeBubble] = useState(
-    WELCOME_DEFAULTS.skip_time_bubble,
-  );
-  // Pace the burst like a person (quiet gaps before the bubbles) and welcome
-  // several fans at once. Lives on the rule's payload.human_pace. ⚠️ ON BY
-  // DEFAULT (operator, 2026-09-06), matching the catalog and the sender's
-  // `_on_unless_off`, so an existing rule that has never been re-saved is paced
-  // and the checkbox agrees with what actually ships. Turning it off writes an
-  // explicit `false` — which is why the key is ALWAYS written.
-  const [welcomeHumanPace, setWelcomeHumanPace] = useState(WELCOME_DEFAULTS.human_pace);
-  // Stop the welcome the moment he replies (she finishes the bubble she's
-  // typing, and the chat engine picks the turn up). Lives on the rule's
-  // payload.stop_on_reply; same ⚠️ ON-BY-DEFAULT reading as human_pace above.
-  // Independent of pacing — it works on an unpaced burst too.
-  const [welcomeStopOnReply, setWelcomeStopOnReply] = useState(
-    WELCOME_DEFAULTS.stop_on_reply,
-  );
-  // Follow the new subscriber back in the same tick as his welcome, so OF fires
-  // a "started following you" push alongside the DM. Lives on payload.follow_back;
-  // ⚠️ ON BY DEFAULT, like the two above.
-  const [welcomeFollowBack, setWelcomeFollowBack] = useState(
-    WELCOME_DEFAULTS.follow_back,
-  );
-  // ⚠️ MONEY. Buys a profile price-check before each follow-back, so a new sub who
-  // is themself a PRICED creator is skipped instead of charged for. ON by default
-  // (2026-09-07) — "we always skip those" — which costs +1 read per subscriber and
-  // matches auto_follow, which has always gated. Unticking it buys the blind follow.
-  const [welcomeFollowBackGate, setWelcomeFollowBackGate] = useState(
-    WELCOME_DEFAULTS.follow_back_gate,
-  );
+  //   time_only         Bubble 2 = the short clock line ("it's Thursday afternoon
+  //                     in US") instead of the activity line. ⚠️ Its absent-read
+  //                     is OFF and its creation default is ON — see
+  //                     WELCOME_ABSENT_MEANS for why they differ.
+  //   skip_time_bubble  Drop bubble 2 altogether — greeting(+image) → question →
+  //                     GIF. OFF on both sides, so a rule saved before the knob
+  //                     existed cannot acquire the behaviour by being re-saved.
+  //   human_pace        Pace the burst like a person (quiet gaps before the
+  //                     bubbles) and welcome several fans at once. ⚠️ ON BY
+  //                     DEFAULT (operator, 2026-09-06), matching the catalog and
+  //                     the sender's `_on_unless_off`. Turning it off writes an
+  //                     explicit `false` — which is why the key is ALWAYS written.
+  //   stop_on_reply     Stop the welcome the moment he replies (she finishes the
+  //                     bubble she's typing, the chat engine picks the turn up).
+  //                     ⚠️ ON BY DEFAULT. Works on an unpaced burst too.
+  //   follow_back       Follow the new subscriber back in the same tick as his
+  //                     welcome, so OF fires a "started following you" push
+  //                     alongside the DM. ⚠️ ON BY DEFAULT.
+  //   follow_back_gate  ⚠️ MONEY. Buys a profile price-check before each
+  //                     follow-back, so a new sub who is themself a PRICED
+  //                     creator is skipped instead of charged for. ON by default
+  //                     (2026-09-07) — "we always skip those" — which costs +1
+  //                     read per subscriber and matches auto_follow, which has
+  //                     always gated. Unticking it buys the blind follow.
+  //
+  // ⚠️ No polarity is written into any of these comments: every one is read by
+  // `boolKnob(v, WELCOME_ABSENT_MEANS[k])`. Spelling `=== true` / `!== false` in
+  // a new knob's comment is how the next one gets it hand-derived again — and
+  // `null` (which the API stores) answers differently to both spellings.
+  const [welcomeKnobs, setWelcomeKnobs] = useState<WelcomeKnobs>(WELCOME_CREATE_DEFAULTS);
+  /** Set one welcome knob and clear the section's stale save message. */
+  function setKnob<K extends keyof WelcomeKnobs>(k: K, v: WelcomeKnobs[K]) {
+    setWelcomeKnobs((s) => ({ ...s, [k]: v }));
+    setWelcomeMsg(null);
+  }
   // Bubble 3 = the operator's own question, sent WORD-FOR-WORD (no AI touch-up).
   // Lives on the rule's payload.question; "" = off (no third bubble).
   const [welcomeQuestion, setWelcomeQuestion] = useState(WELCOME_QUESTION_DEFAULT);
@@ -452,16 +510,15 @@ export default function BrainPanel() {
       setWelcomeMinutes(
         Math.max(1, Math.round((welcomeRule.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
       );
-      // One reader, one defaults object — see WELCOME_DEFAULTS. The polarity is no
-      // longer a per-knob decision, and a stored `null` can no longer make a
-      // checkbox disagree with the sender.
-      const wp = welcomeRule.payload ?? {};
-      setWelcomeTimeOnly(boolKnob(wp.time_only, WELCOME_DEFAULTS.time_only));
-      setWelcomeSkipTimeBubble(boolKnob(wp.skip_time_bubble, WELCOME_DEFAULTS.skip_time_bubble));
-      setWelcomeHumanPace(boolKnob(wp.human_pace, WELCOME_DEFAULTS.human_pace));
-      setWelcomeStopOnReply(boolKnob(wp.stop_on_reply, WELCOME_DEFAULTS.stop_on_reply));
-      setWelcomeFollowBack(boolKnob(wp.follow_back, WELCOME_DEFAULTS.follow_back));
-      setWelcomeFollowBackGate(boolKnob(wp.follow_back_gate, WELCOME_DEFAULTS.follow_back_gate));
+      // One reader, one table, one loop — see WELCOME_ABSENT_MEANS. The polarity
+      // is no longer a per-knob decision, a stored `null` can no longer make a
+      // checkbox disagree with the sender, and a knob added to the type is read
+      // here without anyone remembering to add a line.
+      const wp = (welcomeRule.payload ?? {}) as Record<string, unknown>;
+      setWelcomeKnobs(welcomeKnobKeys.reduce((acc, k) => {
+        acc[k] = boolKnob(wp[k], WELCOME_ABSENT_MEANS[k]);
+        return acc;
+      }, {} as WelcomeKnobs));
       // Absent key (rule saved before the knob existed) → show the default, so
       // the next save stamps it — the same migration path time_only takes.
       // An explicit "" is the operator's own clear and stays cleared.
@@ -473,14 +530,9 @@ export default function BrainPanel() {
     } else {
       setWelcomeEnabled(false);
       setWelcomeMinutes(WELCOME_DEFAULT_EVERY_S / 60);
-      // From the SAME object the create payload below writes, so what the
-      // operator sees unticked is exactly what a fresh rule ships with.
-      setWelcomeTimeOnly(WELCOME_DEFAULTS.time_only);
-      setWelcomeSkipTimeBubble(WELCOME_DEFAULTS.skip_time_bubble);
-      setWelcomeHumanPace(WELCOME_DEFAULTS.human_pace);
-      setWelcomeStopOnReply(WELCOME_DEFAULTS.stop_on_reply);
-      setWelcomeFollowBack(WELCOME_DEFAULTS.follow_back);
-      setWelcomeFollowBackGate(WELCOME_DEFAULTS.follow_back_gate);
+      // The SAME object the create payload below spreads, so what the operator
+      // sees ticked is exactly what a fresh rule ships with.
+      setWelcomeKnobs(WELCOME_CREATE_DEFAULTS);
       setWelcomeQuestion(WELCOME_QUESTION_DEFAULT);
       setWelcomeGifId("");
     }
@@ -652,7 +704,7 @@ export default function BrainPanel() {
     // operator who deliberately unticked it, so it is a confirmation of an
     // intent, not a nag: nobody reaches it by accident, and nobody who has not
     // touched that box ever sees it.
-    if (welcomeFollowBack && !welcomeFollowBackGate && !window.confirm(
+    if (welcomeKnobs.follow_back && !welcomeKnobs.follow_back_gate && !window.confirm(
       "The price-check is OFF for follow-backs. Every new subscriber will be "
       + "followed back WITHOUT reading their price first, so any of them who is "
       + "a paid creator CHARGES THIS ACCOUNT their subscription price. Save anyway?",
@@ -669,12 +721,7 @@ export default function BrainPanel() {
           // payload means omitting it could never CLEAR a question once saved.
           payload: {
             ...(welcomeRule.payload ?? {}),
-            time_only: welcomeTimeOnly,
-            skip_time_bubble: welcomeSkipTimeBubble,
-            human_pace: welcomeHumanPace,
-            stop_on_reply: welcomeStopOnReply,
-            follow_back: welcomeFollowBack,
-            follow_back_gate: welcomeFollowBackGate,
+            ...welcomeKnobs,
             question: welcomeQuestion.trim(),
             // Always written (even "") for the same reason as `question`: the
             // merge means omitting it could never CLEAR a GIF once picked.
@@ -690,26 +737,18 @@ export default function BrainPanel() {
           is_enabled: welcomeEnabled,
           // All SIX welcome booleans come from form state — the four that shape
           // the bubble and the two that spend money — and with no rule that
-          // state was seeded from WELCOME_DEFAULTS above, so an operator who
+          // state was seeded from WELCOME_CREATE_DEFAULTS above, so an operator who
           // saves without touching a box creates the rule those defaults
           // describe, and one who does touch a box creates what he can see.
           // That chain is the whole fix: there is no second hand-written list
           // here to drift away from the seed.
-          payload: { time_only: welcomeTimeOnly,
-                     skip_time_bubble: welcomeSkipTimeBubble,
-                     human_pace: welcomeHumanPace,
-                     stop_on_reply: welcomeStopOnReply,
-                     // Written explicitly, though both match the sender's own
-                     // read-defaults: following back is a PAYING call when the new
-                     // sub is themself a priced creator, so a fresh rule must say
-                     // in its payload both that it follows back and that it
-                     // price-checks first, rather than inherit either invisibly.
-                     // Both keys have a checkbox (2026-09-06) — before that this
-                     // was raw-JSON only, which is how an operator could have the
-                     // feature on and no way to see it. The update branch above
-                     // preserves a hand-set `false` via the spread.
-                     follow_back: welcomeFollowBack,
-                     follow_back_gate: welcomeFollowBackGate,
+          // ALL SIX are written explicitly, though four match the sender's own
+          // read-defaults: following back is a PAYING call when the new sub is
+          // themself a priced creator, so a fresh rule must say in its payload
+          // both that it follows back and that it price-checks first, rather
+          // than inherit either invisibly. The update branch above preserves a
+          // hand-set `false` via its spread.
+          payload: { ...welcomeKnobs,
                      question: welcomeQuestion.trim(),
                      gif_id: welcomeGifId },
         });
@@ -810,8 +849,7 @@ export default function BrainPanel() {
         // or fires a side-effect does not. Getting that wrong in the first
         // direction is a preview that lies; in the second, a preview that acts.
         payload: {
-          time_only: welcomeTimeOnly,
-          skip_time_bubble: welcomeSkipTimeBubble,
+          ...Object.fromEntries(PREVIEW_KNOBS.map((k) => [k, welcomeKnobs[k]])),
           question: welcomeQuestion.trim(),
           gif_id: welcomeGifId,
         },
@@ -866,11 +904,40 @@ export default function BrainPanel() {
   // box are disabled, so a warning that asserts an active charge on every one of
   // them teaches the operator to skim past the one that is real.
   //
-  // `welcomeEnabled` is FORM state (what he is about to save) while `dry_run` is
-  // read off the stored rule — this panel has no dry-run control, so the rule's
-  // own value is the only answer there is.
+  // ⚠️ EVERY TERM COMES OFF THE STORED RULE. `welcomeEnabled` is FORM state —
+  // what a save WOULD write — and mixing it in here made the tense a lie in the
+  // dangerous direction: an operator with a live, enabled, ungated follow-back
+  // rule who unticks **Enabled** and does not save saw the red ⚠️ turn grey and
+  // say "Nothing is charged yet — this automation is switched off", while the
+  // server-side rule was still enabled and still buying subscriptions every
+  // tick. The question this answers is "is money leaving the account RIGHT
+  // NOW", and only the saved rule can answer it.
   const welcomeIsDryRun = boolKnob(welcomeRule?.payload?.dry_run, false);
-  const welcomeSpendsNow = welcomeEnabled && !welcomeIsDryRun;
+  const welcomeSpendsNow =
+    !!welcomeRule?.is_enabled
+    && !welcomeIsDryRun
+    && boolKnob(welcomeRule?.payload?.follow_back, WELCOME_ABSENT_MEANS.follow_back)
+    && !boolKnob(welcomeRule?.payload?.follow_back_gate, WELCOME_ABSENT_MEANS.follow_back_gate);
+  // ...and the separate, honest "after you save" question, which IS form state.
+  // Shown alongside the tense above rather than instead of it, so unticking a
+  // box never removes a warning about a charge that is still happening.
+  const welcomeSaveWouldSpend =
+    welcomeEnabled && !welcomeIsDryRun
+    && welcomeKnobs.follow_back && !welcomeKnobs.follow_back_gate;
+  // The SECOND axis, named once per paragraph that needs it. The two questions
+  // are orthogonal — "is the SAVED rule charging" (three states, the paragraphs
+  // below) and "would saving the FORM charge" (two states, right here) — and
+  // this clause used to be a ternary nested INSIDE two of those three branches,
+  // so five reachable leaves read as one expression and a reader had to walk a
+  // 2×3 matrix to answer either question. Two flat sentences on two axes
+  // instead; the rendered text is unchanged.
+  const liveChargeSaveNote = welcomeSaveWouldSpend
+    ? "Ticking the box is the default and the house rule."
+    : "The change on screen stops it — hit Save.";
+  const wouldChargeSaveNote = welcomeSaveWouldSpend
+    ? "Nothing is charged yet — but saving this arms it."
+    : "Nothing is charged yet, and the saved rule cannot start"
+      + " charging until it is switched on and off dry-run.";
   // Derived from the ECHOED flags, not from bubble positions — see the helper.
   const previewCaption = preview ? welcomePreviewCaption(preview) : null;
 
@@ -1402,18 +1469,15 @@ export default function BrainPanel() {
                   // Gated child (house pattern): with the bubble dropped there is
                   // nothing left for this checkbox to change, so it reads as
                   // inert rather than as a setting that silently does nothing.
-                  welcomeSkipTimeBubble && "opacity-50 pointer-events-none",
+                  welcomeKnobs.skip_time_bubble && "opacity-50 pointer-events-none",
                 )}
                 title="Second bubble says only the day, time of day and where the creator is — 'it's Thursday afternoon in US'. No activity line, so it's short. Overrides any pinned line while it's on."
               >
                 <input
                   type="checkbox"
-                  checked={welcomeTimeOnly}
-                  disabled={welcomeSkipTimeBubble}
-                  onChange={(e) => {
-                    setWelcomeTimeOnly(e.target.checked);
-                    setWelcomeMsg(null);
-                  }}
+                  checked={welcomeKnobs.time_only}
+                  disabled={welcomeKnobs.skip_time_bubble}
+                  onChange={(e) => setKnob("time_only", e.target.checked)}
                   className="accent-accent"
                 />
                 Short 2nd bubble (time &amp; place only)
@@ -1424,41 +1488,32 @@ export default function BrainPanel() {
               >
                 <input
                   type="checkbox"
-                  checked={welcomeSkipTimeBubble}
-                  onChange={(e) => {
-                    setWelcomeSkipTimeBubble(e.target.checked);
-                    setWelcomeMsg(null);
-                  }}
+                  checked={welcomeKnobs.skip_time_bubble}
+                  onChange={(e) => setKnob("skip_time_bubble", e.target.checked)}
                   className="accent-accent"
                 />
                 Skip the time bubble
               </label>
               <label
                 className="flex items-center gap-2 pb-1.5 text-sm text-fg"
-                title="Leave real gaps between the welcome bubbles — quiet at first (she hasn't started typing), then the typing bar — instead of firing all of them inside a minute. Several new subscribers are welcomed at the same time so the queue doesn't slow down. The 'send test' button is exempt and still lands instantly."
+                title="Leave real gaps between the welcome bubbles — quiet at first (before typing starts), then the typing bar — instead of firing all of them inside a minute. Several new subscribers are welcomed at the same time so the queue doesn't slow down. The 'send test' button is exempt and still lands instantly."
               >
                 <input
                   type="checkbox"
-                  checked={welcomeHumanPace}
-                  onChange={(e) => {
-                    setWelcomeHumanPace(e.target.checked);
-                    setWelcomeMsg(null);
-                  }}
+                  checked={welcomeKnobs.human_pace}
+                  onChange={(e) => setKnob("human_pace", e.target.checked)}
                   className="accent-accent"
                 />
                 Pace it like a person
               </label>
               <label
                 className="flex items-center gap-2 pb-1.5 text-sm text-fg"
-                title="If he answers while the welcome is still going out, the rest of it is dropped — no question, no GIF on top of his message. She still finishes the line she'd already started typing, and the chat bot picks the conversation up from there a couple of minutes later."
+                title="If he answers while the welcome is still going out, the rest of it is dropped — no question, no GIF on top of his message. The line already being typed still goes out, and the chat bot picks the conversation up from there a couple of minutes later."
               >
                 <input
                   type="checkbox"
-                  checked={welcomeStopOnReply}
-                  onChange={(e) => {
-                    setWelcomeStopOnReply(e.target.checked);
-                    setWelcomeMsg(null);
-                  }}
+                  checked={welcomeKnobs.stop_on_reply}
+                  onChange={(e) => setKnob("stop_on_reply", e.target.checked)}
                   className="accent-accent"
                 />
                 Stop if he replies mid-welcome
@@ -1469,17 +1524,18 @@ export default function BrainPanel() {
               >
                 <input
                   type="checkbox"
-                  checked={welcomeFollowBack}
-                  onChange={(e) => {
-                    setWelcomeFollowBack(e.target.checked);
-                    setWelcomeMsg(null);
-                  }}
+                  checked={welcomeKnobs.follow_back}
+                  onChange={(e) => setKnob("follow_back", e.target.checked)}
                   className="accent-accent"
                 />
                 Follow back after they subscribe
               </label>
             </div>
-            {welcomeFollowBack && (
+            {/* `|| welcomeSpendsNow`: unticking "Follow back" in the form must
+              *  not make a warning about a charge that is STILL HAPPENING
+              *  disappear off the screen. The saved rule keeps spending until
+              *  the save lands. */}
+            {(welcomeKnobs.follow_back || welcomeSpendsNow) && (
               <div className="space-y-1.5">
                 {/* No paragraph restating the checkbox here: the label and its
                   *  hover title already say "followed back in the same tick", "OF
@@ -1496,77 +1552,79 @@ export default function BrainPanel() {
                 >
                   <input
                     type="checkbox"
-                    checked={welcomeFollowBackGate}
-                    onChange={(e) => {
-                      setWelcomeFollowBackGate(e.target.checked);
-                      setWelcomeMsg(null);
-                    }}
+                    checked={welcomeKnobs.follow_back_gate}
+                    onChange={(e) => setKnob("follow_back_gate", e.target.checked)}
                     className="accent-accent"
                   />
                   Skip subscribers who charge to follow
                 </label>
-                {welcomeFollowBackGate ? (
+                {/* THE TENSE IS DECIDED BY THE SAVED RULE, NOT THE FORM. The
+                  *  live-charge warning comes FIRST and outranks the tickbox on
+                  *  screen: an operator who has just ticked the box (or unticked
+                  *  Enabled) has changed nothing yet, and a reassuring paragraph
+                  *  over a rule that is buying subscriptions this minute is the
+                  *  worst thing this panel could say. */}
+                {welcomeSpendsNow ? (
+                  <p className="text-[10px] text-warn">
+                    ⚠️ Costs money, <b>right now</b>. The saved rule is switched
+                    on with the price-check off, so every new subscriber is
+                    followed back with no price read first — and any of them who
+                    is a paid creator <b>charges this account</b> his subscription
+                    price.{" "}
+                    {liveChargeSaveNote}
+                  </p>
+                ) : welcomeKnobs.follow_back_gate ? (
                   <p className="text-[10px] text-fg-dim">
                     A subscriber who charges for his own page is skipped, never
                     followed — the same price-check auto-follow on the Growth tab
                     runs. Costs one extra read per subscriber, and a profile
                     whose price won’t load is skipped too rather than guessed at.
                   </p>
-                ) : welcomeSpendsNow ? (
-                  <p className="text-[10px] text-warn">
-                    ⚠️ Costs money. With the price-check off, a new subscriber
-                    who is themself a paid creator will <b>charge this account</b>
-                    to follow them back. Ticking the box is the default and the
-                    house rule — untick it only to save that one read per
-                    subscriber.
-                  </p>
                 ) : (
-                  // Same fact, honestly tensed. This automation cannot spend as
-                  // it stands — it is switched off, or it is a dry run, and
-                  // `send_welcome` follows nobody on either (`if ctx.follow_back
-                  // and not ctx.dry_run`). Most welcome rules on this box are in
-                  // exactly that state, and asserting a live charge on all of
-                  // them is how a real warning gets read as decoration.
+                  // Same fact, honestly tensed. Nothing is being charged as the
+                  // SAVED rule stands — it does not exist yet, or it is switched
+                  // off, or it is a dry run, or it still price-checks
+                  // (`send_welcome` follows nobody without `ctx.follow_back and
+                  // not ctx.dry_run`). Most welcome rules on this box are in one
+                  // of those states, and asserting a live charge on all of them
+                  // is how a real warning gets read as decoration.
                   <p className="text-[10px] text-fg-dim">
                     ⚠️ <b>Would</b> cost money. With the price-check off, a new
                     subscriber who is themself a paid creator gets followed back
                     with no price read first — and that follow buys his
-                    subscription. Nothing is charged yet —{" "}
-                    {welcomeEnabled
-                      ? "this automation is a dry run, so it follows nobody"
-                      : "this automation is switched off"}
-                    {" "}— but it will be the moment that changes. Ticking the box
-                    is the default and the house rule.
+                    subscription.{" "}
+                    {wouldChargeSaveNote}
+                    {" "}Ticking the box is the default and the house rule.
                   </p>
                 )}
               </div>
             )}
-            {welcomeStopOnReply && (
+            {welcomeKnobs.stop_on_reply && (
               <p className="text-[10px] text-fg-dim">
                 The moment he writes something, the rest of the welcome is
-                cancelled — nothing lands on top of his message. A line she had
-                already started typing still goes out, and when that happens the
+                cancelled — nothing lands on top of his message. A line already
+                being typed still goes out, and when that happens the
                 chat bot is asked to answer him instead, a couple of minutes
                 later. A tip on its own doesn’t stop it; a tip with a note does.
               </p>
             )}
-            {welcomeHumanPace && (
+            {welcomeKnobs.human_pace && (
               <p className="text-[10px] text-fg-dim">
-                The greeting waits while she “picks a picture”, the next line waits
+                The greeting waits while a picture is “picked”, the next line waits
                 again before the typing bar comes on, and the GIF gets its own beat —
                 a welcome lands over a couple of minutes instead of inside one. New
                 subscribers are welcomed several at a time so nobody waits in line,
                 and a test send from this panel stays instant.
               </p>
             )}
-            {welcomeSkipTimeBubble && (
+            {welcomeKnobs.skip_time_bubble && (
               <p className="text-[10px] text-fg-dim">
                 No 2nd bubble at all — the greeting (with its picture), then your
                 question, then the GIF. Pinned lines and the short-bubble option are
                 ignored while this is on, and the AI rewrite is skipped entirely.
               </p>
             )}
-            {welcomeTimeOnly && !welcomeSkipTimeBubble && (
+            {welcomeKnobs.time_only && !welcomeKnobs.skip_time_bubble && (
               <p className="text-[10px] text-fg-dim">
                 Bubble 2 drops the activity — “it’s Thursday afternoon in US”, restyled
                 into the creator’s texting voice. Works on slots with no activity written, and
@@ -1665,7 +1723,7 @@ export default function BrainPanel() {
                   it may be pinned), never off live form state.
 
                   The five clauses it replaces read three LIVE form values
-                  (welcomeTimeOnly / welcomeSkipTimeBubble / welcomeQuestion)
+                  (welcomeKnobs.time_only / welcomeKnobs.skip_time_bubble / welcomeQuestion)
                   against a preview from the last Preview click. Clearing the
                   question box after previewing made the button appear and pin the
                   QUESTION as the slot's activity line — the fan then received it
@@ -1781,7 +1839,7 @@ export default function BrainPanel() {
               *  rendered NOTHING for `welcomes_sent` or `errors` — and because
               *  the executor finalises a paced run `ok` even when every fan in
               *  the batch threw, a tick with 9 errors read here as a bare "ok".
-              *  `_bits.welcomeStatsChunks` is this card's own set. */}
+              *  `lib/runStats.welcomeStatsChunks` is this card's own set. */}
             {welcomeRule?.last_run && (
               <div className="text-[10px] text-fg-dim border-t border-border pt-2">
                 Last run: <span className="text-fg">{welcomeRule.last_run.status}</span>

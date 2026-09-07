@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { runStatsChunks, welcomeStatsChunks } from "./_bits";
+import { runStatsChunks, welcomeStatsChunks } from "./runStats";
 
 /** The rendered line an operator actually reads. */
 function line(stats: Record<string, unknown> | null): string {
@@ -36,7 +36,7 @@ describe("runStatsChunks — dry-run reporting", () => {
 
   it("flags a zero forecast so it cannot be skimmed past", () => {
     // `no_price_skipped` is the marker that says the gate actually ran. Without
-    // it the chunk is withheld on purpose (see _bits.tsx) — so every case that
+    // it the chunk is withheld on purpose (see runStats.tsx) — so every case that
     // asserts a forecast IS rendered has to carry it.
     const chunks = runStatsChunks(gated({ would_follow: [], candidates: 8, examined: 8 }));
     expect(chunks.find((c) => c.text === "0 would notify")?.tone).toBe("warn");
@@ -385,9 +385,9 @@ describe("welcomeStatsChunks — the welcome card's OWN last-run line", () => {
 
 describe("runStatsChunks — a backfill preview that is standing still", () => {
   it("names the pool the dry run is not draining", () => {
-    // A preview never stamps `follow_examined_at`, so it re-reads the same head
-    // of the table every tick and prints the same plan forever. `20 candidates`
-    // on a 3663-fan account looked exactly like a finished 20-fan account.
+    // A dry tick prints the same plan forever (why: `auto_follow._run_follow`),
+    // so `20 candidates` on a 3663-fan account looked exactly like a finished
+    // 20-fan account.
     const chunks = runStatsChunks(gated({
       action: "follow", dry_run: true, candidates: 20, examined: 20,
       eligible: 3663, would_follow: [], already_following: 20,
@@ -417,11 +417,16 @@ describe("runStatsChunks — a backfill preview that is standing still", () => {
     expect(e?.tone).toBeUndefined();
   });
 
-  it("shows it anyway on a STACKED rule, where the two are not comparable", () => {
-    // S-N12. `candidates` is the merged pool across every source; `eligible`
-    // counts the all_stored backfill alone. Comparing them on a stacked rule
-    // compares different populations — and would hide the number on exactly the
-    // rule whose progress is hardest to read.
+  it("still reads an OLD stored row that stacked the two, without comparing them", () => {
+    // S-N12, and read the name literally: this is HISTORY-DEFENCE, not live
+    // behaviour. `auto_follow` now emits `eligible` only when `all_stored` is
+    // the whole rule, so the relay cannot produce this bag any more
+    // (`test_auto_follow.case_eligible_is_not_emitted_for_a_stacked_pool`).
+    // `last_run.stats` is stored JSON though, and a row written before that fix
+    // still carries it. `candidates` there is the merged pool across every
+    // source while `eligible` counts the all_stored backfill alone, so
+    // comparing them compares different populations — and would hide the number
+    // on exactly the rule whose progress is hardest to read.
     const chunks = runStatsChunks(gated({
       // dry, because that is what the "standing still" wording describes — see
       // the live case above for the same bag on a rule that is draining.

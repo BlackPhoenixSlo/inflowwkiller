@@ -190,10 +190,6 @@ def tail_for(msg_at: "Sequence[datetime | None]", n_rows: int,
         # behaviour — never a crash inside the fan loop, where it would cost the
         # account's whole sweep rather than one fan's reply.
         return max_rows, "n"
-    if not truncated and bound == "none":
-        # The walk consumed the whole thread with neither limit firing.
-        bound = "none"
-
     if within < eff_floor:
         return eff_floor, "floor"
     # THE NEVER-ZERO INVARIANT. An anchor exists here by construction (guard 1

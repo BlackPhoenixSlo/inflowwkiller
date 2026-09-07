@@ -12,7 +12,8 @@
 import { useEffect, useState } from "react";
 
 import { Button, Card } from "@/components/ui/primitives";
-import { Field, NumInput, RunStats, errMsg, isDryRun } from "@/components/growth/_bits";
+import { Field, NumInput, errMsg } from "@/components/growth/_bits";
+import { RunStats, isDryRun } from "@/lib/runStats";
 import { usePromotions } from "@/hooks/useGrowth";
 import {
   useAutomationRules, useCreateRule, useUpdateRule, useRunRuleNow,

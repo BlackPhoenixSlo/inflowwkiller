@@ -164,7 +164,7 @@ from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from ._common import (apply_word_restriction, bool_knob, hold_with_typing,
                       load_voice_blocks,
-                      load_hard_skip_ids, load_strip_emojis,
+                      is_hard_skipped, load_hard_skip_ids, load_strip_emojis,
                       load_typing_indicator, load_typing_wpm, name_token,
                       resolve_fan_name, resolve_model, send_dropping_bad_media,
                       skip_unreachable_fan, strip_emojis, typing_delay_seconds)
@@ -387,6 +387,27 @@ _ADJS_HIM = {
 _ADJ_DEFAULT = {"her": "Flirty", "him": "Eager"}
 # What to call a subscriber whose handle yields no usable word at all.
 _NAMELESS_GREET = {"her": "cutie", "him": "boy"}
+
+# `gated_follow`'s outcome vocabulary → this lane's tally field, TOTAL over every
+# label that function can return. Not an if/elif chain with a catch-all: an
+# unrecognised outcome must not be silently booked as one of the named ones (it
+# was booked as `no_price`, which the operator's screen renders as "N follow-back
+# prices unreadable"). A missing key raises KeyError into the follow-back
+# `except`, which counts it as an error — the honest answer for a verdict this
+# lane does not understand.
+#
+# `followed` / `refollowed` are handled separately at the call site because they
+# also stamp the shared ping ledger. `pinged` is reachable only with
+# `unfollow_first=True`, which this lane never passes; it is listed anyway so the
+# table is total against the function's contract rather than against this one
+# caller's use of it.
+_FB_COUNTERS = {
+    "already_following": "follow_back_already",
+    "paid_profile": "follow_back_paid_skipped",
+    "no_price": "follow_back_no_price",
+    "pinged": "follow_back_already",
+}
+
 
 
 def _adjs(voice: str) -> tuple[dict, str]:
@@ -1989,6 +2010,18 @@ async def _welcome_one(ctx: _RunCtx, sub: dict) -> None:
                 fb_outcome = await gated_follow(
                     ctx.client, fan_id, unfollow_first=False,
                     money_gate=ctx.follow_back_gate)
+                # ⚠️ TOTAL BY CONSTRUCTION. This used to be an if/elif chain
+                # ending in a catch-all `else` that booked ANY unrecognised
+                # outcome as `follow_back_no_price` — which the operator's money
+                # screen renders as "N follow-back prices unreadable", a
+                # specific, confident and wrong claim. `gated_follow` returns SIX
+                # labels today (`_classify`'s five plus `pinged`) and this lane
+                # named four of them; a seventh added over there would arrive
+                # here silently and be counted as the wrong thing forever.
+                # `auto_follow`'s own consumer uses a `Counter` and is total for
+                # free. Here, an unknown label raises KeyError into the outer
+                # `except` below, which books it as an error — the honest answer
+                # for an outcome this lane does not understand.
                 if fb_outcome in ("followed", "refollowed"):
                     ctx.tally.followed_back += 1
                     # ONE cooldown ledger across both follow subsystems. This
@@ -2009,12 +2042,9 @@ async def _welcome_one(ctx: _RunCtx, sub: dict) -> None:
                                     "failed account=%s fan=%s — the follow "
                                     "landed; auto_follow may notify him again",
                                     ctx.account_id, fan_id, exc_info=True)
-                elif fb_outcome == "already_following":
-                    ctx.tally.follow_back_already += 1
-                elif fb_outcome == "paid_profile":
-                    ctx.tally.follow_back_paid_skipped += 1
                 else:
-                    ctx.tally.follow_back_no_price += 1
+                    setattr(ctx.tally, _FB_COUNTERS[fb_outcome],
+                            getattr(ctx.tally, _FB_COUNTERS[fb_outcome]) + 1)
             except Exception:
                 ctx.tally.follow_back_errors += 1
                 log.warning("send_welcome follow-back failed account=%s fan=%s "
@@ -2094,7 +2124,11 @@ async def _welcome_one(ctx: _RunCtx, sub: dict) -> None:
                     # muted us) and `test_fan` reaches this path past the run's
                     # own hard-skip filter entirely. Cheap, and it is the one
                     # gate the handoff would otherwise open by accident.
-                    if fan_id in await load_hard_skip_ids(ctx.account_id):
+                    # ONE row, `LIMIT 1` — not the account's whole hard-skip
+                    # set built to test a single membership, inside a paced burst
+                    # with up to six of them in flight. The FRESH read is
+                    # deliberate (see above); the set was not.
+                    if await is_hard_skipped(ctx.account_id, fan_id):
                         ctx.tally.handoff_skipped_restricted += 1
                         log.info("send_welcome skipped the turn handoff for a "
                                  "restricted fan account=%s fan=%s",
@@ -2219,13 +2253,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # priced sub a skip instead of a purchase.
     #
     # ⚠️ `bool_knob`, not `bool(payload.get(k, DEFAULT))`. The two differ on
-    # exactly one stored value and it is the one the API lets through: `null`.
-    # `_validate_payload_for_kind` skips None, so a `null` reaches storage, and
-    # `bool(None)` is False — the rule ran with the knob OFF while BrainPanel's
-    # `!== false` read showed it TICKED, and the catalog declared it True. Three
-    # sides, two answers, on the pair of keys where the wrong answer is either a
-    # silently dead lane or a blind PAID follow. A key that is present-but-null
-    # says nothing, so it means the same as absent.
+    # exactly one stored value: `null`. `_validate_payload_for_kind` used to skip
+    # None, so a `null` reached storage, and `bool(None)` is False — the rule ran
+    # with the knob OFF while BrainPanel's `!== false` read showed it TICKED, and
+    # the catalog declared it True. Three sides, two answers, on the pair of keys
+    # where the wrong answer is either a silently dead lane or a blind PAID
+    # follow. The boundary now POPS a null for a catalogued knob, so no NEW rule
+    # can store one; `bool_knob` here defends rules written before that line, and
+    # stored nulls do not expire. A key that is present-but-null says nothing, so
+    # it means the same as absent.
     follow_back = bool_knob(payload, "follow_back", _FOLLOW_BACK_DEFAULT)
     follow_back_gate = bool_knob(payload, "follow_back_gate", _FOLLOW_BACK_GATE_DEFAULT)
     # Pace the burst like a person, and run several fans' bursts at once.

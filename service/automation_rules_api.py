@@ -581,8 +581,30 @@ def _validate_payload_for_kind(kind: str, payload: Any) -> dict:
     out = dict(payload)
     for key, val in payload.items():
         kn = knobs.get(key)
-        if kn is None or val is None:
-            continue  # unknown/future knob, or an explicit null — leave as-is
+        if kn is None:
+            continue  # unknown/future knob — leave as-is
+        if val is None:
+            # ⚠️ A NULL FOR A CATALOGUED KNOB IS DROPPED AT THE BOUNDARY, not
+            # stored and resolved later.
+            #
+            # `null` used to be waved through here as "an explicit null — leave
+            # as-is", which made it the ONE non-boolean that reached storage for
+            # a `bool` knob, and every reader downstream then had to know that
+            # `null` means "absent" rather than "false". That knowledge landed at
+            # eight Python read sites, at `app/lib/boolKnob.ts`, and at a
+            # source-regex test that has to know every way a module might spell a
+            # payload read — a lint written in `assert`s, whose own docstring
+            # admits "a new spelling is a red here".
+            #
+            # A key that says nothing IS an absent key. Popping it makes that
+            # true in the store instead of true by convention, and covers `int`,
+            # `str` and `ids` at the same time — the same hole existed for all
+            # four, and only the bool one had a defence built for it. `bool_knob`
+            # and `boolKnob` keep their null clause: a rule written before this
+            # line still carries stored nulls, so it is now a defence against
+            # history rather than the contract.
+            out.pop(key, None)
+            continue
         t = kn["type"]
         if t == "int":
             n = _coerce_whole(key, val)

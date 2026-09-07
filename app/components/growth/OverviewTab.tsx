@@ -13,7 +13,7 @@
 
 import Link from "next/link";
 
-import { RunStats, isDryRun } from "@/components/growth/_bits";
+import { RunStats, isDryRun } from "@/lib/runStats";
 import { Badge, Button, Card } from "@/components/ui/primitives";
 import {
   useAutomationRules, type AutomationRule,
