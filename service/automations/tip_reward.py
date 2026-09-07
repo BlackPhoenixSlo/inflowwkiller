@@ -54,6 +54,7 @@ import automation_executor as ax        # _make_client / _parse_iso seams
 from attribution import write_outbound_attribution
 from automation_registry import register
 from automations._common import (
+    message_created_at,
     apply_word_restriction, hold_with_typing, load_operator_stop_ids,
     load_typing_indicator, load_typing_wpm, should_skip_muted_creator,
     typing_delay_seconds,
@@ -271,27 +272,22 @@ async def _image_reply_recent(account_id: str, fan_id: int, cooldown_hours: int)
 def hands_off_words(payload: dict) -> bool:
     """Will an `image_reply` job carrying THIS payload hand the fan's words on?
 
-    `_hand_off_words`'s own guard, named and made public, because a second reader
-    appeared: `webhook_dispatch`'s dedup exit suppresses a duplicate FREEBIE while
-    a job is already pending, and it has to know whether that pending job will
-    speak for the fan or leave him unanswered. Asking the question here means
-    there is one definition of it — the alternative was `webhook_dispatch`
-    re-typing `force` / `dry_run` / `trigger_message_id` and going stale the first
-    time a fourth reason to stay quiet is added.
-
-    Note it reads `dry_run` off the PAYLOAD. `run()` derives its own `dry_run`
-    from exactly that key (`payload.get("dry_run")`), so for any job on the queue
-    the two agree; `_hand_off_words` keeps taking the flag explicitly as well
-    because `_run_image_reply` can be called with one directly."""
+    The PAYLOAD is the truth: `_hand_off_words` and `webhook_dispatch` (which has
+    to know whether a PENDING job will speak for the fan or leave him unanswered)
+    both ask this one question, so `force` / `dry_run` / `trigger_message_id` are
+    spelled once. Skipped for `dry_run` (a preview must send nothing), for `force`
+    (an operator's manual re-send of a freebie is not a fan turn — nobody is
+    waiting on words), and when no inbound message triggered the run."""
     if payload.get("dry_run") or payload.get("force"):
         return False
     return (payload.get("trigger_message_id") is not None
             and payload.get("fan_id") is not None)
 
 
-async def _hand_off_words(account_id: str, payload: dict, *, dry_run: bool) -> None:
+async def _hand_off_words(account_id: str, payload: dict) -> None:
     """The picture is done (however it ended) — now let the chat engine say the
-    words. Called from the image branch's `finally`, so it runs on every exit path.
+    words. Called from the image branch's `finally`, so it runs on every exit
+    the picture can take.
 
     Why here and not in the webhook hook: the hook can't know when the picture
     lands, and the words must follow it, not race it. Whoever finishes with the
@@ -300,26 +296,19 @@ async def _hand_off_words(account_id: str, payload: dict, *, dry_run: bool) -> N
 
     `on_inbound_message` already owns which engine answers him, the operator delay,
     the cooldown deferral, the per-fan dedup and the supervisor wake — a second
-    "which engine owns this fan" is exactly the duplication this collapses.
+    "which engine owns this fan" is exactly the duplication this collapses. The
+    picture payload's `closer` flag becomes the words job's `intent_fan_ids`.
 
-    Skipped for `dry_run` (a preview must send nothing) and for `force` (a manual
-    operator re-send of a freebie is not a fan turn — nobody is waiting on words),
-    and when there is no `trigger_message_id`, which means no inbound message ever
-    triggered this run. That condition is `hands_off_words` above, so the webhook
-    hook can ask it about a PENDING job instead of guessing. Never raises: the
-    freebie already went, and losing the words is not worth failing (and retrying)
-    a job that sent a picture.
-
-    Lazy import: `webhook_dispatch` already lazy-imports this module, so binding it
-    at module scope would close the cycle."""
-    if dry_run or not hands_off_words(payload):
+    Never raises: the freebie already went, and losing the words is not worth
+    failing (and retrying) a job that sent a picture. Lazy import:
+    `webhook_dispatch` already lazy-imports this module."""
+    if not hands_off_words(payload):
         return
     trigger_message_id = payload["trigger_message_id"]
     fan_id = payload["fan_id"]
     try:
         from webhook_dispatch import on_inbound_message  # lazy: cycle
-        extra = ({"intent_fan_ids": [int(fan_id)]}
-                 if payload.get("intent_fan_ids") else None)
+        extra = {"intent_fan_ids": [int(fan_id)]} if payload.get("closer") else None
         await on_inbound_message(str(account_id), int(fan_id),
                                  int(trigger_message_id), extra_payload=extra)
     except Exception:
@@ -495,8 +484,11 @@ async def _finish_image_reply(account_id: str, fan_id: int, base: dict, result,
     # gap all inside it. `pace_target_s` is what we AIMED at. Reported on the
     # automation_runs row so the drawn constants in `pacing.picture_back_target` can
     # eventually be replaced by measured ones (that docstring says how).
+    # Best-effort: a missing row (or no trigger at all, e.g. an operator's manual
+    # re-send) just means the run reports no `landed_after_s` — a measurement is
+    # never worth failing a job that already sent a picture.
     landed_after_s = None
-    trigger_at = await _trigger_created_at(account_id, fan_id,
+    trigger_at = await message_created_at(account_id, fan_id,
                                           payload.get("trigger_message_id"))
     if trigger_at is not None:
         landed_after_s = round(max(0.0, (now - trigger_at).total_seconds()), 1)
@@ -510,24 +502,6 @@ async def _finish_image_reply(account_id: str, fan_id: int, base: dict, result,
             "held_s": round(held_s, 2),
             "pace_target_s": payload.get("pace_target_s"),
             "landed_after_s": landed_after_s}
-
-
-async def _trigger_created_at(account_id: str, fan_id: int,
-                              message_id) -> datetime | None:
-    """When his photo landed — the anchor `landed_after_s` is measured from.
-
-    Best-effort by design: a missing row (or no trigger at all, e.g. an operator's
-    manual re-send) just means the run reports no `landed_after_s`. A measurement
-    is never worth failing a job that already sent a picture."""
-    if message_id is None:
-        return None
-    try:
-        from db.models import Message
-        async with get_session() as s:
-            row = await s.get(Message, (str(account_id), int(fan_id), int(message_id)))
-        return getattr(row, "created_at", None) if row is not None else None
-    except Exception:  # pragma: no cover — a metric must never break a send
-        return None
 
 
 async def _compose_reward_bundle(client, account_id: str, fan_id: int, cfg: dict,
@@ -591,6 +565,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # nothing unseen, a send that raised. A fan whose freebie didn't happen
         # still sent us a photo and is still owed a reply.
         res: dict | None = None
+        teardown = False
         try:
             cfg = await _load_config(account_id)
             if not cfg.get("image_reply_enabled"):
@@ -599,14 +574,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 return res
             res = await _run_image_reply(account_id, payload, cfg, dry_run=dry_run)
             return res
+        except BaseException as exc:
+            # A TEARDOWN — a cancel, a SIGINT, a SystemExit — is not an exit the
+            # picture took: the executor parks the job and re-runs it, and THAT
+            # run's own exit hands the words off after the picture. An ordinary
+            # Exception is an exit (the picture failed) and still hands off.
+            teardown = not isinstance(exc, Exception)
+            raise
         finally:
-            # ONE exception to "every exit hands off": the lease was busy and we
-            # queued ourselves a retry. The picture has not happened YET, and
-            # handing the words off now would put them BEFORE it — the exact
-            # inversion Stage 2 exists to prevent. The retry's own exit hands off,
-            # whichever way it goes (sent, or `lease_busy` and we give up).
-            if (res or {}).get("reason") != "lease_busy_retry":
-                await _hand_off_words(account_id, payload, dry_run=dry_run)
+            # TWO exceptions to "every exit hands off", for the same reason: the
+            # picture has not happened YET, and words now would go BEFORE it —
+            # the inversion Stage 2 exists to prevent. (1) the lease was busy and
+            # we queued ourselves a retry; (2) a teardown, which the executor
+            # re-runs. In both, the later run's own exit hands off.
+            if not teardown and (res or {}).get("reason") != "lease_busy_retry":
+                await _hand_off_words(account_id, payload)
 
     force = bool(payload.get("force"))               # bypass idempotency (manual re-reward)
 

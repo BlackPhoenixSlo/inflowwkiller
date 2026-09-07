@@ -139,8 +139,7 @@ from ._common import (
     ONPLATFORM_GUARDRAIL, STYLE_3LINE, STYLE_BRIEF,
     load_voice_blocks,
     STYLE_MAX_BUBBLES,
-    admit_turn_handoff, worded_inbound_text,             # the welcome turn handoff, §C3
-    welcome_window_after_outbound,
+    TurnHandoff,                                          # the welcome turn handoff, §C3
     apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction, coerce_ids,
     load_consistency_flags,
     hold_with_typing, apply_typo_throttle, is_qualifying_inbound,
@@ -1278,7 +1277,7 @@ class _Cand:
     # DECISIONS THIS SWEEP MADE (`_select_candidates`): what the selection pass
     # CHOSE about this fan on this tick. They do not exist before selection runs,
     # they are meaningless on a fan selection skipped, and the send loop is the
-    # only thing entitled to read them. `bound_to_pic` was a `run()` LOCAL before
+    # only thing entitled to read them. `reply_start` was a `run()` LOCAL before
     # it moved here, which is how a value decided in the first loop leaked into
     # the second one carrying the previous fan's answer — the shape this comment
     # exists to stop happening again with the next field.
@@ -1290,10 +1289,9 @@ class _Cand:
         "her_last_at", "pic_sent", "last_in_desc", "last_in_desc_at",
         "last_out_was_gif", "last_in_text", "first_in_at",
         "msg_ids", "msg_at", "reply_ctx", "in_run", "her_times",
-        "last_in_mid", "out_since_in_all_welcome", "pic_back_at",
-        "last_worded_in",
+        "last_in_mid", "turn", "pic_back_at",
         # ── decisions this sweep made ───────────────────────────────────
-        "bound_to_pic",
+        "reply_start",
     )
 
     def __init__(self, fan_id: int):
@@ -1338,48 +1336,35 @@ class _Cand:
         # OUR OWN describer wrote. A gif he sends is a dead-end reaction, which is the
         # one turn a pause is safe on; it must not read as a question.
         self.last_in_text = ""
-        # HIS newest inbound THAT USED WORDS. Deliberately a second field and not a
-        # narrowing of `last_in_text`, which has five other readers on this lane and
-        # honestly means "his newest inbound text". The handoff needs the other
-        # question — the words `send_welcome._newest_worded_inbound` decided were
-        # talked over — and a caption-less photo or the ledger poll's bare-tip row
-        # lands NEWER than them without being speech. Written under
-        # `_common.inbound_is_words`, on the RAW body, so the definition is the same
-        # one on both engines and the same one the SQL runs. ONE reader:
-        # `admit_turn_handoff`.
-        self.last_worded_in = ""
-        # Since his newest inbound, has EVERY non-broadcast outbound been a
-        # send_welcome bubble? Read by ONE thing: the turn-handoff admission in
-        # run() (plans/welcome-pacing §C3). send_welcome enqueues that job because
-        # one of its bubbles finished landing on top of his reply; by the time it
-        # runs (~3 min later) a human or another automation may have answered him,
-        # and then this is False and the job is a no-op instead of a second voice.
-        # Broadcasts stay transparent here for the same reason they are
-        # transparent to the turn gate: a blast is not an answer.
-        self.out_since_in_all_welcome = False
+        # send_welcome's turn handoff — his newest WORDED inbound and whether
+        # anything but a welcome bubble has answered him since. The whole seam is
+        # `_common.TurnHandoff`; this lane only feeds it rows and asks `admit`.
+        self.turn = TurnHandoff()
         # WHEN the newest TURN-NEUTRAL outbound landed (`TURN_NEUTRAL_KINDS` — a
         # freebie answering his photo, a bundle answering his tip), or None. Set on
         # such a row; cleared by every inbound and by every send that DID answer him
         # (`answers_him`), so it only ever means "the last thing on this thread is a
         # reaction of ours to something he did, and it is still unanswered in words".
-        # ITS ONE CONSUMER is `bound_to_pic` below, decided per fan in `run()`'s
-        # candidate loop and read in its send loop: a reaction this fresh
-        # (inside `_BUBBLE_WINDOW`) means her words are BUBBLE 1 of a reply whose
-        # bubble 0 was the picture, so rhythm's reply-start sampler is skipped and
-        # pacing's measured inter-bubble gap holds instead (plans/image-reply D4).
-        # That is why this is a TIMESTAMP and not a bool: the binding is a question
-        # about how long ago, and the answer decays.
+        # ITS ONE CONSUMER is `reply_start` below, decided per fan in the
+        # selection pass: a reaction this fresh (inside `_BUBBLE_WINDOW`) means
+        # her words are BUBBLE 1 of a reply whose bubble 0 was the picture, so
+        # rhythm's reply-start sampler is skipped and pacing's measured
+        # inter-bubble gap holds instead (plans/image-reply D4). That is why this
+        # is a TIMESTAMP and not a bool: the binding is a question about how long
+        # ago, and the answer decays.
         self.pic_back_at: "datetime | None" = None
-        # …and the DECIDED form of that question, for THIS fan, on THIS sweep:
-        # was the reaction above still inside `_BUBBLE_WINDOW` when the candidate
-        # loop looked? A per-fan fact, so it lives on the candidate and not in
-        # `run()`'s flat local scope — the candidate loop and the send loop are two
-        # sibling `for`s over one 3,400-line function, and a bare local written in
-        # the first is read in the second as whatever the LAST fan left behind.
-        # Every other per-fan value crossing that gap is a slot here or a fan-keyed
-        # dict; this one is no different. Default False so a hand-built `_Cand`
-        # (the tests, the status endpoint) reads the unbound answer.
-        self.bound_to_pic = False
+        # WHO OWNS THIS REPLY'S START — decided for THIS fan on THIS sweep by the
+        # selection pass, read by the send loop:
+        #   "bound"   the picture that already landed was bubble 0; the words are
+        #             bubble 1 (rhythm is skipped, pacing's gap holds, the
+        #             delivery-talk stripper lets "just sent u one" stand)
+        #   "resume"  a rhythm resume job: the stored wake_at WAS the decision
+        #   "rhythm"  rhythm's reply-start sampler owns bubble 0
+        #   "none"    rhythm is off — the flat typing hold, as it always was
+        # A per-fan fact, so it lives on the candidate and not in `run()`'s flat
+        # local scope. Default "none" so a hand-built `_Cand` (the tests, the
+        # status endpoint) reads the unbound answer.
+        self.reply_start = "none"
         # HIS first message on this thread — the warm-up clock. Deliberately not
         # `first_at` (the oldest row of ANY direction): that is our own welcome, and
         # the conversation does not start until he answers it.
@@ -1688,17 +1673,12 @@ async def _gather(account_id: str,
             if created_at is not None:
                 c.in_run.append(created_at)
             c.last_in_text = _strip_html(body)
-            # …and separately, WORDS. ONE call, ONE composite, shared with
-            # `welcome_chatter_for_info._gather` — the raw body for the question
-            # and the rendering of that same body for the string. Neither lane
-            # spells the rule any more, which is what stops them storing
-            # different strings for the same row; see `worded_inbound_text`.
-            worded = worded_inbound_text(body, c.last_in_text)
-            if worded is not None:
-                c.last_worded_in = worded
-            # A new inbound RESTARTS the window the turn-handoff guard measures…
-            c.out_since_in_all_welcome = True
-            # …and ends any reaction that was still the last thing on the thread.
+            # …and the handoff seam: his WORDS (the raw body for the question,
+            # the rendering of that same body for the string — see
+            # `TurnHandoff.on_inbound`), and the window restarts.
+            c.turn.on_inbound(body, c.last_in_text)
+            # A new inbound ends any reaction that was still the last thing on
+            # the thread.
             c.pic_back_at = None
             if c.first_in_at is None and created_at is not None:
                 c.first_in_at = created_at
@@ -1739,19 +1719,12 @@ async def _gather(account_id: str,
             # ACTION, not his words, so he is still owed the reply.
             if answers_him:
                 c.in_run.clear()
-            # …and the same row narrows the "nothing but welcome bubbles since he
-            # spoke" window the turn handoff is guarded on. A blast is not an
-            # answer, and neither is a reaction, so both are transparent here
-            # exactly as they are to the turn gate; a welcome bubble is the ONE
-            # send that leaves the handoff valid, because it is the send that
-            # caused it. (So a freebie landing between the welcome and the handoff
-            # job does not cancel the rescue — she still owes him words.)
-            # Shared with welcome_chatter_for_info: `answers_him` is this lane's
-            # own answer to "did it take the turn", and it is the ONLY thing the
-            # two lanes are allowed to disagree about here.
-            c.out_since_in_all_welcome = welcome_window_after_outbound(
-                c.out_since_in_all_welcome, took_the_turn=answers_him,
-                automation_kind=automation_kind)
+            # …and the same row narrows the handoff window. `answers_him` is
+            # this lane's own answer to "did it take the turn" (a blast is not an
+            # answer here, and neither is a reaction), and it is the ONLY thing
+            # the two lanes are allowed to disagree about — see `TurnHandoff`.
+            c.turn.on_outbound(took_the_turn=answers_him,
+                               automation_kind=automation_kind)
             if turn_neutral:
                 c.pic_back_at = created_at
             elif answers_him:
@@ -5394,7 +5367,7 @@ def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
         # `CONTENT_ASK_RE` matches the bare substring "wanna see", with no reading of
         # who is offering what, so "You wanna see my cock?" already scored as
         # content_ask — a BUYING signal — and this branch would be dead code below it.
-        # Prod receipt (Dana FAN_ID, 2026-08-08 01:45:50): he offered, and the
+        # Prod receipt (Dana 326419277, 2026-08-08 01:45:50): he offered, and the
         # engine answered "u keep askn / dont u / tell me more about that highway life
         # first" with an $8 PPV stapled on. It thought HE was the one asking.
         #
@@ -6311,32 +6284,79 @@ async def _bot_dare_mark(account_id: str, fan_id: int) -> None:
                         {"at": datetime.utcnow().isoformat()})
 
 
-async def _select_candidates(
-    *,
+def _in_active_sale(fid: int, *, open_by_fan: dict, recent_payers: set[int],
+                    ladders: "dict[int, LadderState]") -> bool:
+    """Is this fan mid-sale — an open pending offer, a just-paid hot moment, or an
+    OPEN|HOT ladder? The takeover leg and the ghost gate both ask; the payer
+    floor's `always` set is built from the same answer."""
+    if open_by_fan.get(fid) is not None:
+        return True
+    if fid in recent_payers:
+        return True
+    lad = ladders.get(fid)
+    return lad is not None and lad.status in (upsell.STATUS_OPEN, upsell.STATUS_HOT)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _SelectionInputs:
+    """Everything the selection pass reads, built ONCE in `run()`.
+
+    Thirty things decide whether a fan is answered; that is a real fact about
+    this engine, and this is the one place a reader can see all of them, typed.
+    The three the old `_in_active_sale` closure carried unnamed — `open_by_fan`,
+    `recent_payers`, `ladders` — are fields like the rest."""
     # ── who there is to answer, and what we know about each ─────────────
-    by_fan, fans, rstates, ladders, money_at, seller_fans, mid_funnel_fans,
-    old_fan_ids, blacklist, skip_reasons, turn_handoff_ids, force_ids,
+    by_fan: "dict[int, _Cand]"
+    fans: "dict[int, Fan]"
+    rstates: "dict[int, RhythmState]"      # mutated IN PLACE by the pass
+    ladders: "dict[int, LadderState]"      # mutated IN PLACE by the pass
+    money_at: "dict[int, datetime]"
+    seller_fans: set[int]
+    mid_funnel_fans: set[int]
+    old_fan_ids: set[int]
+    blacklist: set[int]
+    skip_reasons: dict[int, str]
+    turn_handoff_ids: set[int]
+    force_ids: set[int]
+    open_by_fan: "dict[int, ContentOffer]"
+    recent_payers: set[int]
     # ── the account, the clock, and the wire ────────────────────────────
-    account_id: str, client, now, cfg: dict, mode: str, dry_run: bool,
+    account_id: str
+    client: object
+    now: datetime
+    cfg: dict
+    mode: str
+    dry_run: bool
     # ── the gates' switches and thresholds ──────────────────────────────
-    engage_old, gate_cents, ghost_on, ghost_cycle, promo_spam, resume_h,
-    rhythm_on, rhythm_resume, sla_s, stepout, takeover,
-    # ── run()'s own "this fan is mid-sale" closure ──────────────────────
-    _in_active_sale,
-) -> "tuple[list[_Cand], Counter]":
+    engage_old: bool
+    gate_cents: int
+    ghost_on: bool
+    ghost_cycle: "tuple[tuple[float, float], ...] | None"
+    promo_spam: set[int]
+    resume_h: int
+    rhythm_on: bool
+    rhythm_resume: bool
+    sla_s: int
+    stepout: "_stepout.Config"
+    takeover: bool
+
+    def in_active_sale(self, fid: int) -> bool:
+        return _in_active_sale(fid, open_by_fan=self.open_by_fan,
+                               recent_payers=self.recent_payers, ladders=self.ladders)
+
+
+async def _select_candidates(inp: _SelectionInputs) -> "tuple[list[_Cand], Counter]":
     """THE SELECTION PASS: which fans this tick will answer, and why the rest
     were dropped. Returns the admitted candidates and a counter of the skips.
 
     ⚠️ THIS IS A SEPARATE FUNCTION FOR ONE REASON: SCOPE.
 
     It was the first ~170 lines of `run()`, and the send loop that follows ran in
-    the same namespace. That is how `bound_to_pic` — a decision this pass makes,
-    per fan — could be written here as a plain local and read there, by which
-    time it held the LAST fan's answer for every fan after the one that set it.
-    The minimal fix was to move that value onto `_Cand`; the shape that PRODUCED
-    it was the two loops sharing a namespace, and it was untouched. Now they do
-    not — but be precise about how far that goes, because the next author will
-    decide where a new gate's output lives by reading this paragraph:
+    the same namespace. That is how a per-fan decision made here could be written
+    as a plain local and read there, by which time it held the LAST fan's answer
+    for every fan after the one that set it. Be precise about how far the fix
+    goes, because the next author will decide where a new gate's output lives by
+    reading this paragraph:
 
       NO UNKEYED VALUE CAN CROSS. A plain local written in this pass is gone when
       it returns, so nothing can arrive at the send loop holding the LAST fan's
@@ -6348,25 +6368,24 @@ async def _select_candidates(
       and the rhythm-resume branch below nulls `wake_at` / `deferrals` on the
       same `RhythmState` row object the send loop later re-reads (grep `rstates` —
       four reads live past this function: `_replay_draft`, the two rhythm
-      branches, and `_record_turn`). So a NEW value that must survive to the send loop belongs
-      on `_Cand` unless it is ALREADY keyed by fan; anything written into these
-      dicts must be keyed by fan, never a shared slot.
-
-    The parameter list is long, and deliberately not hidden behind a bag object.
-    Thirty things decide whether a fan is answered; that is a real fact about
-    this engine and a signature is very nearly the only place a reader can see it
-    at all. Not quite: parameter #30, `_in_active_sale`, is a CLOSURE, and it
-    carries three more inputs the signature does not name — `open_by_fan`,
-    `recent_payers` and `ladders` (grep `def _in_active_sale`). Those three
-    decide the takeover leg, and a reader who trusts the signature alone will
-    miss them.
-
-    The length is also the pressure: every new gate that needs a thirty-first
-    argument has to be typed out here, which is a question asked at the right
-    moment.
+      branches, and `_record_turn`). So a NEW value that must survive to the send
+      loop belongs on `_Cand` unless it is ALREADY keyed by fan; anything written
+      into these dicts must be keyed by fan, never a shared slot.
 
     Ordering is NOT done here — `run()` sorts, because the sort key is the send
     loop's fairness rule, not a selection criterion."""
+    (by_fan, fans, rstates, ladders, money_at, seller_fans, mid_funnel_fans,
+     old_fan_ids, blacklist, skip_reasons, turn_handoff_ids, force_ids) = (
+        inp.by_fan, inp.fans, inp.rstates, inp.ladders, inp.money_at,
+        inp.seller_fans, inp.mid_funnel_fans, inp.old_fan_ids, inp.blacklist,
+        inp.skip_reasons, inp.turn_handoff_ids, inp.force_ids)
+    account_id, client, now, cfg, mode, dry_run = (
+        inp.account_id, inp.client, inp.now, inp.cfg, inp.mode, inp.dry_run)
+    (engage_old, gate_cents, ghost_on, ghost_cycle, promo_spam, resume_h,
+     rhythm_on, rhythm_resume, sla_s, stepout, takeover) = (
+        inp.engage_old, inp.gate_cents, inp.ghost_on, inp.ghost_cycle,
+        inp.promo_spam, inp.resume_h, inp.rhythm_on, inp.rhythm_resume,
+        inp.sla_s, inp.stepout, inp.takeover)
     candidates: list[_Cand] = []
     # One counter, not fourteen locals. `run()` reads them by name into its stats
     # dict; a `Counter` means a skip reason added below cannot be forgotten at
@@ -6411,14 +6430,12 @@ async def _select_candidates(
         # the row can only ever say what actually happened. (Same principle as
         # `out_since_in_all_welcome`.)
         #
-        # Stored ON THE CANDIDATE, not in a local: this loop and the send loop are
-        # two sibling `for`s in one flat function scope, so a bare local written
-        # here is read down there as the LAST fan's answer — one bound fan sorting
-        # last would make every other fan in the sweep skip the sleep window and
-        # the break roll, and a bound fan sorting first would leave his own picture
-        # stranded behind `rhythm.decide()`.
-        c.bound_to_pic = (c.pic_back_at is not None
-                          and now - c.pic_back_at <= _BUBBLE_WINDOW)
+        # ONE verdict, on the candidate (a bare local written here would be read
+        # in the send loop as the LAST fan's answer). Every site that used to
+        # re-derive "rhythm on, not a resume, not bound" reads the one name.
+        bound = c.pic_back_at is not None and now - c.pic_back_at <= _BUBBLE_WINDOW
+        c.reply_start = ("bound" if bound else "resume" if rhythm_resume
+                         else "rhythm" if rhythm_on else "none")
         if fan_id in blacklist:
             sel["skipped_listed"] += 1
             continue
@@ -6479,22 +6496,21 @@ async def _select_candidates(
                     _rs.wake_at = None
                     if fresh_inbound:
                         _rs.deferrals = 0
-        if c.last_dir != "in":
-            # …unless send_welcome told us its own welcome bubble is WHY we spoke
-            # last (§C3). Three conditions, all required: he is named in the job,
-            # he has actually said something, and every non-broadcast outbound
-            # since he said it was a welcome bubble — so a fan a human or another
-            # automation answered in the meantime is dropped rather than
-            # double-replied. On admission the candidate is REWRITTEN to the truth
-            # the handoff asserts: he spoke last, and these are his words
-            # (`last_in_text`, not `last_body` — `last_body` here is our own
-            # welcome bubble, and every intent detector downstream would be
-            # reading her line as his).
-            if not admit_turn_handoff(c, fan_id=fan_id,
-                                      handoff_ids=turn_handoff_ids):
-                sel["skipped_not_turn"] += 1
-                continue
+        # send_welcome's handoff (§C3): when its own welcome bubble is WHY we
+        # spoke last, the candidate is REWRITTEN to the truth the job asserts —
+        # he spoke last, and these are his WORDS. Asked regardless of
+        # `last_dir`: a newer wordless row (an undescribed photo) already makes
+        # it his turn, but `last_body` is then `''` or our own `[he sent: …]`,
+        # and every intent detector downstream would parse that instead of the
+        # words he was talked over on. A fan a human or another automation
+        # answered in the meantime is not admitted (`TurnHandoff.admit`).
+        his_words = c.turn.admit(fan_id, turn_handoff_ids)
+        if his_words is not None:
+            c.last_dir, c.last_body = "in", his_words
             sel["turn_handoffs"] += 1
+        elif c.last_dir != "in":
+            sel["skipped_not_turn"] += 1
+            continue
         f = fans.get(fan_id)
         if f is not None and f.automation_paused_until and f.automation_paused_until > now:
             sel["skipped_listed"] += 1
@@ -6531,7 +6547,7 @@ async def _select_candidates(
             # (chatters are slow). A fresh message stays human turf for now — UNLESS
             # the seller has already taken this fan over (active sale), in which case
             # holding him for the SLA would stall a live sale mid-flow.
-            if mode == "backup" and sla_s and not (takeover and _in_active_sale(fan_id)):
+            if mode == "backup" and sla_s and not (takeover and inp.in_active_sale(fan_id)):
                 if c.last_in_at is None or c.last_in_at > now - timedelta(seconds=sla_s):
                     sel["skipped_sla_fresh"] += 1
                     continue
@@ -6543,7 +6559,7 @@ async def _select_candidates(
             # feature, and the exemptions inside the gate are what keep it sane.
             if ghost_on and await _ghost_gate(
                     account_id, c, rstates.get(fan_id), ghost_cycle, now,
-                    in_active_sale=_in_active_sale(fan_id),
+                    in_active_sale=inp.in_active_sale(fan_id),
                     paid_at=money_at.get(fan_id)):
                 sel["skipped_ghost"] += 1
                 continue
@@ -6726,26 +6742,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # §4.4b / §7 — the post-buy follow-up RUNG and the free thank-you gift. The free
     # post_buy_bridge bubble and the aftercare warm line fire without these; only the
     # unsolicited priced rung / the free unseen-media gift are gated (consent, §11).
-    # ── The history window (ships ON; see _DEFAULTS). Read ONCE per run, here,
-    # because `cfg` is not loaded where `history_tail` is first read. Turned off
-    # by hand, every one of these is inert and the per-fan site below takes the
-    # `else` branch — the pre-feature prompt, byte for byte.
-    window_on = bool(cfg.get(_history_window.KEY_ENABLED))
-    if window_on:
-        # The payload keeps outranking the tab — today's precedence, unchanged —
-        # but the tab's N now applies when no payload key is set.
-        history_tail = _history_window.clamp_rows(
-            payload.get("history_tail"),
-            _history_window.clamp_rows(cfg.get(_history_window.KEY_ROWS),
-                                       _history_window.DEFAULT_ROWS))
-    # 0 hours = "no ceiling from this knob" (the house convention), i.e. plain N.
-    _window_hours = (max(0, int(cfg.get(_history_window.KEY_HOURS) or 0))
-                     if window_on else 0)
-    window_age = timedelta(hours=_window_hours) if _window_hours > 0 else None
-    window_floor = (max(0, int(cfg.get(_history_window.KEY_FLOOR)
-                               if cfg.get(_history_window.KEY_FLOOR) is not None
-                               else _history_window.DEFAULT_FLOOR))
-                    if window_on else 0)
+    # ── The history window (ships ON; see _DEFAULTS), resolved ONCE per run.
+    # None when switched off by hand: the per-fan site below then takes the
+    # `else` branch — the pre-feature slice at `history_tail`, clamped into
+    # [MIN_ROWS, MAX_ROWS] (a raw-JSON `history_tail` outside that band was never
+    # a valid N; on any catalogued value the prompt is byte-identical).
+    window = _history_window.Window.from_cfg(cfg, payload)
 
     post_buy_rung_on = gate_on and bool(cfg.get("post_buy_rung_enabled"))
     gift_on = gate_on and bool(cfg.get("gift_enabled"))
@@ -6988,13 +6990,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # existing COOLDOWN → COMPANION transition, untouched.
     takeover = gate_on and bool(cfg.get("upsell_takes_over"))
 
-    def _in_active_sale(fid: int) -> bool:
-        if open_by_fan.get(fid) is not None:
-            return True
-        if fid in recent_payers:
-            return True
-        lad = ladders.get(fid)
-        return lad is not None and lad.status in (upsell.STATUS_OPEN, upsell.STATUS_HOT)
+    def _mid_sale(fid: int) -> bool:
+        return _in_active_sale(fid, open_by_fan=open_by_fan,
+                               recent_payers=recent_payers, ladders=ladders)
 
     # ── The PAYER FLOOR, resolved ONCE for the whole sweep (`seller_owned_fans`).
     # Same call `engaged_subset` makes, so the fans this loop keeps and the fans
@@ -7004,7 +7002,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     seller_fans = seller_owned_fans(
         set(by_fan), payers_only=payers_only,
         content_payers=content_payers,
-        always={fid for fid in by_fan if _in_active_sale(fid)} | old_fan_ids)
+        always={fid for fid in by_fan if _mid_sale(fid)} | old_fan_ids)
 
     now = datetime.utcnow()
     run_inline_s = 0.0      # cumulative inline hold this run() (the global-slot budget)
@@ -7012,20 +7010,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     stepout_blocked = 0     # …and the ones the one-hop deferral cap swallowed
 
     # THE SELECTION PASS — see `_select_candidates` for why it is not inline.
-    candidates, sel = await _select_candidates(
+    candidates, sel = await _select_candidates(_SelectionInputs(
         by_fan=by_fan, fans=fans, rstates=rstates, ladders=ladders,
         money_at=money_at, seller_fans=seller_fans,
         mid_funnel_fans=mid_funnel_fans, old_fan_ids=old_fan_ids,
         blacklist=blacklist, skip_reasons=skip_reasons,
         turn_handoff_ids=turn_handoff_ids, force_ids=force_ids,
+        open_by_fan=open_by_fan, recent_payers=recent_payers,
         account_id=account_id, client=client, now=now, cfg=cfg, mode=mode,
         dry_run=dry_run,
         engage_old=engage_old, gate_cents=gate_cents, ghost_on=ghost_on,
         ghost_cycle=ghost_cycle, promo_spam=promo_spam, resume_h=resume_h,
         rhythm_on=rhythm_on, rhythm_resume=rhythm_resume, sla_s=sla_s,
         stepout=stepout, takeover=takeover,
-        _in_active_sale=_in_active_sale,
-    )
+    ))
 
     # Longest-waiting fan first — backup mode is an SLA queue, not a popularity
     # contest (welcome_chatter_for_info sorts by volume; here fairness wins).
@@ -7059,9 +7057,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # stats shape does not change under the operator between runs.
     history_rows_sum = 0     # Σ rows actually handed to the model — divide by
                              # `replies_sent` for the mean transcript length
-    history_n_bound = 0      # …of those replies, N truncated the thread
-    history_t_bound = 0      # …the age cut decided
-    history_floor_bound = 0  # …the age cut would have gone below FLOOR
+    history_bound: "Counter[str]" = Counter()   # which limit decided, per reply
+                                                # (`tail_for`'s labels)
     history_tiny = 0         # …the window collapsed to <= 2 rows. Should be ~0
                              # with a floor; if it is not, the floor is not working.
     skipped_locked = 0
@@ -7439,14 +7436,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # replies, silently, against the account's daily_cost_cap. The in-scene
             # DELAY still has to be sampled after generation (it depends on how long
             # the text takes to type); only the away/asleep verdict moves up here.
-            # `not bound_to_pic`: availability is a question about a reply that has
-            # not started. This one started when the picture landed — asking whether
-            # she is around now would let a break roll or the sleep window strand her
-            # own picture with no words after it. Stated consequence (D4): a picture
-            # sent inside the sleep window is followed by words inside it. The picture
-            # already proved she was awake; the real defect is that the pic lane never
-            # consults rhythm at all — follow-up `image-reply/pic-lane-sleep`.
-            if rhythm_on and not rhythm_resume and not c.bound_to_pic:
+            # Only when rhythm owns the start. On a "bound" turn the reply started
+            # when the picture landed — asking whether she is around now would let
+            # a break roll or the sleep window strand her own picture with no words
+            # after it. Stated consequence (D4): a picture sent inside the sleep
+            # window is followed by words inside it; the real defect is that the
+            # pic lane never consults rhythm — follow-up `image-reply/pic-lane-sleep`.
+            if c.reply_start == "rhythm":
                 rst0 = rstates.get(fan_id)
                 lad0 = ladders.get(fan_id)
                 rnow0 = datetime.utcnow()
@@ -8304,13 +8300,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # readers below MUST agree. Off, this is exactly `history_tail` (the
             # payload value or the shared constant), so both sites behave as they
             # always have.
-            tail, window_bound = (
-                _history_window.tail_for(c.msg_at, len(c.messages), c.last_in_at,
-                                         max_rows=history_tail,
-                                         max_age=window_age,
-                                         floor=window_floor)
-                if window_on else (history_tail, "n"))
-            if window_on:
+            tail, window_bound = (window.tail_for(c) if window
+                                  else (history_tail, "n"))
+            if window:
                 _delivered = min(tail, len(c.messages))
                 history_rows_sum += _delivered
                 if _delivered <= 2:
@@ -8320,16 +8312,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # not, we want to hear it from a counter now, not from a
                     # quality complaint in three weeks.
                     history_tiny += 1
-                if window_bound == "n":
-                    history_n_bound += 1
-                elif window_bound == "t":
-                    history_t_bound += 1
-                elif window_bound == "floor":
-                    history_floor_bound += 1
+                history_bound[window_bound] += 1
                 log.info("ai_chatter history window account=%s fan=%s rows=%d "
-                         "n=%d hours=%d floor=%d bound=%s",
-                         account_id, fan_id, _delivered, history_tail,
-                         _window_hours, window_floor, window_bound)
+                         "n=%d hours=%s floor=%d bound=%s",
+                         account_id, fan_id, _delivered, window.max_rows,
+                         window.max_age, window.floor, window_bound)
 
             bio_was_asked = fan_state(f, _BIO_ASKED_KEY).get("asked") is True
             # Reads the EFFECTIVE window, not the module constant. It used to read
@@ -8938,18 +8925,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # empty shelf is where the model has NO grounded price to quote, so it is
             # where an invented one is most likely and least excusable.
             #
-            # 🚨 `c.bound_to_pic` IS a reason to let it stand. On a bound turn the
-            # picture lane has ALREADY sent him a freebie — the row is on the thread
-            # (`pic_back_at`), the transcript names it ("[you sent him a pic back]",
-            # `_REACTION_TAG`) and the model was told about it on purpose. "just sent
-            # u one 😏" is then TRUE, and `_DELIVERY_TALK_RE` matches it verbatim. Left
-            # out of this conjunction, her one honest sentence is stripped as a
-            # phantom and `if not parts: continue` abandons the turn — the picture
-            # lands with no words after it, which is the exact failure the picture
-            # lane's whole hand-off exists to prevent, reached through another door.
+            # 🚨 A "bound" turn IS a reason to let it stand. The picture lane has
+            # ALREADY sent him a freebie — the row is on the thread (`pic_back_at`),
+            # the transcript names it (`_REACTION_TAG`) and the model was told about
+            # it on purpose. "just sent u one 😏" is then TRUE, and
+            # `_DELIVERY_TALK_RE` matches it verbatim. Left out of this conjunction,
+            # her one honest sentence is stripped as a phantom and `if not parts:
+            # continue` abandons the turn — the picture lands with no words after
+            # it, the exact failure the hand-off exists to prevent.
             if offer_item is None:
                 _phantom = (teaser is None and pending is None
-                            and not c.bound_to_pic)
+                            and c.reply_start != "bound")
 
                 def _bad(p: str) -> bool:
                     if kind == _TURN_LIFE_TIP:
@@ -9023,13 +9009,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # every new fan, so the loudest turn in the product was landing on the
             # sticker's own 2-6s hold, under _FLOOR_S, bypassing the whole opening
             # schedule. Nothing to type on a gif, so the wpm hold is 0.
-            # `not bound_to_pic`: the reply-start latency was spent on the picture.
-            # `first_delay` therefore stays None, which is precisely what tells
-            # `hold_for_bubble` below that rhythm does not own this bubble — and
-            # `pace_idx` tells it the picture already took index 0, so the text's
-            # first bubble is an inter-bubble gap like every other. No `_save_rhythm`
-            # write and no `wake_at` on this path, exactly as on a rhythm-off account.
-            if rhythm_on and not rhythm_resume and not c.bound_to_pic:
+            # On a "bound" turn the reply-start latency was spent on the picture:
+            # `first_delay` stays None, which is what tells `hold_for_bubble` below
+            # that rhythm does not own this bubble, and `pace_idx` tells it the
+            # picture already took index 0. No `_save_rhythm` write and no
+            # `wake_at` on that path, exactly as on a rhythm-off account.
+            if c.reply_start == "rhythm":
                 rnow = datetime.utcnow()
                 # Read the thread's money ONCE. Its twin above does the same, and
                 # the two RhythmCtx builds must agree — three separate lookups
@@ -9172,17 +9157,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # The wake_at WAS the decision. Send now, and clear the hop so the
                 # NEXT reply gets a fresh roll.
                 #
-                # ⚠️ ORDER: this arm is tested BEFORE the bound-to-pic arm below, and
-                # must stay there. A fan can be both — deferred for an older message,
-                # then sent a picture while he waited — and only THIS arm clears
-                # `wake_at`/`deferrals`. Bound first, and the hop would never
-                # discharge: the wake gate at the top of the loop would keep skipping
-                # him, and the one-hop cap would keep swallowing the next verdict.
+                # ⚠️ Tested on the RAW flags, not on `reply_start`, and BEFORE the
+                # bound arm below: a fan can be both — deferred for an older message,
+                # then sent a picture while he waited — and the picture owns the
+                # start (`reply_start == "bound"`) while only THIS arm discharges the
+                # hop. Bound first, and `wake_at` would never clear: the wake gate at
+                # the top of the loop would keep skipping him, and the one-hop cap
+                # would keep swallowing the next verdict.
                 await _save_rhythm(account_id, fan_id, wake_at=None, deferrals=0,
                                    context=rhythm.CONTEXT_ENGAGED)
-            elif rhythm_on and c.bound_to_pic:
-                # Counted HERE, not where `bound_to_pic` is computed: the number has
-                # to mean "a reply actually went out as bubble 1", not "a reaction row
+            elif rhythm_on and c.reply_start == "bound":
+                # Counted HERE, not where `reply_start` is decided: the number has to
+                # mean "a reply actually went out as bubble 1", not "a reaction row
                 # was in the window" — every gate between the two can still drop him,
                 # and a stat that counts intentions cannot be compared to
                 # `rate_pic_turns`. Only under `rhythm_on`: with rhythm off there was
@@ -9281,7 +9267,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # right behind the picture — the machine cadence the plan rejected as
                 # option (a). `first_delay` is None here either way (rhythm was
                 # skipped), so case 1 cannot fire on this path.
-                pace_idx = idx + 1 if c.bound_to_pic else idx
+                pace_idx = idx + (c.reply_start == "bound")
                 pace = pacing.hold_for_bubble(
                     idx=pace_idx, text=part, typing_s=typing_s,
                     rhythm_delay_s=(first_delay if idx == 0 else None),
@@ -9770,9 +9756,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "hook_by_source": dict(hook_by_source),
         # The history window (plans/chat-window). Present at 0 when off.
         "history_rows_sum": history_rows_sum,
-        "history_n_bound": history_n_bound,
-        "history_t_bound": history_t_bound,
-        "history_floor_bound": history_floor_bound,
+        "history_n_bound": history_bound["n"],
+        "history_t_bound": history_bound["t"],
+        "history_floor_bound": history_bound["floor"],
+        # …and the degrade — no usable clock, today's flat slice — under its own
+        # key, so "N was binding" never has to mean "the clock was unreadable".
+        "history_clock_bound": history_bound["clock"],
         "history_tiny": history_tiny,
         # ⚠️ Brings in `deliveries_failed` — a TIP-UNLOCK RETRY that could not
         # deliver (`_resolve_open_offers`), NOT the pack lane's

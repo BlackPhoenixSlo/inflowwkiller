@@ -155,7 +155,7 @@ def name_token(s: str | None, *, last: bool = False) -> str:
     ('John/Orange City,USA/Horny-Fan') keep the first slot ('John'); pass last=True
     for AI/curated nicknames so 'Sexy Sofie' → 'Sofie' (the name, not the adjective).
 
-    This is the canonical parser (lifted from send_welcome._name_token so every
+    This is the canonical parser (lifted from welcome_compose._name_token so every
     sender derives names identically — single source of truth)."""
     if not s:
         return ""

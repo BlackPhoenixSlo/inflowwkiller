@@ -53,7 +53,7 @@ from audiences import (
 from automation_registry import register
 from ._common import bool_knob, load_hard_skip_ids
 from . import mass_nudge   # reuse slot composition + the default pools
-from . import send_welcome  # _model_hour / _model_weekday / _slot_key
+from . import welcome_compose  # _model_hour / _model_weekday / _slot_key
 
 log = logging.getLogger("of-relay.automation.online_blast")
 
@@ -89,9 +89,9 @@ async def _excluded_ids(account_id: str, cfg: dict) -> list[int]:
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     cfg = {"with_image": True, **(payload or {})}
     off = await mass_nudge._utc_offset(account_id)
-    hour = send_welcome._model_hour(off)
-    slot = send_welcome._slot_key(hour)
-    weekday = send_welcome._model_weekday(off)
+    hour = welcome_compose._model_hour(off)
+    slot = welcome_compose._slot_key(hour)
+    weekday = welcome_compose._model_weekday(off)
 
     slots = cfg.get("slots") or mass_nudge._DEFAULT_SLOTS
     pool = mass_nudge._pick(slots, slot, weekday)

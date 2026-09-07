@@ -49,7 +49,7 @@ log = logging.getLogger("of-relay.account_config_api")
 
 router = APIRouter()
 
-# The 6 time-of-day slots, ordered — must match send_welcome._SLOT_KEYS.
+# The 6 time-of-day slots, ordered — must match welcome_compose._SLOT_KEYS.
 TIME_SLOTS: tuple[str, ...] = (
     "morning_1", "morning_2", "afternoon_1", "afternoon_2", "evening", "night",
 )
@@ -318,7 +318,7 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         # sharp end: BrainPanel's `defaultsWithImages` preserves `voice` across a
         # refill but copies the persona and the six time-of-day lines wholesale,
         # so one click turned a male account into a 22-year-old woman with the
-        # right value still in the voice dropdown. ACCOUNT_ID_2 was seeded that way
+        # right value still in the voice dropdown. 2024813 was seeded that way
         # and ran her yoga/beach/cat lines under a red-pill-dom persona.
         "defaults": brains[cfg["voice"]],
         # Both lanes, because "Reset to defaults" must follow the CREATOR DROPDOWN,
@@ -814,7 +814,7 @@ async def audience_admit(body: _AudienceAdmitBody = Body(...)) -> dict[str, Any]
 
 
 # ── 🪄 Enrich: fill the creator canon from what we already know ────────
-# The gaps in a free-text persona are exactly what fans probe. the graded vault's said
+# The gaps in a free-text persona are exactly what fans probe. NovaFree's said
 # "Born and raised in Argentina" with NO city, so a fan asking where she grew up
 # got an improvisation, and a 966-turn thread walked Argentina → Chile → Córdoba
 # before he stopped believing her. This proposes values for the empty slots.

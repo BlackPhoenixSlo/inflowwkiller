@@ -494,7 +494,8 @@ def audit_send_purpose(purpose, *, where: str = "send") -> None:
     msg = (f"send_purpose missing/unknown ({purpose!r}) at {where} — every "
            f"automation-originated fan DM must declare one of "
            f"{AUDIENCE_SEND_PURPOSE_BASES}")
-    if os.environ.get("CHATTERLY_TEST_MODE") == "1":
+    from automations._common import test_mode  # local: _common imports this module lazily
+    if test_mode():
         raise AssertionError(msg)
     log.error("send_purpose_untagged where=%s purpose=%r", where, purpose)
 

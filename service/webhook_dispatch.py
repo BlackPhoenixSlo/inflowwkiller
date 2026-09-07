@@ -57,6 +57,7 @@ from of_shapes import giphy_dm_id, has_video
 # because the two names are two FACTS that happen to coincide — the alias is
 # where "and they must" is written down.
 from automations.pacing import PICBACK_CEIL_S as _PICBACK_DEDUP_WINDOW_S
+from automations._common import message_created_at
 
 log = logging.getLogger("of-relay.webhook_dispatch")
 
@@ -263,17 +264,6 @@ async def _wake_after(delay_s: float) -> None:
 # inline instead would serialise every reaction on the account and burn one of the
 # executor's four GLOBAL run slots for a minute of doing nothing. See
 # plans/image-reply/PLAN.md §D3 and `pacing.picture_back_target`.
-
-async def _message_created_at(account_id: str, fan_id: int,
-                              message_id: int) -> datetime | None:
-    """When HIS message actually landed — the anchor the pause is measured from.
-
-    None when the row is not there (a webhook that outran the persist); the caller
-    then falls back to `now`, which is the same thing to within a second."""
-    async with get_session() as s:
-        row = await s.get(Message, (str(account_id), int(fan_id), int(message_id)))
-    return getattr(row, "created_at", None) if row is not None else None
-
 
 def _deferred_run_at(now: datetime, trigger_at: datetime | None,
                      target_s: float) -> datetime:
@@ -502,11 +492,11 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int, *,
     two jobs racing off one photo, one of them photo-blind. One job now, sighted,
     with the closer's intent riding on it. See plans/image-reply/PLAN.md §D2.
 
-    `not_before` FLOORS the job's `run_at`. Its one caller is the same media lane,
-    for the one exit where a picture is already queued behind us: the words must
-    follow the picture, not race it (`tip_reward._hand_off_words`), and the
-    ordinary `run_at` here is `now + _response_delay`, which defaults to zero.
-    A floor and not a replacement — the operator delay and the cooldown deferral
+    `not_before` FLOORS the job's `run_at` — the media lane passes it for the
+    exit where a picture is already queued behind us — and a pending
+    `image_reply` job for this fan floors it the same way on EVERY call (see the
+    picture floor below): the words must follow the picture, not race it. A
+    floor and not a replacement — the operator delay and the cooldown deferral
     still apply on top, whichever lands later."""
     try:
         if _global_kill_switch():
@@ -556,9 +546,19 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int, *,
             run_at = paused_until + timedelta(seconds=delay)
         else:
             run_at = now + timedelta(seconds=delay)
+        # THE PICTURE FLOOR (plans/image-reply §D2, words after picture): a
+        # picture already queued for this fan — his photo's freebie, drawn 30-90s
+        # out — lands before ANY words do, whether these words answer that photo
+        # (the pic lane's hand-off) or a TEXT he sent while it was pending (the
+        # transcoder's own call). Read here, on every caller, so no exit path can
+        # put words in front of it.
+        pending_pic = await _imminent_pending_job(
+            account_id, "image_reply", fan_id, within_s=_PICBACK_DEDUP_WINDOW_S)
+        if pending_pic is not None and (not_before is None or pending_pic[0] > not_before):
+            not_before = pending_pic[0]
         if not_before is not None and run_at < not_before:
-            # Never EARLIER than the caller's floor; the cooldown deferral above
-            # may already have pushed us past it, in which case it does nothing.
+            # Never EARLIER than the floor; the cooldown deferral above may
+            # already have pushed us past it, in which case it does nothing.
             run_at = not_before
         wait_s = max(0.0, (run_at - now).total_seconds())
 
@@ -719,18 +719,12 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
         were redeployed while waiting on it — is the one outcome worth catching
         that widely; see the handler for why the re-raise makes it safe.
 
-    ⚠️ KNOWN OPEN, and the version of this in `a06eef7`'s commit message cites
-    the WRONG EVIDENCE on both halves — restated here, where the next change to
-    this seam will actually find it. The defect: a photo followed by a TEXT
-    inverts the same words-after-picture invariant by ~45s (the text's own job
-    fires immediately while the photo lane is still holding the words). Still
-    open; nothing in the 2026-09-05→07 range widened it.
-    What that message got wrong: it says `event_transcoder.py` "has zero diff
-    lines" — it changed in that same range (`af1fbea`, +20) and exactly on this
-    words-vs-picture routing seam; and it says HEAD "had no `not_before` at all",
-    when `not_before` was introduced BY `a06eef7` itself (`grep -c not_before`
-    over this file across the range: 0 0 0 5 5). The verdict survives the bad
-    evidence, but a reader who takes it at face value skips the re-check.
+    A photo followed by a TEXT used to invert the same invariant: the text's own
+    words job fired at once while the picture was still queued — a window of
+    seconds before the drawn pause existed, and up to `PICBACK_CEIL_S` once the
+    picture was deferred. `on_inbound_message` now floors every words job on a
+    pending `image_reply` for the fan, so a text in that window lands behind the
+    picture like the photo's own words do.
 
     Gated SEPARATELY from the tip hook: an image reply / closer pivot should fire
     even on a fan no chat sweep would answer. Raises nothing of its own; a
@@ -826,7 +820,7 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
                 # Ours would be due at `now + _response_delay` (0 by default) while
                 # the picture is up to 90s out: the words would go first, ai_chatter
                 # would set its per-fan cooldown, and the freebie would land
-                # WORDLESS — the exact failure `_phantom`/`bound_to_pic` exists to
+                # WORDLESS — the exact failure `_phantom`/`reply_start == "bound"` exists to
                 # prevent — and our earlier job would dedup away the correct,
                 # cooldown-deferred one the pic lane was about to enqueue.
                 #
@@ -849,8 +843,11 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
             now = datetime.utcnow()
             target_s = await _media_reply_pace_target(
                 account_id, fan_id, message_id, seed_prefix="picback")
+            # `message_created_at`: None when the row is not there (a webhook that
+            # outran the persist) — then the target counts from `now`, which is
+            # the same thing to within a second.
             run_at = _deferred_run_at(
-                now, await _message_created_at(account_id, fan_id, message_id),
+                now, await message_created_at(account_id, fan_id, message_id),
                 target_s)
             wait_s = max(0.0, (run_at - now).total_seconds())
             await ax.enqueue_job(
@@ -858,13 +855,10 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
                 payload={"fan_id": int(fan_id), "image_reply": True,
                          "trigger_message_id": int(message_id),
                          "pace_target_s": round(target_s, 2),
-                         # `extra`, not a second copy of its expression: it was
-                         # resolved above precisely so every exit path carries the
-                         # same payload, and this is the exit whose payload
-                         # `tip_reward._hand_off_words` reads back out to rebuild
-                         # it. A key added to `extra` reached three exits and not
-                         # this one.
-                         **(extra or {})},
+                         # The closer's intent, for the words `tip_reward` hands
+                         # off after the picture: one flag, and `_hand_off_words`
+                         # builds the words job's `intent_fan_ids` from it.
+                         "closer": run_closer},
                 run_at=run_at,
             )
             # Wake AT the due time, not now: the 30s fallback tick would otherwise
@@ -916,15 +910,28 @@ async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
         # losing the reply. If a hand-off already happened before the crash, this
         # second call is absorbed by on_inbound_message's own per-fan dedup.
         #
-        # A plain await, even on the teardown path: a cancel that has already been
+        # ⚠️ The picture may ALREADY be queued — a cancel landing inside the
+        # `enqueue_job` await above lands after its row committed, up to 90s out.
+        # A job that will speak for itself (`hands_off_words`) hands off in its
+        # own `finally`, after the picture; handing off here too would put the
+        # words at `now`, in front of it. Same question the dedup exit asks.
+        #
+        # Plain awaits, even on the teardown path: a cancel that has already been
         # DELIVERED (which is what put us in this handler) leaves no pending one
-        # behind, so the enqueue below runs to completion and the durable
-        # `scheduled_jobs` row is written before we hand the teardown back. Only a
-        # second, harder cancel can interrupt it — logged, not shielded, because a
-        # shielded task we then abandon by re-raising is an orphan the loop
-        # complains about and nobody awaits.
+        # behind, so the reads and the enqueue below run to completion and the
+        # durable `scheduled_jobs` row is written before we hand the teardown
+        # back. Only a second, harder cancel can interrupt it — logged, not
+        # shielded, because a shielded task we then abandon by re-raising is an
+        # orphan the loop complains about and nobody awaits.
         try:
-            await on_inbound_message(account_id, fan_id, message_id)
+            pending = await _imminent_pending_job(
+                account_id, "image_reply", fan_id, within_s=_PICBACK_DEDUP_WINDOW_S)
+            from automations.tip_reward import hands_off_words  # lazy: cycle
+            if pending is not None and hands_off_words(pending[1]):
+                log.info("image_dispatch handoff left to the queued picture "
+                         "account=%s fan=%s", account_id, fan_id)
+            else:
+                await on_inbound_message(account_id, fan_id, message_id)
         except Exception:  # pragma: no cover — defensive
             log.warning("image_dispatch handoff failed account=%s fan=%s",
                         account_id, fan_id, exc_info=True)

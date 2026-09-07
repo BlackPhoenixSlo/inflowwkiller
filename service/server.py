@@ -1079,7 +1079,8 @@ async def _start_event_pumps() -> None:
     # round-trips, so skip the whole section. MUST stay AFTER db_init — moving
     # it above would leave the schema uninitialized. (Belt-and-suspenders: the
     # harness also no-ops this function and live_rev.refresh post-import.)
-    if os.environ.get("CHATTERLY_TEST_MODE"):
+    from automations._common import test_mode
+    if test_mode():
         log.info("CHATTERLY_TEST_MODE=1 — skipping pump/supervisor/network spawns")
         return
 

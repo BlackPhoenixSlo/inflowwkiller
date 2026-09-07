@@ -60,7 +60,7 @@ from ._common import bool_knob, load_hard_skip_ids
 from . import _customs
 from db.engine import get_session
 from db.models import AccountAiConfig, NudgeState
-from . import send_welcome  # _model_hour / _model_weekday / _slot_key
+from . import welcome_compose  # _model_hour / _model_weekday / _slot_key
 
 from ._common import load_voice_blocks
 
@@ -217,9 +217,9 @@ async def preview_compose(account_id: str, payload: dict, *, hour: int | None = 
     Returns {text, slot, media, hour, lines}."""
     cfg = {"with_image": True, **(payload or {})}
     off = await _utc_offset(account_id)
-    h = int(hour) % 24 if hour is not None else send_welcome._model_hour(off)
-    slot = send_welcome._slot_key(h)
-    weekday = send_welcome._model_weekday(off)
+    h = int(hour) % 24 if hour is not None else welcome_compose._model_hour(off)
+    slot = welcome_compose._slot_key(h)
+    weekday = welcome_compose._model_weekday(off)
     slots = _slots_for(cfg, (await load_voice_blocks(account_id)).voice)
     pool = _pick(slots, slot, weekday)
     texts = pool.get("text") or []
@@ -239,9 +239,9 @@ async def preview_compose(account_id: str, payload: dict, *, hour: int | None = 
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     cfg = {"with_image": True, **(payload or {})}
     off = await _utc_offset(account_id)
-    hour = send_welcome._model_hour(off)
-    slot = send_welcome._slot_key(hour)
-    weekday = send_welcome._model_weekday(off)
+    hour = welcome_compose._model_hour(off)
+    slot = welcome_compose._slot_key(hour)
+    weekday = welcome_compose._model_weekday(off)
 
     slots = _slots_for(cfg, (await load_voice_blocks(account_id)).voice)
     pool = _pick(slots, slot, weekday)

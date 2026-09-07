@@ -94,8 +94,7 @@ from ._common import (
     load_voice_blocks,
     STYLE_3LINE, STYLE_BRIEF, STYLE_MAX_BUBBLES,
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
-    admit_turn_handoff, worded_inbound_text,             # the welcome turn handoff, §C3
-    welcome_window_after_outbound,
+    MSG_CLIP, TurnHandoff,                                # the welcome turn handoff, §C3
     build_facts_note, build_structured_nickname, build_tip_ask_block, coerce_ids,
     content_payer_fans,
     facts_from_fan, hold_with_typing, apply_typo_throttle, is_content_ask,
@@ -150,7 +149,7 @@ _HISTORY_TAIL = 20               # last N messages handed to the REPLY model. Th
 _EXTRACT_HISTORY_TAIL = 8        # the fact-extract call only needs to see what he
                                  # JUST said to catch a newly-stated fact — a short
                                  # tail keeps this second per-turn call cheap.
-_MSG_CLIP = 400                  # clip each message body
+_MSG_CLIP = MSG_CLIP             # clip each message body (shared with the handoff seam)
 _REPLY_MAX_CHARS = 600           # trim a runaway generation before sending
 # welcome_chatter_for_info is a LIVE chat — the generic 30-min W3 cooldown would make the bot
 # go silent and feel broken. Use a SHORT rest so back-and-forth stays snappy:
@@ -601,7 +600,7 @@ async def _load_mid_funnel_fans(account_id: str) -> set[int]:
 class _Candidate:
     __slots__ = ("fan_id", "fan_msg_n", "last_dir", "last_body", "messages",
                  "last_in_at", "last_out_at", "farewell",
-                 "last_in_body", "last_worded_in", "out_since_in_all_welcome")
+                 "last_in_body", "turn")
 
     def __init__(self, fan_id: int):
         self.fan_id = fan_id
@@ -614,30 +613,15 @@ class _Candidate:
         # `last_body` there is our own welcome bubble and handing it to the model
         # as "what he said" would produce a reply to ourselves.
         self.last_in_body = ""
-        # HIS last message THAT USED WORDS — the same row `_newest_worded_inbound`
-        # picks in SQL, rendered by this lane. Distinct from `last_in_body`, which
-        # is his newest inbound of ANY kind: a caption-less photo or the ledger's
-        # bare-tip row is newer, is not words, and does not stop a welcome burst —
-        # so `last_in_body` routinely holds something he did not say. The ONE
-        # reader is `admit_turn_handoff` (`_common`), which is answering "were the
-        # words we talked over ever answered", and it is the seam that owns the
-        # predicate. Written under `_common.inbound_is_words` on the RAW body, so
-        # this lane's `_history_text` synthesis for a wordless photo cannot make
-        # a silent row look like speech.
-        self.last_worded_in = ""
-        # Since his newest inbound, has EVERY outbound row been a welcome bubble?
-        # The self-verifying half of the turn handoff (plans/welcome-pacing §C3):
-        # send_welcome enqueues the job because one of its own bubbles landed on
-        # top of his reply, and by the time the job runs (~3 min later) a human or
-        # another automation may have answered him. Then this is False and the job
-        # is a no-op instead of a second voice.
-        #
-        # Every non-welcome outbound narrows it, blasts included — this lane's turn
-        # gate is already blast-blind (`last_dir` moves on any outbound), so a
-        # handoff cancelled by a mass send just degrades to today's behaviour: he
-        # waits for his own next message. Errs toward silence, which is the safe
-        # direction for a rescue.
-        self.out_since_in_all_welcome = False
+        # send_welcome's turn handoff — his newest WORDED inbound (distinct from
+        # `last_in_body`, his newest inbound of ANY kind) and whether anything
+        # but a welcome bubble has answered him since. The whole seam is
+        # `_common.TurnHandoff`; this lane only feeds it rows and asks `admit`.
+        # Every non-welcome outbound narrows the window, blasts included — this
+        # lane's turn gate is already blast-blind, so a handoff cancelled by a
+        # mass send just degrades to today's behaviour (he waits for his own
+        # next message). Errs toward silence, the safe direction for a rescue.
+        self.turn = TurnHandoff()
         self.messages: list[tuple[str, str]] = []  # (direction, body) oldest→newest
         # The runaway cutoff decided to end the gather with this fan. The cut is
         # DEFERRED to the send loop (where the lease is held) so his last message
@@ -703,33 +687,19 @@ async def _gather(account_id: str,
         if direction == "in":
             c.last_in_at = created_at
             c.last_in_body = text
-            # …and separately, WORDS. ONE call, ONE composite, shared with
-            # `ai_chatter._gather` — see `worded_inbound_text`.
-            #
-            # ⚠️ `_strip_html(body)`, NOT `text`. `text` is this lane's HISTORY
-            # LINE and carries "[he sent: a selfie in a car]" for any described
-            # row, which is our own synthesis and not him speaking; ai_chatter has
-            # no such suffix, so storing `text` here made the two lanes hold
-            # different strings for the same row — and `admit_turn_handoff` copies
-            # this one into `c.last_body`, the model's "his line". The describe is
-            # not lost: it is already in `c.messages` via `_history_text`.
-            worded = worded_inbound_text(body, _strip_html(body))
-            if worded is not None:
-                c.last_worded_in = worded
-            # A new inbound RESTARTS the window the handoff guard measures.
-            c.out_since_in_all_welcome = True
+            # …and the handoff seam. ⚠️ `_strip_html(body)`, NOT `text`: `text`
+            # is this lane's HISTORY LINE and carries "[he sent: …]" for any
+            # described row — our own synthesis, not him speaking — and the seam
+            # installs this string as the model's "his line". The describe is not
+            # lost: it is in `c.messages` via `_history_text`.
+            c.turn.on_inbound(body, _strip_html(body))
         else:
             c.last_out_at = created_at
-            # A reaction is transparent here for the same reason it is to the gate:
-            # it did not answer him, so it must not cancel the welcome handoff that
-            # still owes him words. Shared with ai_chatter — `answers_him` is this
-            # lane's own answer to "did it take the turn" (blast-blind here, blast-
-            # aware there) and it is the ONLY thing the two are allowed to differ
-            # on; see `_Candidate.out_since_in_all_welcome` for why that is the
-            # right side of the trade on this lane.
-            c.out_since_in_all_welcome = welcome_window_after_outbound(
-                c.out_since_in_all_welcome, took_the_turn=answers_him,
-                automation_kind=automation_kind)
+            # `answers_him` is this lane's own answer to "did it take the turn"
+            # (blast-blind here, blast-aware on ai_chatter) and it is the ONLY
+            # thing the two lanes are allowed to differ on — see `TurnHandoff`.
+            c.turn.on_outbound(took_the_turn=answers_him,
+                               automation_kind=automation_kind)
         # Count only substantive inbound toward the runaway-loop cap: emoji-only
         # reactions are not a real message turn (see is_substantive_msg). gen_info
         # counts the same way, so the staleness baseline stays on one scale.
@@ -1839,24 +1809,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if fan_id in ai_owns and not forced:
             skipped_ai_chatter += 1
             continue
-        # Only answer when the fan spoke last (the "You: " sidebar skip).
-        if c.last_dir != "in":
-            # …unless send_welcome told us its own welcome bubble is WHY we spoke
-            # last (§C3). Three conditions, all required: he is named in the job,
-            # he has actually said something, and every outbound since he said it
-            # was a welcome bubble — so if a human or another automation answered
-            # him in the ~3 minutes between the abort and this run, the job is a
-            # no-op rather than a second voice.
-            #
-            # On admission the candidate is REWRITTEN to the truth the handoff
-            # asserts — he spoke last, and this is what he said. Without the
-            # `last_body` half the prompt below (which reads it gated on
-            # `last_dir`) would be handed our own welcome bubble as his line.
-            if not admit_turn_handoff(c, fan_id=fan_id,
-                                      handoff_ids=turn_handoff_ids):
-                skipped_not_turn += 1
-                continue
+        # send_welcome's handoff (§C3): when its own welcome bubble is WHY we
+        # spoke last, the candidate is REWRITTEN to the truth the job asserts —
+        # he spoke last, and this is what he said. Asked regardless of
+        # `last_dir`: a newer wordless row already makes it his turn, but the
+        # prompt below reads `last_body` as his line and would be handed `''`
+        # or "[he sent: …]" instead of his words (`TurnHandoff.admit`).
+        his_words = c.turn.admit(fan_id, turn_handoff_ids)
+        if his_words is not None:
+            c.last_dir, c.last_body = "in", his_words
             turn_handoffs += 1
+        # Only answer when the fan spoke last (the "You: " sidebar skip).
+        elif c.last_dir != "in":
+            skipped_not_turn += 1
+            continue
         f = fans.get(fan_id)
         if f is not None and f.automation_paused_until and f.automation_paused_until > now:
             skipped_listed += 1

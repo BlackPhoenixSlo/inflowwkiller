@@ -43,7 +43,7 @@ from db.models import (
     AccountAiConfig, Blacklist, Fan, FanLease, Message, NudgeState,
     SkipList, Transaction, WelcomeSent,
 )
-from . import send_welcome  # reuse _slot_key / _resolve_welcome_name / _model_hour
+from . import welcome_compose  # reuse _slot_key / _resolve_welcome_name / _model_hour
 from ._common import bool_knob, load_voice_blocks, substitute_placeholders
 
 log = logging.getLogger("of-relay.automation.nudge_online")
@@ -206,7 +206,7 @@ def _in_quiet_hours(cfg: dict) -> bool:
         return False
     if start == end:
         return False
-    hour = send_welcome._model_hour(cfg.get("utc_offset") or 0)
+    hour = welcome_compose._model_hour(cfg.get("utc_offset") or 0)
     if start < end:
         return start <= hour < end
     return hour >= start or hour < end  # wraps past midnight
@@ -477,7 +477,7 @@ def _slot_media(cfg: dict, pool: dict, hour: int, idx: int) -> list[int]:
     imgs = pool.get("image") or []
     if imgs:
         return [int(imgs[idx % len(imgs)])]
-    one = send_welcome._slot_image_id(cfg, hour)
+    one = welcome_compose._slot_image_id(cfg, hour)
     return [one] if one is not None else []
 
 
@@ -496,14 +496,14 @@ async def _compose_messages(
     `randomize` → pick a RANDOM line + random qa/tease pick (the preview uses this
     so each click shows a different sample); real sends use repeat_mode rotation."""
     off = cfg.get("utc_offset") or 0
-    h = (int(hour) if hour is not None else send_welcome._model_hour(off)) % 24
-    slot = send_welcome._slot_key(h)
-    weekday = send_welcome._model_weekday(off)
+    h = (int(hour) if hour is not None else welcome_compose._model_hour(off)) % 24
+    slot = welcome_compose._slot_key(h)
+    weekday = welcome_compose._model_weekday(off)
 
     if fan_id is not None:
         async with get_session() as s:
             fan = await s.get(Fan, (str(account_id), int(fan_id)))
-        name = await send_welcome._resolve_welcome_name(account_id, int(fan_id), fan_obj or {})
+        name = await welcome_compose._resolve_welcome_name(account_id, int(fan_id), fan_obj or {})
         seed = int(fan_id)
     else:
         fan = _SampleFan()
@@ -566,7 +566,7 @@ async def preview_compose(
                                          hour=hour, randomize=True)
     name = "Jack"
     if fan_id is not None:
-        name = await send_welcome._resolve_welcome_name(
+        name = await welcome_compose._resolve_welcome_name(
             account_id, int(fan_id), {"id": int(fan_id)}) or "(no name)"
     return {"slot": slot, "name": name,
             "messages": [{"kind": m["kind"], "text": m["text"], "media": m["media"]} for m in msgs]}

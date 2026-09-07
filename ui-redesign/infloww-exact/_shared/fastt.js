@@ -106,8 +106,15 @@
 
   // ── account scope ────────────────────────────────────────────
   const LS_KEY = "of_account_id";
+  // Wrapped for the same reason `persistedFlag` wraps its own access: a browser
+  // with site data hard-blocked THROWS on `localStorage`, and this read runs at
+  // IIFE load — so an unwrapped one took the whole file down with it and no
+  // page mounted at all. There, account scope simply stops persisting.
+  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+  const lsDel = (k) => { try { localStorage.removeItem(k); } catch (e) {} };
   const state = {
-    accountId: localStorage.getItem(LS_KEY) || null,
+    accountId: lsGet(LS_KEY) || null,
     accounts: [],            // rows from /admin/accounts
     me: undefined,           // /auth/me result or null
   };
@@ -118,8 +125,8 @@
   }
   function setAccount(id) {
     state.accountId = id ? String(id) : null;
-    if (state.accountId) localStorage.setItem(LS_KEY, state.accountId);
-    else localStorage.removeItem(LS_KEY);
+    if (state.accountId) lsSet(LS_KEY, state.accountId);
+    else lsDel(LS_KEY);
     location.reload(); // simplest correct thing: every page re-scopes on load
   }
 
@@ -405,7 +412,7 @@
     // sane default: first account if none picked or picked one vanished
     if (state.accounts.length && !state.accounts.some((a) => String(a.id) === String(state.accountId))) {
       state.accountId = String(state.accounts[0].id);
-      localStorage.setItem(LS_KEY, state.accountId);
+      lsSet(LS_KEY, state.accountId);
     }
     return state.accounts;
   }
@@ -739,7 +746,16 @@
     const mq = window.matchMedia("(max-width:760px)");
 
     styleOnce("ft-phone-css", `
+      /* OUTSIDE the breakpoint, deliberately. The scrim is appended to <body>
+         on every page at every width, so its display is the only thing keeping
+         it out of the desktop layout — and every other rule in this file is
+         inside the media block below. Unstyled it is a 4x4 UA <button> and, in
+         a <body> that is 'display:flex;justify-content:center', a flex sibling
+         of '.app' — which shrank the shell by 4px on 54 of the 56 pages at
+         1440. Hidden by default; the breakpoint turns it on. */
+      .ft-scrim{display:none}
       @media (max-width:760px){
+        .ft-scrim{display:block}
         body{display:block;min-height:0}
         .app{width:100%;max-width:100%;height:100dvh}
         /* The topbar keeps its 52px and scrolls; wrapping it would eat the
@@ -981,7 +997,7 @@
       } else {
         setNav(false);
         try {
-          if (localStorage.getItem("fastt_rail") === "1") root.classList.add("ft-siderail");
+          if (lsGet("fastt_rail") === "1") root.classList.add("ft-siderail");
         } catch (e) {}
       }
     };

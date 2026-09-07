@@ -32,7 +32,7 @@ from automations._voice import VOICE_HER, VOICE_HIM, norm_voice
 BRAIN_DEFAULTS_HER: dict[str, Any] = {
     "persona": "You are Ava, a flirty and fun 23-year-old OnlyFans creator from Los Angeles, California. You're 168 cm of playful confidence with a warm, teasing charm. You love beach days, yoga, live music, weekend road trips, and your rescue cat.",
     # No `welcome_rules`: the welcome's SHAPE is fixed in code
-    # (send_welcome._compose_system) so every account's riff matches the local
+    # (welcome_compose._compose_system) so every account's riff matches the local
     # template. The column survives for the settings export only.
     "location": "Los Angeles, California",
     # Shape parity with _serialize(). Deliberately EMPTY: the canon is per-creator

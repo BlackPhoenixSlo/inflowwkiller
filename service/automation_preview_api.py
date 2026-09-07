@@ -64,7 +64,7 @@ async def automation_preview(body: _PreviewBody = Body(...)) -> dict[str, Any]:
     run the real AI restyle (`restyle`), which is a cap-governed/audited LLM call."""
     assert_account_owned(body.account_id)
     if body.kind == "send_welcome":
-        from automations.send_welcome import preview_compose
+        from automations.welcome_compose import preview_compose
         try:
             res = await preview_compose(
                 body.account_id, body.payload,
@@ -154,7 +154,7 @@ async def welcome_pin(body: _PinBody = Body(...)) -> dict[str, Any]:
 
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-    from automations.send_welcome import _SLOT_KEYS, _model_weekday
+    from automations.welcome_compose import _SLOT_KEYS, _model_weekday
     from db.engine import get_session
     from db.models import AccountAiConfig
 

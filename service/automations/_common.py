@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
@@ -84,6 +85,18 @@ log = logging.getLogger("of-relay.automation.common")
 # `load_spacing_flags`, `load_consistency_flags`, …) — a dozen sibling loaders no
 # round of this review has read — so it is its own change with its own review,
 # and it is a hand-edited-import hazard rather than an unreachable one.
+
+def test_mode() -> bool:
+    """Are we running under the test harness? THE one parse of
+    `CHATTERLY_TEST_MODE` — every reader goes through here.
+
+    ⚠️ PARSED, not just "is the variable set". `CHATTERLY_TEST_MODE=0` is a thing
+    a person types when they mean "no", and a bare truthiness test on the string
+    makes it mean "yes" — which zeroes typing time in one module while another
+    decides it is production and defaults its knobs ON."""
+    v = (os.environ.get("CHATTERLY_TEST_MODE") or "").strip().lower()
+    return v not in ("", "0", "false", "no", "off")
+
 
 def bool_knob(payload: dict | None, key: str, default: bool) -> bool:
     """A boolean payload knob whose read-default is shared by ABSENT and `null`.
@@ -1068,7 +1081,7 @@ def detect_bot_accusation(text: str | None) -> bool:
 # silence — it was worse. `CONTENT_ASK_RE` matches the bare substring "wanna see", with
 # no reading of WHO offers WHAT, so "You wanna see my cock?" scored as a BUYING signal
 # and the engine answered a man reaching for his phone with a sales pitch. Receipt,
-# Dana fan FAN_ID on 2026-08-08 01:45:50:
+# Dana fan 326419277 on 2026-08-08 01:45:50:
 #     him  "You wanna see my cock?"
 #     her  "u keep askn" / "dont u" / "tell me more about that highway life first"  + $8 PPV
 # She thinks HE is the one asking. He offered three times over three days and was
@@ -1938,7 +1951,7 @@ async def load_typing_wpm(account_id: str) -> float:
     """Per-account typing speed from webhook_config_json.typing_wpm (default 38).
     Read regardless of whether webhook dispatch is enabled — it's a send-pacing
     knob, not a dispatch gate. 0 disables the typing delay."""
-    if os.environ.get("CHATTERLY_TEST_MODE"):
+    if test_mode():
         return 0.0  # no real sleeps in the test harness
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
@@ -1967,7 +1980,7 @@ async def load_typing_indicator(account_id: str) -> bool:
     """Per-account toggle for the live typing indicator (webhook_config_json.
     typing_indicator). Default ON; only an explicit `false` disables it.
     Absent/NULL key → ON. Parse-error → default. Test-mode → False."""
-    if os.environ.get("CHATTERLY_TEST_MODE"):
+    if test_mode():
         return False
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
@@ -2328,6 +2341,24 @@ def substitute_placeholders(text: str, fan, *, name: str | None = None) -> str:
     return re.sub(r"[ \t]{2,}", " ", out).strip()
 
 
+async def message_created_at(account_id: str, fan_id: int,
+                             message_id) -> datetime | None:
+    """When one of HIS messages landed, by its row — the anchor a reaction's
+    pause is measured from (`webhook_dispatch`) and `landed_after_s` is reported
+    against (`tip_reward`). Best-effort, never raises: None for no id, no row (a
+    webhook that outran the persist) or a failed read."""
+    if message_id is None:
+        return None
+    try:
+        async with get_session() as s:
+            row = await s.get(Message, (str(account_id), int(fan_id), int(message_id)))
+        return getattr(row, "created_at", None) if row is not None else None
+    except Exception:
+        log.debug("message_created_at failed account=%s fan=%s msg=%s",
+                  account_id, fan_id, message_id, exc_info=True)
+        return None
+
+
 def coerce_ids(raw: object) -> set[int]:
     """Payload id-list → set[int], dropping (not raising on) non-numeric entries.
 
@@ -2347,179 +2378,122 @@ def coerce_ids(raw: object) -> set[int]:
 
 # ── send_welcome's turn handoff, engine side (plans/welcome-pacing §C3) ──
 #
-# ONE definition of the two rules both chat engines need, because they had two
-# and the two were already drifting apart. The operator never chooses which
-# engine answers a rescued fan — `send_welcome._handoff_engine` does, from
-# account config three files away — so a fan must not get a different answer
-# because of which one happened to own him.
+# `send_welcome` enqueues a forced-turn job (`turn_handoff_ids`) when one of its
+# own bubbles finished landing ON TOP of the fan's reply and moved `last_dir` to
+# "out". Both chat engines gate on "the fan spoke last", so without the job
+# nothing answers him until he double-texts. `TurnHandoff` is the WHOLE engine
+# side of that seam — the state, the two event hooks, and the admission — so a
+# lane participates in exactly one way and the two lanes cannot drift: the
+# operator never chooses which engine answers a rescued fan
+# (`welcome_turn.handoff_engine` does, from account config), so a fan must not
+# get a different answer because of which one happened to own him.
 #
-# Each engine still owns the ONE thing that is genuinely its own: what "took the
+# Each lane still owns the ONE thing that is genuinely its own: what "took the
 # turn" means on its lane. ai_chatter treats a mass blast as transparent (it does
 # not move `last_dir`); welcome_chatter_for_info has no broadcast concept at all
-# and a blast does take the turn there. Passing that answer IN, rather than
-# re-deriving it here, is what keeps the guard consistent with each lane's own
-# turn gate instead of quietly more permissive than it.
+# and a blast does take the turn there. That answer is passed IN to
+# `on_outbound`, never re-derived here.
 
-
-def welcome_window_after_outbound(current: bool, *, took_the_turn: bool,
-                                  automation_kind: str | None) -> bool:
-    """`out_since_in_all_welcome` after one OUTBOUND row.
-
-    The question it answers is "since he last spoke, has anything ANSWERED him
-    other than the welcome bubble that ate his reply?" — which is what makes the
-    handoff job self-verifying: if a human or another automation got there first
-    in the ~3 minutes before the job runs, the job is a no-op instead of a second
-    voice.
-
-    A row that did not take the turn is transparent (a reaction says nothing; on
-    ai_chatter's lane a blast does not answer him either). A row that DID take
-    the turn closes the window unless it is the welcome bubble itself — that is
-    the one send that leaves the handoff valid, because it is the send that
-    caused it."""
-    if not took_the_turn:
-        return current
-    return current and automation_kind == "welcome"
+# How many characters of a message body a lane's history line keeps. Shared so
+# the words the handoff installs as his line are clipped exactly like the line
+# the history renders.
+MSG_CLIP = 400
 
 
 def inbound_is_words(body: str | None) -> bool:
-    """Did this INBOUND row carry WORDS? — `send_welcome._newest_worded_inbound`'s
-    predicate, written once, in Python, for the engines that must agree with it.
+    """Did this INBOUND row carry WORDS? — the Python twin of
+    `worded_inbound_where`, the SQL `welcome_turn.newest_worded_inbound` runs to
+    decide whether to abort a welcome burst and enqueue the handoff job.
 
-    That function is the one that decides to abort a welcome burst and enqueue the
-    handoff job, and it asks TWO things of the raw `Message.body` (`:1088-1091`):
+    Two clauses, both easy to lose. The first is the operator's own rule
+    ("dont stop on single tip only on text"): a caption-less photo is NOT words,
+    so `stop_on_reply` lets the rest of the burst land over it — which means a
+    wordless row can be, and routinely is, NEWER than the words the handoff
+    exists to answer. The second is `transaction_ingest`'s bookkeeping row: a
+    bare tip is written into the thread as an inbound "💸 Sent a $5.00 tip" up to
+    five minutes late, and that string is OURS, not his.
 
-        Message.body != "",
-        Message.body.notlike(f"{TIP_LEDGER_PREFIX}%"),
+    ⚠️ Takes the RAW body, before any lane renders it. The rendering is where
+    the two engines once diverged (`welcome_chatter_for_info` synthesises text
+    for a caption-less photo; ai_chatter does not); only the raw row can be
+    asked "did he say something".
 
-    Both clauses matter and both are easy to lose. The first is the operator's own
-    rule (2026-09-06, *"dont stop on single tip only on text"*): a caption-less
-    photo is NOT words, so `stop_on_reply` deliberately lets the rest of the burst
-    land over it — which means a wordless row can be, and routinely is, NEWER than
-    the words the handoff exists to answer. The second is `transaction_ingest`'s
-    own bookkeeping row: `transaction_ingest` writes a bare tip into the thread as
-    an inbound `"💸 Sent a $5.00 tip"` up to five minutes late, and that string is
-    OURS, not his. Treating it as his line hands every downstream intent detector
-    — content-ask, escalation, decline, haggle — and the prompt's "his line" a
-    piece of our own accounting to answer.
-
-    ⚠️ Takes the RAW body, before any lane renders it. The rendering is exactly
-    where the two engines diverged: `welcome_chatter_for_info` SYNTHESISES text for
-    a caption-less photo (`_history_text` → "[he sent: a selfie in a car]") and
-    ai_chatter does not, so the same fan on the same thread answered this question
-    differently depending on which engine happened to own him. There is nothing
-    lane-specific about "did he say something"; only the raw row can be asked.
-
-    One deliberate narrowing: the SQL's `body != ""` counts a WHITESPACE-ONLY body
-    as words and the `.strip()` here does not. The seam may be narrower and must
-    be — it hands this row's rendering to the model as his line, and a blank fan
-    line is the failure `admit_turn_handoff`'s own docstring names. It may never be
-    WIDER: admitting on a row the burst never aborted for is the whole defect.
-
-    ⚠️ THIS PREDICATE IS ONLY HALF THE SEAM, and the other half is not optional.
-    A body made ONLY of tags — `"<br>"`, `"<p></p>"` — is non-empty, so the SQL
-    counts it as words (it really does abort the burst and enqueue the job) and so
-    does this function: the two AGREE, which is why the never-wider assertion
-    cannot see it. But every lane RENDERS the body before storing it, and a
-    tags-only body renders to `""`, so an unguarded assignment overwrites his real
-    earlier words with nothing and both engines then drop him. Do not call this
-    function directly from a `_gather` — call `worded_inbound_text` below, which
-    is the whole composite.
-
-    🔗 `test_welcome_chatter_for_info.case_words_predicate_matches_the_sql` drives
-    this against the real `_newest_worded_inbound` over a body matrix, and then
-    drives both real `_gather`s over the same matrix so the stored value is pinned
-    too. If the SQL grows a third clause, that case is what goes red."""
+    One deliberate narrowing: the SQL's `body != ""` counts a WHITESPACE-ONLY
+    body as words and the `.strip()` here does not. The Python may be narrower
+    and must be — it hands this row's rendering to the model as his line, and a
+    blank fan line is the failure `TurnHandoff.admit` exists to prevent. It may
+    never be WIDER: admitting on a row the burst never aborted for is the whole
+    defect. `test_welcome_chatter_for_info.case_words_predicate_matches_the_sql`
+    drives both halves over a body matrix; if the SQL grows a third clause, that
+    case is what goes red."""
     b = (body or "").strip()
     # `.lower()` on both sides because SQLite's LIKE is case-insensitive for ASCII
-    # and `str.startswith` is not: the SQL clause excludes "💸 sent a $5.00 tip"
-    # and a case-sensitive compare here called it his words — the one input on
-    # which this copy was WIDER than the original, which is the one direction it
-    # may never be. (`TIP_LEDGER_PREFIX` has no `%` or `_`, so the LIKE pattern
-    # carries no wildcard for this to disagree with either.)
+    # and `str.startswith` is not — the one input on which this copy was WIDER.
+    # (`TIP_LEDGER_PREFIX` has no `%` or `_`, so the LIKE carries no wildcard.)
     return bool(b) and not b.lower().startswith(TIP_LEDGER_PREFIX.lower())
 
 
-def worded_inbound_text(body: str | None,
-                        rendered_body: str | None) -> str | None:
-    """THE WHOLE COMPOSITE both `_gather`s apply to an inbound row: the string to
-    store as `last_worded_in`, or None to leave the previous one standing.
+def worded_inbound_where():
+    """The SQL half of `inbound_is_words`, next to it: the two `Message.body`
+    clauses that pick his newest inbound that USED WORDS."""
+    return (Message.body != "", Message.body.notlike(f"{TIP_LEDGER_PREFIX}%"))
 
-    `inbound_is_words` is only half of it (see its ⚠️). The other half is "and the
-    rendering is not empty", and while that half lived at the two call sites the
-    two lanes wrote it differently — which put DIFFERENT STRINGS on the same row:
 
-        body="<p>is that you babe</p>", image_desc="a selfie of a man in a car"
-          ai_chatter  last_worded_in : 'is that you babe'
-          wcfi        last_worded_in : 'is that you babe [he sent: a selfie …]'
+@dataclass(slots=True)
+class TurnHandoff:
+    """send_welcome's turn handoff, engine side — one object per candidate.
 
-    `admit_turn_handoff` copies this into `c.last_body`, which is what the reply
-    prompt shows the model as HIS LINE and what every intent detector parses — so
-    the same fan on the same thread got a different rescued line depending on
-    which engine `_handoff_engine` happened to pick. The `[he sent: …]` half is
-    OUR SYNTHESIS, not him speaking, and handing it to a detector as his words is
-    the same class of mistake as the tip-ledger row this predicate excludes.
+    `last_worded_in` is HIS newest inbound that used words, rendered and clipped
+    to `MSG_CLIP`. Deliberately not "his newest inbound": a caption-less selfie or
+    the ledger's bare-tip row lands newer than his words without being speech,
+    and a wordless row must never clobber the words the handoff exists to answer.
 
-    ⚠️ `rendered_body` is the rendering of the BODY ALONE — `_strip_html(body)` on
-    both lanes, which is why they can now agree. It is NOT the lane's history
-    line: `welcome_chatter_for_info._history_text` appends the image describe, and
-    `ai_chatter` does not. Passing a history line here re-opens the divergence
-    this function exists to close.
+    `window_open` — since his newest inbound, has EVERY turn-taking outbound been
+    a welcome bubble? It is what makes the job self-verifying: by the time it
+    runs (~3 min after the abort) a human or another automation may have
+    answered him, and then the job is a no-op instead of a second voice.
 
-    🔗 `test_welcome_chatter_for_info.case_words_predicate_matches_the_sql` drives
-    both real `_gather`s over a body matrix — including the words-AND-described
-    row, which is the only shape that can see this."""
-    rendered = (rendered_body or "").strip()
-    if not rendered:
-        # A tags-only body: the SQL and the predicate both call it words, so the
-        # burst really was aborted for it — but storing "" would wipe the words
-        # the handoff exists to answer, and both engines would then drop him.
+    A `_gather` calls `on_inbound` / `on_outbound` on every row; the selection
+    pass calls `admit` for every candidate — REGARDLESS of `last_dir`. A newer
+    wordless row (an undescribed photo) already makes it his turn, and without
+    the rewrite the intent detectors and the prompt's "his line" would parse
+    `''` or our own `[he sent: …]` synthesis instead of the words he was
+    talked over on."""
+    last_worded_in: str = ""
+    window_open: bool = False
+
+    def on_inbound(self, body: str | None, rendered: str | None) -> None:
+        """One INBOUND row. `rendered` is the rendering of the BODY ALONE
+        (`_strip_html(body)` on both lanes) — NOT the lane's history line, which
+        on welcome_chatter_for_info appends the image describe.
+
+        A tags-only body (`"<br>"`) is words to the SQL and to `inbound_is_words`
+        alike, so the burst really was aborted for it — but it renders to `""`,
+        and storing that would wipe the words the handoff exists to answer."""
+        text = (rendered or "").strip()
+        if text and inbound_is_words(body):
+            self.last_worded_in = text[:MSG_CLIP]
+        self.window_open = True
+
+    def on_outbound(self, *, took_the_turn: bool,
+                    automation_kind: str | None) -> None:
+        """One OUTBOUND row. A row that did not take the turn is transparent (a
+        reaction says nothing; on ai_chatter's lane a blast does not answer him
+        either). A row that DID take the turn closes the window unless it is the
+        welcome bubble itself — the one send that leaves the handoff valid,
+        because it is the send that caused it. Once closed it stays closed."""
+        if took_the_turn and automation_kind != "welcome":
+            self.window_open = False
+
+    def admit(self, fan_id: int, handoff_ids: set[int]) -> str | None:
+        """The words to install as his line, or None when the job does not
+        admit him. Three conditions, all required: he is named in the job, he
+        actually SAID something, and every turn-taking outbound since he said
+        it was a welcome bubble. The caller installs
+        `c.last_dir, c.last_body = "in", words` and counts the handoff."""
+        if fan_id in handoff_ids and self.last_worded_in.strip() and self.window_open:
+            return self.last_worded_in
         return None
-    return rendered if inbound_is_words(body) else None
-
-
-def admit_turn_handoff(c, *, fan_id: int, handoff_ids: set[int]) -> bool:
-    """Does send_welcome's handoff job admit this fan past the turn gate — and if
-    so, REWRITE him to the truth it asserts. Returns whether it did.
-
-    Three conditions, all required: he is named in the job, he actually SAID
-    something, and every turn-taking outbound since he said it was a welcome
-    bubble.
-
-    ⚠️ "Said something" is `c.last_worded_in` BEING NON-EMPTY — his newest inbound
-    row that passed `inbound_is_words`, which is `_newest_worded_inbound`'s own
-    two-clause predicate. It is deliberately NOT his newest inbound of any kind.
-    The job was enqueued because his newest WORDED inbound was talked over; every
-    wordless row he sends afterwards (a caption-less selfie, a bare tip the ledger
-    poll writes in five minutes later) is latest-wins on both lanes and would
-    otherwise change this answer — dropping him on ai_chatter, "rescuing" him on
-    welcome_chatter_for_info with the photo tag as his line, or admitting him on
-    both with our own tip bookkeeping as his line.
-
-    It used to be `fan_msg_n > 0`, which is a different question on each lane and
-    the WRONG one on welcome_chatter_for_info, where that counter only moves for
-    `is_substantive_msg` text. So an emoji-only reply — "😍", the single most
-    likely thing a new subscriber types — truncated his burst AND then no-op'd the
-    rescue for it: the two halves of one feature disagreeing about what a reply is,
-    and the fan getting the worst of both. An emoji is words here, as it is there.
-
-    It is also the value the REWRITE needs, which is why one condition does both
-    jobs: downstream reads `last_body` gated on `last_dir`, so a candidate admitted
-    with nothing to say hands the model an empty fan line.
-
-    🔗 Read off the CANDIDATE and not taken as an argument — the same way
-    `out_since_in_all_welcome` is. `last_worded_in` is written by exactly one line
-    in each `_gather`, under this module's own predicate, on the same row it
-    renders; there is no string a lane can pass in, so there is no string a lane
-    can pass in wrong. That was the whole of the defect: two lanes, two names
-    (`last_in_text` / `last_in_body`), two VALUES, behind a helper asserting they
-    were one. `welcome_window_after_outbound` above is the shape — the lane hands
-    over the one thing that is genuinely its own, and the seam owns the rule."""
-    if not (fan_id in handoff_ids and (c.last_worded_in or "").strip()
-            and c.out_since_in_all_welcome):
-        return False
-    c.last_dir = "in"
-    c.last_body = c.last_worded_in
-    return True
 
 
 # ── Word restriction (port of V1 TgAiChattingShare/word_filter.py) ────

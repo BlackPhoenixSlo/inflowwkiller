@@ -595,8 +595,24 @@ def _classify(u: dict, *, unfollow_first: bool) -> str:
     return "followed"
 
 
-async def gated_follow(client, fan_id: int, *, unfollow_first: bool = False,
-                        money_gate: bool = True) -> str:
+def follow_is_free(account_id: str) -> bool:
+    """Is a follow on this account's platform free BY CONSTRUCTION, so the money
+    gate has nothing to read?
+
+    Fansly's follow is `POST /account/{id}/followers` — no price on the fan's
+    profile, no charge; a creator who does not accept a free follow answers 422,
+    which the shim reports as a clean skip. The gate exists for OF's /subscribe,
+    which PAYS when the target is priced. The shim's `get_user` carries no
+    `subscribePrice` at all, so reading one on Fansly skipped EVERY fan as
+    `no_price`: a lane that had been following turned into a permanent no-op
+    the day the gate went on by default. Same platform seam as the client
+    builders (`accounts.get_platform`)."""
+    return ax.account_registry.get_platform(str(account_id)) == "fansly"
+
+
+async def gated_follow(client, fan_id: int, *, account_id: str,
+                       unfollow_first: bool = False,
+                       money_gate: bool = True) -> str:
     """Price-gate + follow one fan; the single decision path shared by the
     follow and ping actions. Returns the `_classify` outcome it carried out.
 
@@ -610,8 +626,12 @@ async def gated_follow(client, fan_id: int, *, unfollow_first: bool = False,
     backfill (peers like littlelexi @ $5 and elfbat @ $15 sit in that 3%).
     Opt-in per rule and never the default — the three rules live in prod today
     all run gated, and adding a knob must not change what they already do.
+
+    On a platform where the follow is free by construction (`follow_is_free`)
+    the gate has no price to read, so the follow is the same blind POST — that
+    is not the money exposure above, because there is no money on that wire.
     """
-    if not money_gate:
+    if not money_gate or follow_is_free(account_id):
         # No read, no verdict — we cannot know if they're already followed, so
         # a repeat "already subscribed" error from OF is the caller's to count.
         # unfollow_first is deliberately ignored: cycling a follow blind would
@@ -665,7 +685,8 @@ async def _follow_batch(
         if sum(counts[o] for o in _NOTIFY_OUTCOMES) >= cap:
             break
         try:
-            outcome = await gated_follow(client, fid, unfollow_first=unfollow_first,
+            outcome = await gated_follow(client, fid, account_id=account_id,
+                                          unfollow_first=unfollow_first,
                                           money_gate=money_gate)
             counts[outcome] += 1
             if outcome in _NOTIFY_OUTCOMES:
@@ -715,10 +736,13 @@ async def _client_or_none(account_id: str):
 
 
 async def _preview_batch(
-    client, pool: list[int], cap: int, *, unfollow_first: bool,
+    client, pool: list[int], cap: int, *, account_id: str, unfollow_first: bool,
 ) -> tuple[Counter, list[int], int]:
     """What `_follow_batch` WOULD do, without doing it. Returns (outcome
     counts, the ids that would actually be notified, errors).
+
+    On a free-follow platform (`follow_is_free`) the live run reads no profile
+    and follows everyone it examines, so the plan says exactly that.
 
     Reads only — one get_user per examined fan, the same call the live run
     makes, then `_classify`. It examines at most `cap` fans rather than the
@@ -731,6 +755,10 @@ async def _preview_batch(
     counts: Counter = Counter()
     would: list[int] = []
     errors = 0
+    if follow_is_free(account_id):
+        would = list(pool[:max(cap, 0)])
+        counts["followed"] = len(would)
+        return counts, would, errors
     for fid in pool[:max(cap, 0)]:
         try:
             u = await asyncio.to_thread(client.get_user, fid)
@@ -983,6 +1011,7 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
                     "unpriced_follows": len(would), "cap": cap,
                     "warning": "money_gate off — paid profiles WILL be charged"}
         counts, would, errors = await _preview_batch(client, pool, cap,
+                                                     account_id=account_id,
                                                      unfollow_first=False)
         return {"action": "follow", "dry_run": True, "source": source,
                 "would_follow": would,
@@ -1041,6 +1070,7 @@ async def _run_ping(account_id: str, payload: dict, *, cap: int, dry_run: bool,
                     "min_days_between_pings": gap_days, "candidates": len(pool),
                     "skipped": "of_unreachable"}
         counts, would, errors = await _preview_batch(client, pool, cap,
+                                                     account_id=account_id,
                                                      unfollow_first=True)
         return {"action": "ping", "dry_run": True, "quiet_days": quiet_days,
                 "min_days_between_pings": gap_days, "would_ping": would,

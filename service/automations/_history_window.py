@@ -25,12 +25,15 @@ window is the same at both.
 They are easy to confuse; they answer different questions.
 
 1. THE DEGRADE GUARD — "we cannot measure recency at all."
-   No age limit configured, no anchor (a `force_ids` turn to a fan who never
-   wrote), or a `msg_at` whose length does not match `messages` (a hand-built
+   No anchor (a `force_ids` turn to a fan who never wrote), or a `msg_at`
+   whose length does not match `messages` (a hand-built
    `_Cand`: `scripts_api`'s simulate preview and the unit tests set `messages`
-   directly and never touch `msg_at`). Returns `(max_rows, "n")` — TODAY'S
-   BEHAVIOUR, a flat N slice. Deliberately NOT the floor: with no usable clock
-   the honest answer is the old behaviour, not six rows of unknown age.
+   directly and never touch `msg_at`). Returns `(max_rows, "clock")` — TODAY'S
+   BEHAVIOUR, a flat N slice, under its own label so the operator's counters
+   can tell "N was binding" from "the clock was unusable". Deliberately NOT the
+   floor: with no usable clock the honest answer is the old behaviour, not six
+   rows of unknown age. (No age limit CONFIGURED is not a degrade: that is plain
+   N by the house convention, labelled "n" or "none" like any other N slice.)
 
 2. THE FLOOR — "the clock worked, and it trimmed too hard."
    T left fewer than FLOOR rows. Returns `(FLOOR, "floor")`. Only reachable on
@@ -45,6 +48,8 @@ The call site carries the same guard again (`if tail > 0 else []`), belt and
 braces, because the cost of getting this wrong is silent and large.
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
@@ -118,18 +123,19 @@ def tail_for(msg_at: "Sequence[datetime | None]", n_rows: int,
     datetimes are naive UTC, like `parse_ts` and `datetime.utcnow()`.
 
     `bound` is one of:
-      "n"     — N truncated the thread (or we degraded to today's slice)
+      "n"     — N truncated the thread
       "t"     — the age cut decided
       "floor" — the age cut would have gone below FLOOR, so FLOOR won
       "none"  — the whole thread fit inside every limit; nothing bound
+      "clock" — no usable clock (GUARD 1): today's flat `max_rows` slice
 
     "n" is reserved for a REAL truncation. A thread that simply runs out at
-    exactly `max_rows` rows was not bound by anything and reports "none" — these
-    labels feed the operator-facing counters, and "N is binding" has to mean
-    there were more rows it could not have.
+    exactly `max_rows` rows was not bound by anything and reports "none", and a
+    degrade reports "clock" — these labels feed the operator-facing counters,
+    and "N is binding" has to mean there were more rows it could not have.
 
     A `None` timestamp DEGRADES to GUARD 1's answer — the flat `max_rows` slice,
-    labelled "n" — and does NOT stop the walk with what it had measured so far.
+    labelled "clock" — and does NOT stop the walk with what it had measured so far.
     That is deliberate and it is worth stating plainly, because it is the one
     outcome here that can be BOTH more rows and staler ones than the age cut would
     have produced: on a 60-row thread whose first 50 rows are three days old, a
@@ -152,10 +158,14 @@ def tail_for(msg_at: "Sequence[datetime | None]", n_rows: int,
     # last-resort guarantee, not a second way to widen the window.
     eff_floor = min(floor, max_rows, n_rows)
 
+    # No age ceiling configured (hours 0 = "no ceiling from this knob"): plain
+    # N, and the label says whether N actually cut anything.
+    if max_age is None:
+        return max_rows, ("n" if n_rows > max_rows else "none")
     # GUARD 1 — no usable clock. Today's behaviour, NOT the floor (see the
     # module docstring). `max_rows` is already >= 1, so this cannot return 0.
-    if max_age is None or anchor is None or len(msg_at) != n_rows:
-        return max_rows, "n"
+    if anchor is None or len(msg_at) != n_rows:
+        return max_rows, "clock"
 
     within = 0
     bound = "none"
@@ -178,7 +188,7 @@ def tail_for(msg_at: "Sequence[datetime | None]", n_rows: int,
                 # stored format changed under us. Either way "six rows of
                 # unknown age" is a worse answer than "what we shipped
                 # yesterday".
-                return max_rows, "n"
+                return max_rows, "clock"
             if t < cutoff:
                 bound = "t"
                 break
@@ -189,10 +199,44 @@ def tail_for(msg_at: "Sequence[datetime | None]", n_rows: int,
         # GUARD 1's answer, for GUARD 1's reason: with no usable clock, today's
         # behaviour — never a crash inside the fan loop, where it would cost the
         # account's whole sweep rather than one fan's reply.
-        return max_rows, "n"
+        return max_rows, "clock"
     if within < eff_floor:
         return eff_floor, "floor"
     # THE NEVER-ZERO INVARIANT. An anchor exists here by construction (guard 1
     # returned otherwise), so his own newest line is a row we can always honestly
     # show. Returning 0 would slice `[-0:]` = the whole thread.
     return max(1, within), bound
+
+
+@dataclass(frozen=True)
+class Window:
+    """The window as configured for one run: N, T and FLOOR, resolved once.
+
+    `from_cfg` is the ONLY reader of the four config keys and of the payload's
+    `history_tail`; `tail_for` is the per-fan call. `run()` holds a `Window` or
+    None (the switch is off) and nothing else about the feature."""
+    max_rows: int
+    max_age: "timedelta | None"     # None ⇒ no ceiling from the hours knob
+    floor: int
+
+    @classmethod
+    def from_cfg(cls, cfg: Mapping, payload: Mapping) -> "Window | None":
+        """None when `KEY_ENABLED` is off. The payload's `history_tail` outranks
+        the tab's N (today's precedence), and the tab's N applies when no payload
+        key is set. 0 hours = "no ceiling from this knob" (the house convention),
+        i.e. plain N."""
+        if not cfg.get(KEY_ENABLED):
+            return None
+        rows = clamp_rows(payload.get("history_tail"),
+                          clamp_rows(cfg.get(KEY_ROWS), DEFAULT_ROWS))
+        hours = max(0, int(cfg.get(KEY_HOURS) or 0))
+        floor = max(0, int(cfg.get(KEY_FLOOR)
+                           if cfg.get(KEY_FLOOR) is not None else DEFAULT_FLOOR))
+        return cls(rows, timedelta(hours=hours) if hours > 0 else None, floor)
+
+    def tail_for(self, c) -> "tuple[int, str]":
+        """`tail_for(...)` over one candidate: `c.msg_at`, `c.messages`, and his
+        newest inbound `c.last_in_at` as the anchor."""
+        return tail_for(c.msg_at, len(c.messages), c.last_in_at,
+                        max_rows=self.max_rows, max_age=self.max_age,
+                        floor=self.floor)
