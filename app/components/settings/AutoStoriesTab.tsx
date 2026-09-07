@@ -32,6 +32,7 @@ import {
   useRunRuleNow,
   type AutomationRule,
 } from "@/hooks/useAutomations";
+import { boolKnob } from "@/lib/boolKnob";
 import { cn } from "@/lib/utils";
 
 type Mode = "clock" | "interval";
@@ -85,8 +86,11 @@ function ruleToForm(rule: AutomationRule): FormState {
     everyHours: t.every_seconds ? Math.max(1, Math.round(t.every_seconds / 3600)) : 6,
     perRun: typeof p.per_run === "number" ? p.per_run : 1,
     hoursToLive: typeof p.hours_to_live === "number" ? p.hours_to_live : 0,
-    // Default ON: only an explicit `false` opts a rule out.
-    removeVaultDupe: p.remove_vault_dupe !== false,
+    // Default ON: only an explicit `false` opts a rule out. Through `boolKnob`,
+    // because `auto_stories` reads the same key through `_common.bool_knob` —
+    // and this pair used to be the one that disagreed (see the ⚠️ beside
+    // `remove_dupe` in auto_stories.py).
+    removeVaultDupe: boolKnob(p.remove_vault_dupe, true),
     maxRuns: typeof t.max_runs === "number" ? t.max_runs : null,
     enabled: rule.is_enabled,
   };

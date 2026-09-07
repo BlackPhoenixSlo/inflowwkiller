@@ -16,6 +16,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
+import { boolKnob } from "@/lib/boolKnob";
 import { cn } from "@/lib/utils";
 import {
   useCreateRule,
@@ -67,7 +68,12 @@ function seedFields(
     delete leftover[kn.key];
     const v = payload[kn.key];
     if (kn.type === "bool") {
-      fields[kn.key] = v === undefined ? Boolean(kn.default ?? false) : Boolean(v);
+      // `boolKnob`, not `v === undefined ? … : Boolean(v)`: a STORED `null`
+      // took the second branch and seeded FALSE, ignoring `kn.default`. Since
+      // `buildFromFields` writes every catalogued bool on every save, one save
+      // from this editor then stamped `follow_back_gate: false` — the money
+      // price-check off — onto a rule nobody meant to change.
+      fields[kn.key] = boolKnob(v, Boolean(kn.default ?? false));
     } else if (kn.type === "ids") {
       fields[kn.key] = Array.isArray(v) ? v.join(", ") : "";
     } else if (kn.type === "json") {

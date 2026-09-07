@@ -60,7 +60,7 @@ from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from ._common import (
-    _sell_customs_from_row, apply_word_restriction, load_strip_emojis,
+    _sell_customs_from_row, apply_word_restriction, bool_knob, load_strip_emojis,
     quarantine_if_undeliverable, resolve_fan_name,
     resolve_model, send_dropping_bad_media, skip_unreachable_fan, strip_emojis,
 )
@@ -661,7 +661,7 @@ async def preview_compose(
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
     dry_run = bool(payload.get("dry_run"))
-    with_image = payload.get("with_image", True)
+    with_image = bool_knob(payload, "with_image", True)
     limit = int(payload.get("limit") or _DEFAULT_FAN_LIMIT)
 
     cfg = await _load_ai_config(account_id)

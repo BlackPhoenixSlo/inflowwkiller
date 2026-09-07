@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
+import { boolKnob } from "@/lib/boolKnob";
 import { cn } from "@/lib/utils";
 import { giphyUrl } from "@/lib/ofMedia";
 import { AccountChips } from "@/components/AccountChips";
@@ -36,6 +37,7 @@ import {
 } from "@/hooks/useAutomations";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { WelcomeGifField } from "@/components/automations/WelcomeGifField";
+import { RunStats } from "@/components/growth/_bits";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
@@ -57,7 +59,7 @@ const WELCOME_DEFAULT_EVERY_S = 300;
 // operator clearing the field saves "" (explicitly off).
 const WELCOME_QUESTION_DEFAULT = "what's yours?";
 
-// The four welcome bubble-shape knobs a brand-NEW rule ships with — ONE object,
+// The six welcome booleans a brand-NEW rule ships with — ONE object,
 // read by both the no-rule seed (what the checkboxes show) and the create payload
 // (what the rule is actually born with). Those were two hand-written lists and
 // they had already drifted: the seed unticked `human_pace` / `stop_on_reply` while
@@ -67,12 +69,42 @@ const WELCOME_QUESTION_DEFAULT = "what's yours?";
 // every rule created from this panel, and only from this panel. Keep them here
 // together and the two sides cannot disagree again.
 //
+// FOUR shape a bubble (time_only, skip_time_bubble) or the burst (human_pace,
+// stop_on_reply); TWO — follow_back, follow_back_gate — shape no bubble at all
+// and drive a side-effecting, MONEY-SPENDING lane. Do not read this list as
+// "bubble knobs".
+//
 // ⚠️ These must stay in step with `automation_rules_api`'s send_welcome catalog
-// defaults and `send_welcome._on_unless_off`. `time_only` is on by default (the
-// short clock line); `skip_time_bubble` is off (a rule may not acquire it by
-// being saved).
+// defaults, and with what the SENDER reads. There is no single correspondence to
+// name any more: `human_pace` / `stop_on_reply` go through
+// `send_welcome._on_unless_off`, and the other four through `_common.bool_knob`
+// with their own defaults. `case_every_catalogued_bool_honours_its_default`
+// (test_automation_rules_api) is what actually holds the two sides together.
+//
+// ⚠️ `time_only: true` here is a CREATION default, not a read default: the
+// sender reads an absent `time_only` as OFF on purpose, so a legacy rule cannot
+// acquire the clock-only bubble by being re-saved. See the TODO at
+// `send_welcome.run`'s `time_only` read (C-N7) before touching either side.
+// `skip_time_bubble` is off on both sides, for the same reason.
 // (No `as const`: these seed `useState`, so literal types would pin each hook to
 // the one value it starts at and reject the operator ever changing the box.)
+// ⚠️ These are the SECOND ARGUMENT to `boolKnob` at every read site, and that
+// is the whole polarity decision. Each of these knobs used to be read with a
+// hand-written comparison — `!== false` for the on-by-default five, `=== true`
+// for `skip_time_bubble` — which had to be re-derived, correctly, at every new
+// knob. `boolKnob(v, WELCOME_DEFAULTS.k)` asks the question once: a value that
+// SAYS nothing (absent, or a stored `null`) means what this table says, and only
+// an explicit `false` turns a knob off. `null` is not hypothetical —
+// `_validate_payload_for_kind` skips None rather than rejecting it, so it is the
+// one non-boolean that reaches storage, and on `follow_back_gate` the two
+// possible answers are "we price-check every new subscriber" and "we buy a
+// subscription to every priced creator who subscribes".
+//
+// It is called DIRECTLY here. There used to be a one-line `welcomeBool(v, d)`
+// wrapper in this file that did nothing but forward to it — the private alias
+// beside a shared name, which is the shape the relay half spent a pass deleting
+// (`send_welcome._bool_knob`), and this same file already called `boolKnob`
+// directly in two other places.
 const WELCOME_DEFAULTS = {
   time_only: true,
   skip_time_bubble: false,
@@ -332,30 +364,33 @@ export default function BrainPanel() {
   // with_image — so it saves with the Welcome section's own button.
   const [welcomeTimeOnly, setWelcomeTimeOnly] = useState(WELCOME_DEFAULTS.time_only);
   // Drop bubble 2 altogether — greeting(+image) → question → GIF. Lives on the
-  // rule's payload.skip_time_bubble. Read `=== true` and defaulted OFF on BOTH
-  // sides, so a rule saved before this knob existed cannot acquire the behaviour
-  // by being re-saved (unlike time_only's `!== false`, which is why that one is
-  // always written).
+  // rule's payload.skip_time_bubble, defaulted OFF on BOTH sides, so a rule saved
+  // before this knob existed cannot acquire the behaviour by being re-saved.
+  //
+  // ⚠️ No polarity here, and none in the three knobs below: every one of them is
+  // read by `boolKnob(v, WELCOME_DEFAULTS[k])`. Writing `=== true` / `!== false`
+  // into a new knob's comment is how the next one gets it hand-derived again —
+  // and `null` (which the API stores) answers differently to both spellings.
   const [welcomeSkipTimeBubble, setWelcomeSkipTimeBubble] = useState(
     WELCOME_DEFAULTS.skip_time_bubble,
   );
   // Pace the burst like a person (quiet gaps before the bubbles) and welcome
   // several fans at once. Lives on the rule's payload.human_pace. ⚠️ ON BY
-  // DEFAULT (operator, 2026-09-06): read `!== false`, matching the catalog default
-  // and the sender's `is not False`, so an existing rule that has never been
-  // re-saved is paced and the checkbox agrees with what actually ships. Turning it
-  // off writes an explicit `false` — which is why the key is ALWAYS written.
+  // DEFAULT (operator, 2026-09-06), matching the catalog and the sender's
+  // `_on_unless_off`, so an existing rule that has never been re-saved is paced
+  // and the checkbox agrees with what actually ships. Turning it off writes an
+  // explicit `false` — which is why the key is ALWAYS written.
   const [welcomeHumanPace, setWelcomeHumanPace] = useState(WELCOME_DEFAULTS.human_pace);
   // Stop the welcome the moment he replies (she finishes the bubble she's
   // typing, and the chat engine picks the turn up). Lives on the rule's
-  // payload.stop_on_reply; same ⚠️ ON-BY-DEFAULT `!== false` reading as
-  // human_pace above. Independent of pacing — it works on an unpaced burst too.
+  // payload.stop_on_reply; same ⚠️ ON-BY-DEFAULT reading as human_pace above.
+  // Independent of pacing — it works on an unpaced burst too.
   const [welcomeStopOnReply, setWelcomeStopOnReply] = useState(
     WELCOME_DEFAULTS.stop_on_reply,
   );
   // Follow the new subscriber back in the same tick as his welcome, so OF fires
   // a "started following you" push alongside the DM. Lives on payload.follow_back;
-  // same ⚠️ ON-BY-DEFAULT `!== false` reading as the two above.
+  // ⚠️ ON BY DEFAULT, like the two above.
   const [welcomeFollowBack, setWelcomeFollowBack] = useState(
     WELCOME_DEFAULTS.follow_back,
   );
@@ -417,14 +452,18 @@ export default function BrainPanel() {
       setWelcomeMinutes(
         Math.max(1, Math.round((welcomeRule.every_seconds ?? WELCOME_DEFAULT_EVERY_S) / 60)),
       );
-      setWelcomeTimeOnly(welcomeRule.payload?.time_only !== false);
-      setWelcomeSkipTimeBubble(welcomeRule.payload?.skip_time_bubble === true);
-      setWelcomeHumanPace(welcomeRule.payload?.human_pace !== false);
-      setWelcomeStopOnReply(welcomeRule.payload?.stop_on_reply !== false);
-      setWelcomeFollowBack(welcomeRule.payload?.follow_back !== false);
-      setWelcomeFollowBackGate(welcomeRule.payload?.follow_back_gate !== false);
+      // One reader, one defaults object — see WELCOME_DEFAULTS. The polarity is no
+      // longer a per-knob decision, and a stored `null` can no longer make a
+      // checkbox disagree with the sender.
+      const wp = welcomeRule.payload ?? {};
+      setWelcomeTimeOnly(boolKnob(wp.time_only, WELCOME_DEFAULTS.time_only));
+      setWelcomeSkipTimeBubble(boolKnob(wp.skip_time_bubble, WELCOME_DEFAULTS.skip_time_bubble));
+      setWelcomeHumanPace(boolKnob(wp.human_pace, WELCOME_DEFAULTS.human_pace));
+      setWelcomeStopOnReply(boolKnob(wp.stop_on_reply, WELCOME_DEFAULTS.stop_on_reply));
+      setWelcomeFollowBack(boolKnob(wp.follow_back, WELCOME_DEFAULTS.follow_back));
+      setWelcomeFollowBackGate(boolKnob(wp.follow_back_gate, WELCOME_DEFAULTS.follow_back_gate));
       // Absent key (rule saved before the knob existed) → show the default, so
-      // the next save stamps it — same migration path as time_only's `!== false`.
+      // the next save stamps it — the same migration path time_only takes.
       // An explicit "" is the operator's own clear and stays cleared.
       const q = welcomeRule.payload?.question;
       setWelcomeQuestion(typeof q === "string" ? q : WELCOME_QUESTION_DEFAULT);
@@ -462,7 +501,9 @@ export default function BrainPanel() {
       setFollowupMinutes(
         Math.max(1, Math.round((followupRule.every_seconds ?? FOLLOWUP_DEFAULT_EVERY_S) / 60)),
       );
-      setFollowupWithImage(followupRule.payload?.with_image !== false);
+      // A catalogued bool (default True) — read through the one reader, so a
+      // stored `null` cannot make this box disagree with send_followup.
+      setFollowupWithImage(boolKnob(followupRule.payload?.with_image, true));
     } else {
       setFollowupEnabled(false);
       setFollowupMinutes(FOLLOWUP_DEFAULT_EVERY_S / 60);
@@ -600,6 +641,22 @@ export default function BrainPanel() {
   // rule's existing one so saving from here can't drop a knob set over there.
   async function saveWelcome() {
     if (!accountId) return;
+    // ⚠️ MONEY, and the only spend this panel can arm. Following back a new
+    // subscriber who is themself a PRICED creator buys their subscription, and
+    // with the price-check unticked nothing reads the price first — so the
+    // charge is unbounded and invisible until the statement. The sibling surface
+    // already gates its one spending action behind a native confirm
+    // (`AutoFollowTab.runNow`); this is the same gate for the same reason.
+    //
+    // Since the gate went ON by default (2026-09-07) this can only fire on an
+    // operator who deliberately unticked it, so it is a confirmation of an
+    // intent, not a nag: nobody reaches it by accident, and nobody who has not
+    // touched that box ever sees it.
+    if (welcomeFollowBack && !welcomeFollowBackGate && !window.confirm(
+      "The price-check is OFF for follow-backs. Every new subscriber will be "
+      + "followed back WITHOUT reading their price first, so any of them who is "
+      + "a paid creator CHARGES THIS ACCOUNT their subscription price. Save anyway?",
+    )) return;
     setWelcomeMsg(null);
     const every_seconds = Math.max(60, Math.round(welcomeMinutes * 60));
     try {
@@ -631,8 +688,9 @@ export default function BrainPanel() {
           name: "Welcome new subscribers",
           every_seconds,
           is_enabled: welcomeEnabled,
-          // The four shape knobs come from form state, and with no rule that
-          // state was seeded from WELCOME_DEFAULTS above — so an operator who
+          // All SIX welcome booleans come from form state — the four that shape
+          // the bubble and the two that spend money — and with no rule that
+          // state was seeded from WELCOME_DEFAULTS above, so an operator who
           // saves without touching a box creates the rule those defaults
           // describe, and one who does touch a box creates what he can see.
           // That chain is the whole fix: there is no second hand-written list
@@ -732,13 +790,25 @@ export default function BrainPanel() {
         restyle: previewRestyle,
         config: draftCfg,
         ignore_pin: ignorePin, // Regenerate bypasses the pin to sample a fresh one
-        // THE RULE PAYLOAD, exactly as `saveWelcome` would write it. Every knob
-        // here is form state until Save, so the preview has to carry it or
+        // THE BUBBLE-SHAPE KNOBS, exactly as `saveWelcome` would write them.
+        // Each is form state until Save, so the preview has to carry it or
         // ticking a box and hitting Preview shows the burst the OLD rule sends.
-        // Sent as ONE object, not a field per knob: the server reads it with the
-        // sender's own expressions, so a knob added to the rule reaches the
-        // preview without anyone having to remember five separate hops — one of
-        // which silently drops whatever it was not told about.
+        // Sent as ONE object rather than a field per knob, so the server reads
+        // them with the sender's own expressions.
+        //
+        // ⚠️ NOT "every knob saveWelcome writes" — it writes eight and this sends
+        // four, and the four it leaves out are left out ON PURPOSE. A preview
+        // renders WHAT THE BUBBLES SAY; `human_pace` and `stop_on_reply` decide
+        // WHEN and WHETHER they are sent, and `follow_back` / `follow_back_gate`
+        // are a separate lane that touches no bubble at all — none of them can
+        // change a single character of the output, and `follow_back` sending
+        // anything from a preview would be a real follow fired by a button
+        // labelled "Preview".
+        //
+        // So the rule for anything added later is: a knob that changes the TEXT
+        // or the ORDER of the bubbles belongs here; a knob that changes delivery
+        // or fires a side-effect does not. Getting that wrong in the first
+        // direction is a preview that lies; in the second, a preview that acts.
         payload: {
           time_only: welcomeTimeOnly,
           skip_time_bubble: welcomeSkipTimeBubble,
@@ -788,6 +858,19 @@ export default function BrainPanel() {
   }
 
   const welcomeSaving = createWelcomeRule.isPending || updateWelcomeRule.isPending;
+
+  // Is the SAVED welcome rule in a state where a follow-back actually happens?
+  // Two things stop it, and the ⚠️ money warning below used to ignore both: a
+  // disabled rule never ticks, and `send_welcome` follows nobody on a dry run
+  // (`if ctx.follow_back and not ctx.dry_run`). Nine of ten welcome rules on this
+  // box are disabled, so a warning that asserts an active charge on every one of
+  // them teaches the operator to skim past the one that is real.
+  //
+  // `welcomeEnabled` is FORM state (what he is about to save) while `dry_run` is
+  // read off the stored rule — this panel has no dry-run control, so the rule's
+  // own value is the only answer there is.
+  const welcomeIsDryRun = boolKnob(welcomeRule?.payload?.dry_run, false);
+  const welcomeSpendsNow = welcomeEnabled && !welcomeIsDryRun;
   // Derived from the ECHOED flags, not from bubble positions — see the helper.
   const previewCaption = preview ? welcomePreviewCaption(preview) : null;
 
@@ -1398,12 +1481,15 @@ export default function BrainPanel() {
             </div>
             {welcomeFollowBack && (
               <div className="space-y-1.5">
-                <p className="text-[10px] text-fg-dim">
-                  Every new subscriber who gets a welcome is followed back in the
-                  same tick, so OnlyFans sends him a “started following you”
-                  notification on top of the DM. If the follow fails he still
-                  gets his welcome.
-                </p>
+                {/* No paragraph restating the checkbox here: the label and its
+                  *  hover title already say "followed back in the same tick", "OF
+                  *  pushes a 'started following you'" and "a failed follow never
+                  *  costs him his welcome". Three facts, and this said all three
+                  *  again in different words directly underneath — so an operator
+                  *  reading them side by side had to check whether the second copy
+                  *  meant something the first did not. The only text below the
+                  *  checkbox is the text about the MONEY GATE, which is the one
+                  *  thing the label above cannot say. */}
                 <label
                   className="flex items-center gap-2 text-sm text-fg"
                   title="Price-check each new subscriber's own profile before following back, and skip the ones who charge. On by default; costs one extra read per subscriber."
@@ -1426,13 +1512,31 @@ export default function BrainPanel() {
                     runs. Costs one extra read per subscriber, and a profile
                     whose price won’t load is skipped too rather than guessed at.
                   </p>
-                ) : (
+                ) : welcomeSpendsNow ? (
                   <p className="text-[10px] text-warn">
                     ⚠️ Costs money. With the price-check off, a new subscriber
                     who is themself a paid creator will <b>charge this account</b>
                     to follow them back. Ticking the box is the default and the
                     house rule — untick it only to save that one read per
                     subscriber.
+                  </p>
+                ) : (
+                  // Same fact, honestly tensed. This automation cannot spend as
+                  // it stands — it is switched off, or it is a dry run, and
+                  // `send_welcome` follows nobody on either (`if ctx.follow_back
+                  // and not ctx.dry_run`). Most welcome rules on this box are in
+                  // exactly that state, and asserting a live charge on all of
+                  // them is how a real warning gets read as decoration.
+                  <p className="text-[10px] text-fg-dim">
+                    ⚠️ <b>Would</b> cost money. With the price-check off, a new
+                    subscriber who is themself a paid creator gets followed back
+                    with no price read first — and that follow buys his
+                    subscription. Nothing is charged yet —{" "}
+                    {welcomeEnabled
+                      ? "this automation is a dry run, so it follows nobody"
+                      : "this automation is switched off"}
+                    {" "}— but it will be the moment that changes. Ticking the box
+                    is the default and the house rule.
                   </p>
                 )}
               </div>
@@ -1664,6 +1768,29 @@ export default function BrainPanel() {
             {welcomeMsg && (
               <div className={cn("text-xs", welcomeMsg === "Saved." ? "text-ok" : "text-err")}>
                 {welcomeMsg}
+              </div>
+            )}
+            {/* WHAT THE LAST TICK ACTUALLY DID. The welcome rule had no last-run
+              *  line anywhere in the app, which is why the follow-back lane — the
+              *  only thing on this card that spends money — could run for a week
+              *  with nobody able to tell a free follow from a bought
+              *  subscription.
+              *
+              *  ⚠️ `kind="send_welcome"`. The welcome bag and the growth bag share
+              *  the follow-back keys and nothing else, so the growth formatter
+              *  rendered NOTHING for `welcomes_sent` or `errors` — and because
+              *  the executor finalises a paced run `ok` even when every fan in
+              *  the batch threw, a tick with 9 errors read here as a bare "ok".
+              *  `_bits.welcomeStatsChunks` is this card's own set. */}
+            {welcomeRule?.last_run && (
+              <div className="text-[10px] text-fg-dim border-t border-border pt-2">
+                Last run: <span className="text-fg">{welcomeRule.last_run.status}</span>
+                <RunStats kind="send_welcome" stats={welcomeRule.last_run.stats} />
+                {welcomeRule.last_run.started_at
+                  && ` · ${new Date(welcomeRule.last_run.started_at).toLocaleString()}`}
+                {welcomeRule.last_run.error_text && (
+                  <span className="text-err"> · {welcomeRule.last_run.error_text}</span>
+                )}
               </div>
             )}
           </div>

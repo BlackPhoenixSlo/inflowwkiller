@@ -61,7 +61,7 @@ from sqlalchemy import func, select
 from automation_registry import register
 from db.engine import get_session
 from db.models import Fan, FanProfile, Transaction
-from ._common import build_facts_note
+from ._common import bool_knob, build_facts_note
 
 log = logging.getLogger("of-relay.automation.push_to_sheets")
 
@@ -150,8 +150,7 @@ def _resolve_cfg(account_id: str, payload: dict) -> _Cfg:
         _REPO_ROOT / "credentials.json"
     )
     token_file = _env("GOOGLE_SHEETS_TOKEN_FILE") or str(_REPO_ROOT / "token.json")
-    create_tab = payload.get("create_tab")
-    create_tab = True if create_tab is None else bool(create_tab)
+    create_tab = bool_knob(payload, "create_tab", True)
     return _Cfg(
         spreadsheet_id=spreadsheet_id,
         sheet_tab=sheet_tab,

@@ -31,7 +31,7 @@ from attribution import write_outbound_attribution
 from automation_registry import register
 from db.engine import get_session
 from db.models import Fan, Message, NudgeState
-from ._common import send_dropping_bad_media
+from ._common import bool_knob, send_dropping_bad_media
 from .nudge_online import (
     _compose_messages, _gate_skip_reason, _load_nudge_config, _record_question,
 )
@@ -108,7 +108,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         fan_id = int(payload.get("fan_id"))
     except (TypeError, ValueError):
         return {"sent": 0, "skipped": "bad_fan_id"}
-    with_image = payload.get("with_image", True)
+    with_image = bool_knob(payload, "with_image", True)
 
     cfg = await _load_nudge_config(account_id)
     now = datetime.utcnow()

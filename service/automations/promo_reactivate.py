@@ -38,6 +38,7 @@ from sqlalchemy import select
 
 import automation_executor as ax
 from automation_registry import register
+from ._common import bool_knob
 from db.engine import get_session
 from db.models import PromoCampaign
 from of_promos import extract_created_promo, fetch_of_promos, normalise_of_promo
@@ -63,7 +64,8 @@ def _kept(value: int | None, default: int) -> int:
 @register("promo_reactivate")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
-    dry_run = bool(payload.get("dry_run", True))   # default SAFE
+    # SAFE by default INCLUDING for a stored `null` — see _common.bool_knob.
+    dry_run = bool_knob(payload, "dry_run", True)
     try:
         max_reactivations = int(payload.get("max_reactivations") or 0)
     except (TypeError, ValueError):

@@ -162,7 +162,8 @@ from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as 
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
-from ._common import (apply_word_restriction, hold_with_typing, load_voice_blocks,
+from ._common import (apply_word_restriction, bool_knob, hold_with_typing,
+                      load_voice_blocks,
                       load_hard_skip_ids, load_strip_emojis,
                       load_typing_indicator, load_typing_wpm, name_token,
                       resolve_fan_name, resolve_model, send_dropping_bad_media,
@@ -1025,11 +1026,13 @@ def _on_unless_off(payload: dict, key: str) -> bool:
     The env read is `_test_mode()`, not `os.environ.get(...)` inline: this is a
     PAYLOAD accessor, and a reader who does not already know had no way to see
     that the answer depends on the process environment. Now the name says so, and
-    `CHATTERLY_TEST_MODE=0` means what it looks like it means."""
-    v = payload.get(key)
-    if v is None:
-        return not _test_mode()
-    return bool(v)
+    `CHATTERLY_TEST_MODE=0` means what it looks like it means.
+
+    The body is `bool_knob` with a COMPUTED default and nothing else — there is
+    one boolean-knob reader in this codebase (`_common.bool_knob`) and this is a
+    caller of it, not a second one. Written out longhand, the two bodies were
+    near-identical and only one of them had the `null` hole closed."""
+    return bool_knob(payload, key, not _test_mode())
 
 
 # ── stop_on_reply: did he say something, and whose turn is it now? ────
@@ -1443,8 +1446,10 @@ async def preview_compose(
     # Read with `run()`'s own expressions, so "what the preview shows" and "what
     # the sender sends" cannot answer the same knob differently.
     payload = payload or {}
-    time_only = bool(payload.get("time_only"))
-    skip_time_bubble = bool(payload.get("skip_time_bubble"))
+    # `False`, not the catalog's `True`: see the `time_only` TODO in `run()` for
+    # why the sender reads an absent key as OFF and must keep doing so.
+    time_only = bool_knob(payload, "time_only", False)
+    skip_time_bubble = bool_knob(payload, "skip_time_bubble", False)
     question = str(payload.get("question") or "").strip()
     gif_id = str(payload.get("gif_id") or "").strip()
 
@@ -2142,8 +2147,8 @@ async def _welcome_one(ctx: _RunCtx, sub: dict) -> None:
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
     _wv = (await load_voice_blocks(account_id)).voice
-    dry_run = bool(payload.get("dry_run"))
-    with_image = payload.get("with_image", True)
+    dry_run = bool_knob(payload, "dry_run", False)
+    with_image = bool_knob(payload, "with_image", True)
     limit = int(payload.get("limit") or _DEFAULT_NOTIF_LIMIT)
     max_welcomes = int(payload.get("max_welcomes") or _DEFAULT_MAX_WELCOMES)
 
@@ -2152,7 +2157,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     model = await resolve_model(account_id, "welcome", payload.get("model"))
     typing_wpm = await load_typing_wpm(account_id)       # per-bubble "typing" pacing
     typing_on = await load_typing_indicator(account_id)  # live "...is typing" frames
-    restyle = bool(payload.get("restyle", True))         # AI-restyle the activity bubble
+    restyle = bool_knob(payload, "restyle", True)         # AI-restyle the activity bubble
     # Bubble 2 says only the day / time of day / location — no activity.
     #
     # ⚠️ ON by default for a NEW rule, OFF for an absent key. Not a
@@ -2165,20 +2170,39 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # schema default; existing rules were migrated by an explicit flip; an
     # absent key keeps meaning what it meant when it was written.
     #
-    # (So this file now carries three different spellings of "on by default", on
-    # purpose: `bool(payload.get(k))` = stamped at creation, `payload.get(k,
-    # DEFAULT)` = a read-default, and `_on_unless_off(payload, k)` = a read
-    # default that INVERTS under the test harness. Each read says which it is.)
-    time_only = bool(payload.get("time_only"))
+    # (Every boolean in this file is read through `bool_knob`; what differs is
+    # the DEFAULT each read hands it. `False` = the default is stamped at rule
+    # creation, not applied here. A literal `True` = a read-default. And
+    # `_on_unless_off` = a read-default that inverts under the test harness.
+    # Each read says which it is by the default it passes.)
+    #
+    # TODO (C-N7, 2026-09-07): `time_only` is a THREE-WAY mismatch and is left
+    # that way ON PURPOSE — catalog `default: True`, BrainPanel absent-as-ON,
+    # this read absent-as-OFF. The migration hazard above is the reason. But it
+    # is not free. TWO surfaces write this key on every save:
+    #   • `BrainPanel.saveWelcome`'s update branch — open the welcome card on a
+    #     legacy rule, change the greeting, and the rule becomes clock-only.
+    #   • `RuleEditor.buildFromFields` — worse, because it writes EVERY
+    #     catalogued bool on every save from the typed editor, off the CATALOG's
+    #     default (True), so a save that touched an unrelated knob stamps
+    #     `time_only: true` onto a rule that had never carried the key.
+    # (`AutoFollowTab` was named here in the round-2 note and contains zero
+    # `time_only` references — it edits `auto_follow` rules. Corrected.)
+    # Fixing it means
+    # choosing between (a) backfilling `time_only: false` onto every rule
+    # written before the knob existed and then defaulting this read to True, or
+    # (b) dropping the catalog default to False. Both are one-way; neither is a
+    # drive-by. Do NOT "tidy" this into `bool_knob(payload, "time_only", True)`.
+    time_only = bool_knob(payload, "time_only", False)
     # Drop bubble 2 ENTIRELY — greeting(+image), then the question, then the GIF.
     # OUTRANKS `time_only` and any pin: `time_only` only changes what bubble 2
     # SAYS, and every pin ever minted is an activity line, so a bubble that has
     # been removed cannot be re-filled by either. Skipping it also skips the
     # restyle LLM CALL (not just its output), so a bubble that will never ship
     # never burns a slot of the account's daily cap. Absent = off (V5): `=== true`
-    # in the UI, `bool(payload.get(...))` here, catalog default False — an old rule
+    # in the UI, a `False` read-default here, catalog default False — an old rule
     # cannot acquire this behaviour by being re-saved.
-    skip_time_bubble = bool(payload.get("skip_time_bubble"))
+    skip_time_bubble = bool_knob(payload, "skip_time_bubble", False)
     # Bubble 3 (optional): an operator-written question appended VERBATIM — no
     # restyle, no LLM, the same exact text for every fan. Blank/absent = off.
     # The default ("what's yours?") is stamped at rule creation/save by the Brain
@@ -2193,8 +2217,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Follow back every new sub in the same tick as the welcome (see _follow_back).
     # Both default ON; `follow_back_gate` is the paid-profile check that makes a
     # priced sub a skip instead of a purchase.
-    follow_back = bool(payload.get("follow_back", _FOLLOW_BACK_DEFAULT))
-    follow_back_gate = bool(payload.get("follow_back_gate", _FOLLOW_BACK_GATE_DEFAULT))
+    #
+    # ⚠️ `bool_knob`, not `bool(payload.get(k, DEFAULT))`. The two differ on
+    # exactly one stored value and it is the one the API lets through: `null`.
+    # `_validate_payload_for_kind` skips None, so a `null` reaches storage, and
+    # `bool(None)` is False — the rule ran with the knob OFF while BrainPanel's
+    # `!== false` read showed it TICKED, and the catalog declared it True. Three
+    # sides, two answers, on the pair of keys where the wrong answer is either a
+    # silently dead lane or a blind PAID follow. A key that is present-but-null
+    # says nothing, so it means the same as absent.
+    follow_back = bool_knob(payload, "follow_back", _FOLLOW_BACK_DEFAULT)
+    follow_back_gate = bool_knob(payload, "follow_back_gate", _FOLLOW_BACK_GATE_DEFAULT)
     # Pace the burst like a person, and run several fans' bursts at once.
     #
     # `test_fan` is EXEMPT: the UI's "send test" button points this sender at one
@@ -2530,6 +2563,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "restyled_cached": t.restyled_cached,
         "pinned_used": t.pinned_used,
         "gifs_sent": t.gifs_sent,
+        # ── Follow-back lane. The five counters, and — like `human_pace` and
+        # `stop_on_reply` below — the two KNOBS AS THIS RUN RESOLVED THEM, because
+        # the counters alone cannot be read.
+        #
+        # `followed_back: 0` has three meanings and no way to tell them apart: the
+        # lane is switched off, the lane ran and everyone was already followed, or
+        # the lane ran and silently did nothing. `follow_back` separates the first
+        # from the other two, so a dashboard can stay quiet about a lane nobody
+        # turned on instead of reporting a permanent zero.
+        #
+        # ⚠️ `follow_back_gate` is MONEY and it is the reason this is not optional:
+        # with it off, every number in `followed_back` is a follow fired without
+        # reading the fan's price first, and some of them BOUGHT a subscription.
+        # Nothing else in this bag can say that — `follow_back_paid_skipped` is 0
+        # both when there were no paid subs and when nothing looked.
+        "follow_back": follow_back,
+        "follow_back_gate": follow_back_gate,
         "followed_back": t.followed_back,
         "follow_back_already": t.follow_back_already,
         "follow_back_paid_skipped": t.follow_back_paid_skipped,

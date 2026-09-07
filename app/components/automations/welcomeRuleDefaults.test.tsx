@@ -149,6 +149,7 @@ describe("a welcome rule created from the Brain panel", () => {
     // The opt-out has to survive to the payload as `false`, not as an absent
     // key: the sender's read-default is now ON, so omitting it would silently
     // re-arm the gate on a rule the operator deliberately opened up.
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     await mountWithNoWelcomeRule();
     await act(async () => {
       fireEvent.click(boxFor("Skip subscribers who charge to follow"));
@@ -161,5 +162,39 @@ describe("a welcome rule created from the Brain panel", () => {
         { payload: Record<string, unknown> };
     expect(draft.payload.follow_back_gate).toBe(false);
     expect(draft.payload.follow_back).toBe(true);
+    confirm.mockRestore();
+  });
+
+  it("will not save an ungated follow-back the operator does not confirm", async () => {
+    // ⚠️ MONEY. This is the ONLY spend the Brain panel can arm: an ungated
+    // follow-back buys a subscription to every new subscriber who is themself a
+    // priced creator, unbounded and invisible until the statement. The sibling
+    // Growth tab already gates its one spending action behind a native confirm;
+    // this asserts the same gate here, and that declining it saves NOTHING —
+    // "cancel" that still writes the payload is worse than no confirm at all.
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await mountWithNoWelcomeRule();
+    await act(async () => {
+      fireEvent.click(boxFor("Skip subscribers who charge to follow"));
+    });
+    await act(async () => { fireEvent.click(screen.getByText("Enable welcome")); });
+
+    expect(confirm).toHaveBeenCalled();
+    expect(relayPost.mock.calls.filter(
+      (c) => String(c[0]) === "/admin/automation-rules")).toHaveLength(0);
+    confirm.mockRestore();
+  });
+
+  it("does not nag on a save that leaves the price-check ON", async () => {
+    // The gate went ON by default (2026-09-07), so the confirm can only reach an
+    // operator who deliberately unticked it. A confirm on every ordinary save is
+    // how a real warning becomes a reflex click.
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await mountWithNoWelcomeRule();
+    await act(async () => { fireEvent.click(screen.getByText("Enable welcome")); });
+
+    await waitFor(() => expect(relayPost).toHaveBeenCalled());
+    expect(confirm).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 });

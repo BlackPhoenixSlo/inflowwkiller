@@ -51,7 +51,7 @@ from audiences import (
     resolve_window_hours,
 )
 from automation_registry import register
-from ._common import load_hard_skip_ids
+from ._common import bool_knob, load_hard_skip_ids
 from . import mass_nudge   # reuse slot composition + the default pools
 from . import send_welcome  # _model_hour / _model_weekday / _slot_key
 
@@ -103,7 +103,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     text = str(texts[idx])  # NO placeholder substitution — generic broadcast
 
     media: list[int] = []
-    if cfg.get("with_image", True):
+    if bool_knob(cfg, "with_image", True):   # a payload `null` overrode the seed above
         imgs = pool.get("image") or []
         if imgs:
             media = [int(imgs[idx % len(imgs)])]

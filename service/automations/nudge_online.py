@@ -44,9 +44,7 @@ from db.models import (
     SkipList, Transaction, WelcomeSent,
 )
 from . import send_welcome  # reuse _slot_key / _resolve_welcome_name / _model_hour
-from ._common import substitute_placeholders
-
-from ._common import load_voice_blocks
+from ._common import bool_knob, load_voice_blocks, substitute_placeholders
 
 log = logging.getLogger("of-relay.automation.nudge_online")
 
@@ -635,7 +633,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {"enabled": False, "online": 0, "enqueued": 0}
 
     limit = int(payload.get("limit") or cfg.get("max_online_scan") or 200)
-    with_image = payload.get("with_image", cfg.get("with_image", True))
+    with_image = bool_knob(payload, "with_image",
+                           bool_knob(cfg, "with_image", True))
 
     # Test/live scope: pin to exactly ONE fan, bypassing the online scan. Used by
     # the jaka<->Ava live driver so a real run can never target anyone else.

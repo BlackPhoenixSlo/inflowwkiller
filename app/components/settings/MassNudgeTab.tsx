@@ -18,6 +18,7 @@ import { EditRuleJsonButton } from "@/components/automations/EditRuleJsonModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
+import { boolKnob } from "@/lib/boolKnob";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useAutomationRules,
@@ -74,7 +75,10 @@ function ruleToForm(rule: AutomationRule | null): Form {
   const every = rule?.every_seconds ? Math.max(1, Math.round(rule.every_seconds / 60)) : 60;
   return {
     enabled: rule?.is_enabled ?? true,
-    withImage: p.with_image !== false,
+    // `boolKnob`, not `!== false`: `with_image` is a catalogued bool and the
+    // relay reads it through `_common.bool_knob`. `!== false` is the second
+    // spelling — it agrees on `null` and disagrees on `0` / `""` / `[]`.
+    withImage: boolKnob(p.with_image, true),
     everyMinutes: every,
     excludeRepliedHours: typeof p.exclude_replied_hours === "number" ? p.exclude_replied_hours : 12,
     excludeInboundHours: typeof p.exclude_inbound_hours === "number" ? p.exclude_inbound_hours : 12,

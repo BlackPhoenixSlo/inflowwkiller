@@ -54,6 +54,7 @@ from datetime import datetime, timedelta
 import automation_executor as ax  # shared _make_client seam + enqueue_job
 import media_cotag                # release-form @mention for non-solo media
 from automation_registry import register
+from ._common import bool_knob
 from automations._pools import has_media_source, pick_media
 
 log = logging.getLogger("of-relay.automation.auto_stories")
@@ -119,9 +120,30 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     count = _pos_int(payload.get("media_count"), 0) or per_run
     hours_to_live = _pos_float(payload.get("hours_to_live"))
     watermark_text = payload.get("watermark_text") or None
-    # Default ON: missing/garbage → True, an explicit `false` opts a rule out.
-    _rd = payload.get("remove_vault_dupe", True)
-    remove_dupe = _rd if isinstance(_rd, bool) else True
+    # Default ON: missing or `null` → True, an explicit `false` opts a rule out.
+    #
+    # ⚠️ THE CONTRACT CHANGED HERE, deliberately, and the old comment hid it. The
+    # previous read was `_rd if isinstance(_rd, bool) else True` — NOT the
+    # hand-written form of `bool_knob`, whatever it was labelled: the isinstance
+    # guard made every non-boolean mean True, so `0`, `""` and `[]` switched the
+    # cleanup ON. `bool_knob` reads those as OFF, like every other bool knob in
+    # this package and like `boolKnob` in the app.
+    #
+    # It is REACHABLE: this knob has no `_CATALOG` entry, so
+    # `_validate_payload_for_kind` passes `{"remove_vault_dupe": 0}` straight
+    # through to storage — raw-JSON editing is the only way in, but it is a way.
+    # Kept as `bool_knob` rather than restored, for two reasons. One: the
+    # divergence was with the RELAY's own convention, and a single knob reading
+    # `0` as ON is exactly the second spelling this package spent a pass
+    # deleting. Two: the app half (`AutoStoriesTab`) read the same value as
+    # `!== false` — ON for `0` — so before this the two halves already disagreed
+    # about `null` (True here, ON there) in the other direction; both now go
+    # through the one reader and agree on every value a JSON payload can hold.
+    #
+    # What it costs if someone had stored garbage: the vault duplicate that
+    # auto_stories itself re-uploaded is left in place instead of being cleaned
+    # up. Clutter, not data loss, and it is visible in the vault.
+    remove_dupe = bool_knob(payload, "remove_vault_dupe", True)
 
     pool_spec = {
         "media_files": payload.get("media_files"),
