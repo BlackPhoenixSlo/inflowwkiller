@@ -140,17 +140,17 @@ surfaces, (c) turn the ~11 invisible-plumbing automations into toggle cards with
 > Read live from the VPS on 2026-07-22 (`account_ai_config` + `automation_rules`, cross-referenced against
 > the code defaults). **These are the values to PREFILL** in the beginner-first UI so the mockup mirrors the
 > real setup — not the ship-disabled code defaults. "Code" = fresh-account fallback; "PROD" = what's set on the
-> ~10 active seller accounts (names withheld).
+> ~10 active seller accounts (Dana, Fernanda, Nova×2, Jade, Mira, Camilla, Ava, Sakai, Maile).
 >
-> ⚠️ **CORRECTED same day after the DB recovery — reference accounts = the graded vault + Ava** (per the operator).
+> ⚠️ **CORRECTED same day after the DB recovery — reference accounts = NovaFree + Ava** (per the operator).
 > Where 4b–4f below disagree with this block, THIS block wins:
-> - AI seller on Aria/Ava = **no `intent_only`** (full proactive selling), `sla_minutes: 7`, offers/day 7–8,
+> - AI seller on Nova/Ava = **no `intent_only`** (full proactive selling), `sla_minutes: 7`, offers/day 7–8,
 >   `resume_after_manual_hours: 0`, `stop_after_unpaid_rungs: 2`, velocity **$600/7d**, `force_ask` ON after 9,
 >   qualification gate ON, smart pricing ON, **rhythm ON (no-sleep)**, post_buy_rung + gift ON, engage_old_fans ON,
 >   unsend_expired_offer **OFF**. (The `intent_only:true` rows in 4b were other/pre-recovery accounts.)
 > - style: humanizer/typos/nonnative ON **including ai_chatter**, and **strip_emojis: true**.
 > - tip_reward: also hot_teaser ON (3 free → $15) + **teaser_convo ON, rungs $10×1/$30×3/$50×5**, cooldowns 6h.
-> - autoreply: lifetime cap **$2,000** (not $20), `info_not_required: true`, day-gates 0; silence Aria 30–120m, Ava 25m–13h.
+> - autoreply: lifetime cap **$2,000** (not $20), `info_not_required: true`, day-gates 0; silence Nova 30–120m, Ava 25m–13h.
 > - **Ava runs nudge_online ON** (rule every 60s; delay 1m/jitter 1m, quiet OFF, max_no_reply 99, info-line+image, no nudge-line).
 > - mass_premade every **2–5h**, `online_only: true`; **mass messages cannot carry {name}** (one broadcast).
 > - auto_posts every 3–7h; auto_stories every 4–7h × 2/run, live 13–15h; unsend policy text 4h/media 24h/priced 48h.

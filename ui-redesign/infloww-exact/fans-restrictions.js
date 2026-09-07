@@ -40,7 +40,7 @@ Fastt.ready(async function () {
   var $ = Fastt.$, esc = Fastt.esc;
   var GRADS = ["g1", "g2", "g3", "g4", "g5"];
 
-  // ── header-right creator scope (was a dead "Aria" mockup on a Ava page) ──
+  // ── header-right creator scope (was a dead "Nova" mockup on a Ava page) ──
   // Same roster the topbar switcher uses: /admin/accounts, falling back to
   // /admin/stats/per-model when the caller is unauthed (see fastt.js).
   (function mountScope() {

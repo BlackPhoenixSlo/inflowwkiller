@@ -9,7 +9,7 @@ Fastt.ready(async () => {
     if (pill) pill.className = 'fx-st';
   })();
 
-  // Section-header persona chip: inert chrome that shipped a hardcoded "Aria".
+  // Section-header persona chip: inert chrome that shipped a hardcoded "Nova".
   // Name the creator this page actually reads/writes, and badge it so it is not
   // mistaken for a working creator switcher (the sidebar .creator block is that).
   (function fixPersonaChip() {
@@ -87,7 +87,7 @@ Fastt.ready(async () => {
     setTxt('rt-derived-src', derivedIsDefault
       ? '— the house default (her sends show no 3 h+ quiet block)'
       : '— read off her own sends');
-    // "Your current setup (the graded vault · Ava)" was a hardcoded cross-account claim.
+    // "Your current setup (NovaFree · Ava)" was a hardcoded cross-account claim.
     const row = Fastt.accountRow();
     setTxt('rt-nosleep-cur', preset === 'nosleep'
       ? 'Current setup for ' + (row ? (row.nickname || row.id) : Fastt.account()) + '.' : '');

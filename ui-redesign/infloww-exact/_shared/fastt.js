@@ -526,6 +526,11 @@
       + "Click to sign in and load real data.";
     bar.addEventListener("click", async () => { if (await signInModal()) location.reload(); });
     document.body.appendChild(bar);
+    // The bar is fixed to the bottom at z-index 9996, so it sits ON TOP of
+    // whatever the page ends with. On a desktop that is white space; at 390px
+    // it was covering the composer's Send button and the last row of every
+    // list. The flag lets the phone stylesheet reserve the height back.
+    document.documentElement.classList.add("ft-has-noacct");
   }
   const hasAccount = () => !!state.accountId;
 
@@ -705,6 +710,433 @@
    *  imagery everywhere — hover any tile/thumb to peek. Persisted in
    *  localStorage so it survives navigation and pop-outs. The skin shipped a
    *  dead switch on Messages; this wires it and clones it onto every page. */
+  /** PHONE LAYOUT — the whole responsive layer for the 52 canonical pages.
+   *
+   *  The skin is a 1440x900 desktop mock: `.app` is a fixed 1440px box, the
+   *  sidebar is a 252px column that is always open, and 53 of the 56 pages ship
+   *  `<meta viewport content="width=1440">`. On a phone that meta plus
+   *  initial-scale=1 gives you the TOP-LEFT CORNER of a 1440px canvas at 1:1 —
+   *  the sidebar and about 150px of content, and you pan sideways for the rest.
+   *  That is the "sticks out of view" this fixes.
+   *
+   *  It lives here, not in the pages, for the reason BUILD_GUIDE gives: every
+   *  page is dashboard.html with a different `<main>`, the `<aside class=
+   *  "sidebar">` must stay byte-identical, and there is no shared stylesheet.
+   *  One `styleOnce` here reaches all 52 without editing a single `<aside>`.
+   *
+   *  The sidebar becomes an off-canvas drawer on the SAME `.panel-btn` that
+   *  collapses it to a rail on desktop — one control, the meaning of which
+   *  follows the width. `ft-siderail` is force-removed under the breakpoint
+   *  (without touching its localStorage value, so the desktop rail survives a
+   *  rotation): a 68px icon rail inside a drawer is two ideas fighting. */
+  function mountPhoneLayout() {
+    const root = document.documentElement;
+    if (root.__ftPhone) return;
+    root.__ftPhone = 1;
+
+    // 760px, not 768: `.main`'s content is authored against a ~1040px column,
+    // so the drawer has to take over well before a tablet stops fitting it.
+    const mq = window.matchMedia("(max-width:760px)");
+
+    styleOnce("ft-phone-css", `
+      @media (max-width:760px){
+        body{display:block;min-height:0}
+        .app{width:100%;max-width:100%;height:100dvh}
+        /* The topbar keeps its 52px and scrolls; wrapping it would eat the
+           shell's height on the one axis a phone cannot spare. */
+        /* ── the topbar ──────────────────────────────────────────────────
+           At 390 this bar holds 1430px of content. Letting it scroll was not a
+           fix: a row that runs past the edge reads as broken whether or not it
+           can be dragged. So the rule is by ROLE — anything that repeats what
+           the page already says goes, anything that decides WHAT YOU ARE
+           LOOKING AT stays, and the two conveniences keep their icon and drop
+           their label. Result is ~340px of the 390 with nothing clipped. */
+        .topbar{padding:0 8px;gap:6px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+        .topbar::-webkit-scrollbar{display:none}
+        .topbar>*{flex:0 0 auto}
+        /* "You're on a free trial / 7 days left" — the in-page banner directly
+           below it says the same thing, with room to say it properly. */
+        .topbar .trial{display:none}
+        /* "No creator selected · NO DATA" and "UTC+00:00" are repeated by the
+           amber banner pinned to the bottom of every page; "Referrals" and
+           "Leaderboard" are secondary nav that lives in the menu. One rule
+           catches all four -- they are div.pill and a.pill in .top-right. */
+        .topbar .top-right .pill{display:none}
+        .topbar .top-right{gap:6px}
+        /* Search and "Normal view" keep the icon, lose the words. */
+        .topbar .ft-pill span{display:none}
+        .topbar .ft-pill{padding:0 9px}
+        /* There is no Cmd key on a phone, so the shortcut hint is dead weight
+           -- and it is the widest thing left in the bar. */
+        .topbar .ft-pill kbd,#ft-search-pill kbd{display:none}
+        #ft-search-pill{padding:0 9px!important;gap:0!important}
+        /* The creator name is the one label worth its width -- it is the answer
+           to "whose numbers am I looking at" -- so it truncates, not hides. */
+        .topbar .ms-name{max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .main{padding:14px 14px 28px;overflow-y:auto;overscroll-behavior:contain}
+        /* Wide content scrolls in its own box, never the body — BUILD_GUIDE §4. */
+        .main table{display:block;overflow-x:auto;max-width:100%}
+
+        .sidebar{position:fixed;top:52px;left:0;bottom:0;z-index:60;
+          width:min(84vw,300px);flex-basis:auto;
+          transform:translateX(-100%);transition:transform .18s ease;
+          overflow-y:auto;overscroll-behavior:contain;
+          padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+        html.ft-phonenav .sidebar{transform:translateX(0)}
+        .ft-scrim{position:fixed;inset:52px 0 0 0;z-index:59;background:rgba(0,0,0,.6);
+          opacity:0;pointer-events:none;transition:opacity .18s ease;border:0;padding:0;margin:0}
+        html.ft-phonenav .ft-scrim{opacity:1;pointer-events:auto}
+        .panel-btn{position:relative;z-index:61}
+
+        /* ── the two families the 390px probe found ───────────────────────
+           (1) right-aligned action clusters. Every one is 'margin-left:auto'
+               + 'display:flex' with no wrap, so at 390 they run off the edge
+               carrying the page's primary buttons with them. Dropping the
+               auto margin lets them sit under the heading instead of beside
+               it; 'flex-wrap' does the rest. */
+        .head-right,.hact,.sh-right,.al-right,.hr,.c-act,.vm-hero-act,
+        .fu-when,.rx-stat,.cre-tools,.vm-legend{
+          margin-left:0;width:100%;flex-wrap:wrap;justify-content:flex-start}
+
+        /* (2) the fx kit. These rules are byte-identical in all 52 pages
+               (BUILD_GUIDE: append the block from _shared/components.html),
+               so overriding them once here reaches every page that uses them. */
+        .fx-card-h,.fx-tc-row,.fx-kv,.fx-check{flex-wrap:wrap;min-width:0}
+        .fx-togglecard{padding:14px 15px}
+        .fx-composer,.fx-card{max-width:100%}
+        /* A segmented control is a row of fixed-width choices — it cannot wrap
+           without reading as separate buttons, so it scrolls instead. */
+        .fx-seg{display:flex;max-width:100%;overflow-x:auto;scrollbar-width:none}
+        .fx-seg::-webkit-scrollbar{display:none}
+        .fx-seg>*{flex:0 0 auto}
+
+        /* The dashboard's KPI row is the only 3-up grid in the skin. */
+        .metrics{grid-template-columns:1fr;grid-auto-rows:auto}
+
+        /* The action clusters above only helped once their PARENT row could
+           wrap -- a wrapping child inside a nowrap row is still pushed off the
+           edge. These are the rows that hold a heading and its buttons. */
+        .inbox-head,.fan-head,.ghead,.al-cols,.rx-hero,.sh-cols,.vm-hero,
+        .card-head,.sec-row,.head-row{flex-wrap:wrap}
+        /* Tab strips scroll instead of wrapping -- a wrapped tab row reads as
+           two rows of unrelated buttons. Same shape as the settings strips. */
+        .rv-tabs,.sbtabs,.thread-tabs,.rtabs{overflow-x:auto;overflow-y:hidden;
+          scrollbar-width:none;flex-wrap:nowrap}
+        .rv-tabs::-webkit-scrollbar,.sbtabs::-webkit-scrollbar{display:none}
+        .rv-tabs>*,.sbtabs>*{flex:0 0 auto}
+
+        /* ── (3) the grids ────────────────────────────────────────────
+           .fx-grid2/.fx-grid3 are the kit's own Advanced-drawer grids (30
+           pages each) and .sec-head is the canonical section header (43).
+           Those three plus .metrics are most of the skin; the rest below is
+           the per-page tail the probe turned up. */
+        .sec-head,.card-head,.panel-head{flex-wrap:wrap}
+        .fx-grid2,.fx-grid3,.metrics,.cards,.stats,.af-grid,.mm-grid,.bc-grid,
+        .bc-poolgrid,.lad2,.mon-grid,.pxadv,.sum-grid,.esum,.grid-bottom,
+        .kpigrid,.kc-kpis,.nudge-grid,.wk-stats,.pxform-grid,.logrow,.wk-slot{
+          grid-template-columns:1fr!important;grid-auto-rows:auto}
+        /* A grid or flex child is min-width:auto by default, so one wide
+           descendant -- a textarea with a cols attribute, an unbroken URL --
+           makes the TRACK wider than its container instead of shrinking. That
+           is what was left after the templates were collapsed. */
+        .fx-grid2>*,.fx-grid3>*,.mm-grid>*,.bc-grid>*,.af-grid>*,.mon-grid>*,
+        .lad2>*,.pxadv>*,.nudge-grid>*,.grid-bottom>*,.kc-kpis>*,.aut-grid>*,
+        .sh-cols>*,.al-cols>*,.card>*,.irow>*{min-width:0}
+        .card,.irow,.sh-right,.al-right,.inbox-head,.c-act{flex-wrap:wrap;min-width:0}
+        /* A form control sized in columns/characters ignores its container. */
+        .main textarea,.main input,.main select{max-width:100%}
+
+        /* The last of it: panes and controls pinned to a desktop pixel width.
+           'flex:0 0 430px' cannot shrink by definition, so these need the
+           basis released, not just min-width:0. */
+        .sh-right,.al-right{width:auto;flex:1 1 auto}
+        .vm-search{width:auto;flex:1 1 auto;min-width:0}
+        /* A full-width primary button is the phone convention anyway. */
+        .c-act .fx-btn,.vm-hero-act .fx-btn,.fx-composer .fx-btn{max-width:100%}
+        .fu-msg,.act-note{min-width:0;max-width:100%;overflow-wrap:anywhere}
+
+        /* ── what only appears once there is DATA ──────────────────────
+           These were invisible on an empty mock: a creator row with no
+           creators has no tools, a rule card with no rule has no cadence
+           chip, a rewards page with no fans has no fan chips. Signed in on
+           the live stack, each of them runs off the right. */
+        .cre-tools{margin-left:0;width:100%;flex-wrap:wrap}
+        .cre-search{flex:1 1 auto;min-width:0;width:auto}
+        .cre-search input{min-width:0;width:100%}
+        /* Cadence chips ("every 1 min", "every 3-7 h") sit under a rule name
+           and are inline-flex, so they cannot shrink or wrap on their own. */
+        .tc-cad{max-width:100%;white-space:normal;height:auto;min-height:22px;padding:2px 9px}
+        /* Fan chips carry a display name of unbounded length. */
+        .fchip{max-width:100%;min-width:0}
+        .fnm,.fchip>*{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .vm-meta{max-width:calc(100% - 18px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .rx-stat{min-width:0}
+        /* The composer bar keeps Send on screen by wrapping, not by pushing. */
+        .fx-comp-bar{flex-wrap:wrap;gap:6px}
+        .fx-comp-bar>*{min-width:0}
+        /* A card header that carries controls as well as a title. */
+        .fx-card-h>*{min-width:0}
+        .fx-card-h span{flex-wrap:wrap;min-width:0}
+        /* The vault toolbar holds a search box and filters on one line. */
+        .vm-toolbar{flex-wrap:wrap;gap:8px}
+        .vm-toolbar>*{min-width:0}
+        .vm-search{flex:1 1 100%}
+
+        /* ── the last eleven, diagnosed signed-in on the live stack ───────
+           Almost all of it is one shape: a flex row set to nowrap holding a
+           cluster it cannot fit, or a child that cannot shrink because its
+           min-width is auto. Listed by the row rather than the symptom so the
+           next person can see the family. */
+        .hometabs,.revrow,.revaxis,.fpick,.mgr-head,.kbd-hint,.fx-presets,
+        .nc-top,.ov-body,.count-pill,.mgr-head .right{flex-wrap:wrap;min-width:0}
+        .hometabs>*,.revrow>*,.revaxis>*,.fpick>*,.mgr-head>*,.fx-presets>*,
+        .nc-top>*,.ov-body>*,.ghead>*,.fx-check>*{min-width:0}
+        /* Single-column grids whose content still sets the track width. */
+        .mon-cols>*,.mon-cols .body,.mon-h2,.mon-empty{min-width:0;max-width:100%}
+        /* Preset tiles and funnel picks are fixed-content cards in a row. */
+        .fx-preset,.fpk{min-width:0;max-width:100%}
+        .fx-preset>*,.fpk>*,.fpk .r1,.fpk .nm,.fpk .meta{min-width:0;max-width:100%;
+          overflow:hidden;text-overflow:ellipsis}
+        .panelwrap{min-width:0;max-width:100%}
+        /* The vault search input carries its own pixel width. */
+        .vm-search input,.mgr-head input,.ov-body input{width:100%;min-width:0}
+        /* group.html shares the chat top strip, so it gets the same sort: the
+           status pills repeat what the page says, the rest can wrap. */
+        .topstrip .top-right{flex-wrap:wrap;min-width:0}
+        .topstrip .count-pill{max-width:100%}
+
+        /* The final three, each a pixel width the page sets on itself and wins
+           on, so these need the declaration force rather than a better rule.
+           width:230px with flex:0 0 230px cannot shrink by any other means. */
+        .c-when{width:auto!important;flex:1 1 100%!important;min-width:0}
+        /* flex-basis:100% alone did not break the line here, so min-width is
+           what actually forces it onto its own row. */
+        .vm-search{width:100%!important;flex:1 1 100%!important;min-width:100%!important}
+        /* An action cluster rendered as a span has no layout of its own. */
+        /* flex:0 0 212px beats any width declaration, so the BASIS has to be
+           replaced -- and its two rows have to be allowed to wrap first. */
+        .shead,.srow{flex-wrap:wrap;min-width:0}
+        .shead>*,.srow>*{min-width:0}
+        .c-act,span.c-act{display:flex!important;flex:1 1 100%!important;
+          min-width:100%!important;flex-wrap:wrap;margin-left:0}
+        /* An auto left margin parks this icon at the far right of its line, so
+           on a full line it lands past the edge. A fixed gap keeps it beside
+           what it belongs to. */
+        .fx-check .bx{margin-left:6px;flex:0 0 auto}
+        .fx-check{width:100%;padding-right:2px}
+
+        /* Card walls: one column. Two 181px columns turn a sentence into two
+           words per line, which measures as "fits" and reads as unusable. */
+        .aut-grid,.mon-cols,.mgrid,.tpl-grid,.rc-queue,.brain-grid,
+        .al-pass-grid,.sh-grid,.fu-slots,.emgrid,.fgrid{
+          grid-template-columns:1fr!important}
+        /* Stat strips keep two columns — numbers stay scannable in pairs. */
+        .vgrid,.gifgrid,.crestats,.kpirow,.rx-hero,.imp-stats,.fansgrid,
+        .vm-grid{grid-template-columns:1fr 1fr!important}
+        /* A 7-column month header only means anything at full width. */
+        .mthead{min-width:640px}
+        /* A 7-day calendar loses its meaning stacked, so it scrolls as a unit
+           and keeps its columns. .emoji-pop is left alone: eight emoji fit. */
+        .cal-wrap,.weekcal,.wc-body,.cal-grid{min-width:640px}
+        .cal-scroll{overflow-x:auto;scrollbar-width:none}
+
+                /* Toasts are bottom-right on desktop; at 390 that box is most of the
+           screen, so they sit above the "no creator" banner instead. */
+        /* This skin has no backend, so its two fetches fail on every page and
+           five identical toasts stack up the screen. On a phone that is half
+           the viewport spent saying one thing, so only the newest two show. */
+        .ft-toast-wrap{left:10px;right:10px;width:auto;align-items:stretch;
+          bottom:calc(56px + env(safe-area-inset-bottom));z-index:70}
+        .ft-toast{max-width:100%}
+        .ft-toast-wrap>.ft-toast:nth-last-child(n+3){display:none}
+
+        /* The dashboard's earnings card is a flex row of a donut and a stat
+           column; at 390 the column has nowhere to go, so it stacks. */
+        .earn{flex-direction:column;padding:18px 12px;gap:14px}
+        .earn>*{min-width:0;max-width:100%}
+      }
+      @media (max-width:760px) and (prefers-reduced-motion:reduce){
+        .sidebar,.ft-scrim{transition:none}
+      }`);
+
+    const scrim = document.createElement("button");
+    scrim.className = "ft-scrim";
+    scrim.type = "button";
+    scrim.setAttribute("aria-label", "Close the menu");
+    scrim.tabIndex = -1;
+    document.body.appendChild(scrim);
+
+    const setNav = (open) => {
+      root.classList.toggle("ft-phonenav", open);
+      scrim.tabIndex = open ? 0 : -1;
+      const btn = document.querySelector(".topbar .panel-btn");
+      if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+
+    // Under the breakpoint the rail is suppressed but its stored value is left
+    // alone, so a phone visit never costs the operator his desktop rail.
+    const applyWidth = () => {
+      if (mq.matches) {
+        root.classList.remove("ft-siderail");
+      } else {
+        setNav(false);
+        try {
+          if (localStorage.getItem("fastt_rail") === "1") root.classList.add("ft-siderail");
+        } catch (e) {}
+      }
+    };
+    applyWidth();
+    mq.addEventListener("change", applyWidth);
+
+    // The panel button already collapses the rail on desktop (mountRailToggle).
+    // On a phone it opens the drawer instead — capture phase so it lands before
+    // that handler and the rail is never toggled at this width.
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest && e.target.closest(".topbar .panel-btn");
+      if (!btn || !mq.matches) return;
+      e.stopPropagation();
+      e.preventDefault();
+      setNav(!root.classList.contains("ft-phonenav"));
+    }, true);
+
+    scrim.addEventListener("click", () => setNav(false));
+    // A tap on a real link navigates; closing first stops the drawer flashing
+    // over the next page during the load.
+    document.addEventListener("click", (e) => {
+      if (!mq.matches || !root.classList.contains("ft-phonenav")) return;
+      const a = e.target.closest && e.target.closest(".sidebar a[href]");
+      if (a && !a.getAttribute("href").startsWith("#")) setNav(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.classList.contains("ft-phonenav")) setNav(false);
+    });
+  }
+
+  /** PHONE CHAT — list and thread are one screen each, not three columns.
+   *
+   *  messages.html and group.html are the two pages that do NOT use the
+   *  canonical sidebar shell. They are three fixed panes: .list at 390px,
+   *  .center (the thread) taking the rest, and .right at 280px. On a 390px
+   *  phone only the list fits, so tapping a fan appeared to do nothing --
+   *  selectFan() ran, the thread rendered, and it rendered off-screen.
+   *
+   *  So the panes become screens. The list is the phone default; a tap on a
+   *  .conv row opens the thread full-width; the .back chevron the skin already
+   *  ships in .thread-head (decoration until now, exactly like .panel-btn was)
+   *  goes back. .right is left off the phone entirely -- fan insights are a
+   *  reference panel, and the ask was to put the focus on the conversation.
+   *
+   *  This runs on the BUBBLE phase so messages.js's own row handler has already
+   *  called selectFan() by the time the pane swaps: the thread is populated
+   *  before it is shown, never after. */
+  function mountPhoneChat() {
+    const list = document.querySelector(".list");
+    const center = document.querySelector(".center");
+    if (!list || !center) return;              // not a chat page
+    const root = document.documentElement;
+    if (root.__ftPhoneChat) return;
+    root.__ftPhoneChat = 1;
+
+    styleOnce("ft-phonechat-css", `
+      @media (max-width:760px){
+        .list{width:100%;min-width:0;flex:1 1 auto;border-right:0}
+        .center,.right{display:none}
+        /* One screen at a time: showing the thread hides the list outright
+           rather than sliding it, so no second scroll container survives. */
+        html.ft-chat-open .list{display:none}
+        html.ft-chat-open .center{display:flex;flex:1 1 auto;min-width:0}
+        html.ft-chat-open .right{display:none}
+        /* The chevron is 22px of SVG in the markup; give it a real 44px box
+           without moving it on desktop, where this whole block never applies. */
+        .thread-head .back{width:26px;height:26px;padding:8px;margin:-8px -2px -8px -8px;
+          box-sizing:content-box;cursor:pointer;border-radius:9px}
+        .thread-head .back:active{background:#222}
+        .thread-head{gap:8px;padding:10px 10px}
+        .thread-body{padding:14px 12px}
+
+        /* ── the chat shell's own three rows ────────────────────────────
+           messages.html does not use the canonical topbar, so it needs the
+           same role sort: what names the conversation stays, what is a
+           desktop idea goes, what is a tool strip scrolls. */
+        .topstrip{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;padding-right:8px}
+        .topstrip::-webkit-scrollbar{display:none}
+        .topstrip .ft-pill span{display:none}
+        .topstrip .top-right{gap:6px}
+        .topstrip .ft-pill kbd{display:none}
+        /* Adding a creator means capturing a session, which is a desktop job in
+           this product -- /setup says so itself. The scope row keeps Home and
+           the model switcher, which are what you navigate with. */
+        .topstrip .add-creator{display:none}
+        .topstrip .htab,.topstrip .am-hero{padding-left:10px;padding-right:10px}
+        /* "Pop out" opens the thread in a second window -- there is no second
+           window on a phone. */
+        .thread-head .th-right{display:none}
+        /* Six tools (star, mute, notes, pin, Gallery, Find) cannot fit beside a
+           name at 390. The name is the thing that must not move, so it holds
+           its ground and the tools scroll under the thumb. */
+        .thread-head .th-id{min-width:0;flex:0 1 auto}
+        .thread-head .th-tools{flex:1 1 auto;min-width:0;overflow-x:auto;
+          overflow-y:hidden;scrollbar-width:none}
+        .thread-head .th-tools::-webkit-scrollbar{display:none}
+        .thread-head .th-tools>*{flex:0 0 auto}
+        /* The composer is the other half of "focus on the chat view": both its
+           rows wrap rather than push Send off the edge. */
+        /* The composer: the box you type in was 29px tall and wedged between
+           six buttons, while the button row under it took 79px. On a phone the
+           message is the point, so the input takes its own full-width row at a
+           real height and the controls wrap beneath it. */
+        .composer{padding:10px 10px calc(10px + env(safe-area-inset-bottom))}
+        .comp-r1,.comp-r2{flex-wrap:wrap;min-width:0;gap:8px}
+        .comp-r1>*,.comp-r2>*{min-width:0}
+        .comp-input{flex:1 1 100%;min-width:100%;order:-1}
+        .comp-input input{
+          width:100%;min-height:46px;padding:12px 14px;
+          border-radius:11px;background:#1c1c1c;border:1px solid var(--border);
+          /* 16px exactly: iOS zooms the whole page when a focused field is
+             smaller than this, which is its own kind of "sticks out of view". */
+          font-size:16px;line-height:1.35}
+        .comp-input input::placeholder{font-size:15px}
+        /* Giving the input its own row cost the thread 49px, so the two button
+           rows give most of it back: they are icon buttons, not reading matter. */
+        .comp-r1{gap:6px;margin-bottom:0}
+        .comp-r2{gap:6px}
+        .comp-r1 .pill,.comp-r2 .pill,.comp-r1 button,.comp-r2 button{
+          height:34px;padding-top:0;padding-bottom:0}
+
+        /* Room for the fixed "no creator selected" bar, which otherwise covers
+           whatever each page ends with -- Send, here. */
+        html.ft-has-noacct .composer{padding-bottom:calc(60px + env(safe-area-inset-bottom))}
+        html.ft-has-noacct .main{padding-bottom:calc(68px + env(safe-area-inset-bottom))}
+        html.ft-has-noacct .rows,html.ft-has-noacct .thread-body{padding-bottom:60px}
+        #ft-noacct{font-size:11px!important;padding:7px 12px!important;line-height:1.3}
+      }`);
+
+    const mq = window.matchMedia("(max-width:760px)");
+    const open = (on) => root.classList.toggle("ft-chat-open", !!on && mq.matches);
+
+    // Bubble phase -- messages.js has already selected the fan.
+    document.addEventListener("click", (e) => {
+      if (!mq.matches || !e.target.closest) return;
+      if (e.target.closest(".rows .conv")) open(true);
+    });
+
+    const back = document.querySelector(".thread-head .back");
+    if (back) {
+      back.setAttribute("role", "button");
+      back.setAttribute("tabindex", "0");
+      back.setAttribute("aria-label", "Back to conversations");
+      const go = (e) => { if (!mq.matches) return; e.preventDefault(); e.stopPropagation(); open(false); };
+      back.addEventListener("click", go);
+      back.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") go(e); });
+    }
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.classList.contains("ft-chat-open")) open(false);
+    });
+    // Leaving phone width puts all three panes back, so a rotation to landscape
+    // never strands the operator inside a one-pane view.
+    mq.addEventListener("change", () => { if (!mq.matches) root.classList.remove("ft-chat-open"); });
+  }
+
   function mountSfwToggle() {
     styleOnce("ft-sfw-css", `
         html.ft-sfw img[src*="/img?u="],
@@ -811,6 +1243,8 @@
     mountSearchPill();
     mountViewSwitch();
     mountRailToggle();
+    mountPhoneLayout();
+    mountPhoneChat();
     mountSfwToggle();
     mountHelpLink();
     if (!state.accountId) noAccountBanner();

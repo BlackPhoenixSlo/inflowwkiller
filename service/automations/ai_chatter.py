@@ -5394,7 +5394,7 @@ def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
         # `CONTENT_ASK_RE` matches the bare substring "wanna see", with no reading of
         # who is offering what, so "You wanna see my cock?" already scored as
         # content_ask — a BUYING signal — and this branch would be dead code below it.
-        # Prod receipt (Dana 326419277, 2026-08-08 01:45:50): he offered, and the
+        # Prod receipt (Dana FAN_ID, 2026-08-08 01:45:50): he offered, and the
         # engine answered "u keep askn / dont u / tell me more about that highway life
         # first" with an $8 PPV stapled on. It thought HE was the one asking.
         #
