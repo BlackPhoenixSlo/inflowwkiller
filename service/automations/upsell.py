@@ -305,6 +305,19 @@ _SOFT_BROKE_RE = re.compile(
     r"(?= ?(?:money|for me|for my|,|\.|!|$))|"
     r"(?:waiting|wait) (?:for|til|till|until) pay ?day|"
     r"only (?:getting|get) paid (?:end|at the end|on)|"
+    # ── Corpus-derived (2026-09-08). `salary` was invisible to BOTH brakes: two real
+    # prod lines — "still my salary is not credited I can open it later can you send me
+    # now?" and "I am waiting for salary" — scored None here AND on _SPEND_REGRET_RE, so
+    # the lane did not brake and a PRICED BOX went to a man who had just said he cannot
+    # pay. This is the "I want it, I can't pay RIGHT NOW" shape: not an objection (he
+    # already said yes) and not a buying signal (he cannot buy), which is exactly the
+    # SOFT consequence — the selling stops, the talking does not.
+    # Anchored on salary/wages/pay, never on a bare `credited`, which would eat
+    # "you credited me for that lol" and any card small talk.
+    r"(?:waiting|wait) (?:for|til|till|until) (?:my |the )?(?:salary|wages)|"
+    r"(?:salary|wages|pay)(?:'?s| is| has| have)?(?: been)?"
+    r"(?: not|n'?t| still not)? ?(?:credited|come ?in|arrived)(?: yet)?|"
+    r"(?:not|isn'?t|hasn'?t|haven'?t) (?:been )?credited|"
     r"not (?:in )?the budget|money(?:'?s| is) tight)\b", re.I)
 
 # BARE-NO — only when "no" is the WHOLE message. "no way babe 😈" is enthusiasm, not
