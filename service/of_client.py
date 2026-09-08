@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor as _Pool
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
@@ -50,6 +52,54 @@ APP_TOKEN = "33d57ade8c02dbc5a333db99ff9ae26a"   # OF web app constant
 API_BASE = "https://onlyfans.com/api2/v2"
 HASH_BASE = "https://cdn2.onlyfans.com/hash"
 DEFAULT_TIMEOUT_S = 30
+
+# Media upload (see upload_media). 5 MiB is S3's minimum for a non-final part
+# and what OF's own web client uses, so it also decides where OF switches the
+# signed/create response from `putUrl` to `keys[]`.
+_PART_SIZE = 5 * 1024 * 1024
+_HASH_CHUNK = 1024 * 1024
+_S3_BASE = "https://of2transcoder.s3-accelerate.amazonaws.com/"
+# Parts uploaded at once. A single S3 stream is usually throttled well below a
+# server's uplink, so this is where the wall-clock win is on a fast box; on a
+# home connection the uplink saturates first and the setting barely matters.
+# Peak memory is this x _PART_SIZE (20 MB at the default), because each worker
+# reads only its own slice from its own file handle.
+_PART_CONCURRENCY = int(os.environ.get("VAULT_UPLOAD_PART_CONCURRENCY") or 4)
+# OnlyFans throttles POST /posts to about one per ten seconds — measured live
+# when a batch of small files tripped `400 "Please allow 10 seconds"`. This is
+# the floor a bulk import paces itself against: 40 files cannot take less than
+# ~7 minutes of carrier spacing no matter how fast the uploads are.
+_CARRIER_MIN_GAP_S = 11
+
+
+def s3_etag_and_md5(path: "str | Path", part_size: int = _PART_SIZE) -> tuple[str, str, int]:
+    """`(dedupe_key, md5_hex, size)` for a file, in one streaming pass.
+
+    `dedupe_key` is the ETag S3 will assign, which is what OF's
+    `GET /vault/media/hash` indexes — VERIFIED LIVE 2026-09-07:
+      * ≤ one part  → the plain md5 hex (S3's single-PUT ETag)
+      * > one part  → `md5(concat of the parts' md5 DIGESTS)-<part count>`
+    A 12.3 MB three-part upload was found by its `…-3` ETag and NOT by its
+    file md5, so anything that dedupes on md5 alone silently stops working the
+    moment a file crosses 5 MiB.
+
+    `md5_hex` is still returned because the story-dupe hide-cleanup indexes on
+    it. Streaming, never `read_bytes()`: this runs inside the relay that also
+    serves chat.
+    """
+    import hashlib
+    md5 = hashlib.md5()
+    parts: list[bytes] = []
+    size = 0
+    with open(path, "rb") as fh:
+        while chunk := fh.read(part_size):
+            md5.update(chunk)
+            parts.append(hashlib.md5(chunk).digest())
+            size += len(chunk)
+    md5_hex = md5.hexdigest()
+    if len(parts) <= 1:
+        return md5_hex, md5_hex, size
+    return f"{hashlib.md5(b''.join(parts)).hexdigest()}-{len(parts)}", md5_hex, size
 
 HERE = Path(__file__).resolve().parent
 SESSIONS_DIR = HERE / "sessions"
@@ -551,8 +601,7 @@ class OFClient:
                 return
             cursor = msgs[-1]["id"]
             if delay_s:
-                import time as _t
-                _t.sleep(delay_s)
+                                _t.sleep(delay_s)
 
     def get_all_messages(self, chat_id: str | int, *, page_size: int = 10,
                          delay_s: float = 0.3, max_pages: int | None = None,
@@ -2348,15 +2397,44 @@ class OFClient:
 
     def request_signed_upload(self, *, key: str, content_type: str,
                               parts: int = 1, secure: bool = False) -> dict:
-        """POST /api2/v2/upload/signed/create → returns {putUrl, getUrl}.
-        `key` is OF's path-style id: `upload/<uuid>/<media_id>/<filename>`.
-        The media id portion is the future vault-media id."""
+        """POST /api2/v2/upload/signed/create → the presigned S3 target(s).
+
+        `key` is OF's path-style id: `upload/<uuid>/<random>/<filename>`.
+
+        The response SHAPE depends on `parts`, and the two are mutually
+        exclusive — VERIFIED LIVE 2026-09-07 with parts=3:
+          parts == 1 → {putUrl, getUrl}                  single PUT
+          parts  > 1 → {uploadId, keys:[{part, putUrl}], getUrl}  and NO putUrl
+        So a caller that asks for multipart must not look for `putUrl`, and
+        must follow up with finish_signed_upload() once every part is stored.
+        """
         return self.post_json(
             f"{API_BASE}/upload/signed/create",
             json_body={
                 "key": key,
                 "parts": parts,
                 "contentType": content_type,
+                "secure": secure,
+            },
+        )
+
+    def finish_signed_upload(self, *, key: str, upload_id: str,
+                             parts: list[dict], secure: bool = False) -> dict:
+        """POST /api2/v2/upload/signed/finish — completes a multipart S3 upload.
+
+        `parts` is `[{"ETag": <etag>, "PartNumber": <n>}, ...]` in PartNumber
+        order. Returns `{ETag: <etag of the assembled object>}`.
+
+        That assembled ETag is S3's multipart form — `md5(concat of part
+        md5s)-<count>` — and is NOT the md5 of the file. Callers that need a
+        dedupe handle must keep the source md5 separately; see upload_media.
+        """
+        return self.post_json(
+            f"{API_BASE}/upload/signed/finish",
+            json_body={
+                "key": key,
+                "uploadId": upload_id,
+                "parts": parts,
                 "secure": secure,
             },
         )
@@ -2380,7 +2458,8 @@ class OFClient:
                          s3_bucket: str, filename: str, secure: bool = False,
                          watermark_text: str | None = None,
                          watermark_position: str = "bottom_right",
-                         upload_args: dict | None = None) -> dict:
+                         upload_args: dict | None = None,
+                         timeout_s: int | None = None) -> dict:
         """POST https://convert.onlyfans.com/file/upload (the metadata-claim
         step OF JS performs after a successful S3 PUT, on dedupe miss).
 
@@ -2439,7 +2518,7 @@ class OFClient:
                 "Sec-Fetch-Dest": "empty",
                 "User-Agent": self.user_agent,
             },
-            timeout=max(self.timeout_s, 60),
+            timeout=timeout_s or max(self.timeout_s, 60),
         ), what="convert-upload")
         if not r.ok:
             raise OFAPIError(f"convert register failed: {r.status_code} {r.text[:400]}", response=r)
@@ -2478,15 +2557,23 @@ class OFClient:
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(str(path))
-        data = path.read_bytes()
-        md5_hex = hashlib.md5(data).hexdigest()
-        size = len(data)
+        # Hash by streaming, never `path.read_bytes()`: a bulk vault import runs
+        # inside the relay that also serves chat, and a 1 GB file read whole was
+        # 1 GB of RSS before a single byte moved.
+        #
+        # Two hashes, one pass. `md5_hex` is the plain file digest (kept for the
+        # story-dupe hide-cleanup, which indexes on it). `dedupe_key` is the S3
+        # ETag, which is what OF's /vault/media/hash actually indexes — VERIFIED
+        # LIVE 2026-09-07: a 12.3 MB three-part upload was found by ETag
+        # `…-3` and NOT by its md5. The two coincide only for a single-part
+        # upload, which is why md5 looked correct until multipart existed.
+        dedupe_key, md5_hex, size = s3_etag_and_md5(path)
         ct = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         filename = path.name
 
         # Step 1: dedupe — if OF already has this file's bytes, we're done.
         if check_dedupe:
-            existing = self.vault_media_lookup_hash(md5_hex, size)
+            existing = self.vault_media_lookup_hash(dedupe_key, size)
             if existing:
                 vault_id = existing.get("id") or existing.get("mediaId")
                 return {
@@ -2494,8 +2581,9 @@ class OFClient:
                     "ready": True,
                     "send_with": [vault_id],
                     "upload_key": None,
-                    "etag": md5_hex,
+                    "etag": dedupe_key,
                     "md5": md5_hex,
+                    "dedupe_key": dedupe_key,
                     "size": size,
                     "filename": filename,
                     "deduped": True,
@@ -2503,25 +2591,108 @@ class OFClient:
                     "note": f"dedupe hit — vault_id {vault_id}",
                 }
 
-        # Step 2: request presigned PUT URL.
+        # Step 2: request the presigned S3 target(s). Anything over one part
+        # size goes multipart — OF hands back per-part URLs and expects a
+        # `signed/finish` to assemble them.
         # OF's JS builds the key as `upload/<uuid4>/<Math.random()*Date.now()>/<filename>`.
         random_id = int(random.random() * (time.time() * 1000))
         key = f"upload/{_uuid.uuid4()}/{random_id}/{filename}"
-        signed = self.request_signed_upload(key=key, content_type=ct, parts=1, secure=False)
-        put_url = signed["putUrl"]
+        part_count = max(1, -(-size // _PART_SIZE))   # ceil
+        signed = self.request_signed_upload(
+            key=key, content_type=ct, parts=part_count, secure=False)
+        part_urls = signed.get("keys")
+        multipart = isinstance(part_urls, list) and bool(part_urls)
 
         # Step 3: PUT bytes to S3 (presigned — no auth needed beyond URL).
         # Through _proxy_retry like every other egress call: a CONNECT-403 blip
         # fails before any body is sent, and the PUT targets a fixed presigned
         # key, so retrying the same upload is idempotent.
-        put_r = self._proxy_retry(lambda: self.http.put(
-            put_url, data=data,
-            headers={"Content-Type": ct},
-            timeout=max(self.timeout_s, 60),
-        ), what="s3-upload")
-        if not put_r.ok:
-            raise OFAPIError(f"S3 PUT failed: {put_r.status_code} {put_r.text[:300]}", response=put_r)
-        etag = put_r.headers.get("etag", "").strip('"') or md5_hex
+        def _put(url: str, body: bytes) -> str:
+            r = self._proxy_retry(lambda: self.http.put(
+                url, data=body,
+                headers={"Content-Type": ct},
+                timeout=max(self.timeout_s, 300),
+            ), what="s3-upload")
+            if not r.ok:
+                raise OFAPIError(f"S3 PUT failed: {r.status_code} {r.text[:300]}", response=r)
+            tag = (r.headers.get("etag") or "").strip('"')
+            if not tag:
+                raise OFAPIError("S3 PUT returned no ETag — cannot complete the upload")
+            return tag
+
+        if multipart:
+            by_part = {int(k["part"]): k["putUrl"] for k in part_urls}
+            missing = [n for n in range(1, part_count + 1) if n not in by_part]
+            if missing:
+                raise OFAPIError(
+                    f"signed/create returned {len(by_part)} part URLs but "
+                    f"{part_count} were requested (missing parts {missing[:5]})")
+            # Parts go up concurrently: a single stream to S3 is usually capped
+            # well below the box's actual uplink, so on a VPS this is most of
+            # the wall-clock win. Peak memory stays bounded at
+            # _PART_CONCURRENCY x 5 MiB because each worker opens its OWN file
+            # handle and reads only its slice — unlike the reference
+            # implementation, which holds the entire file in RAM.
+            #
+            # Each worker also gets its OWN http session. `self.http` is one
+            # curl_cffi Session and is not safe to drive from several threads;
+            # an S3 PUT is presigned, so a bare session with the same proxy
+            # settings is all a part needs.
+            done: list[dict | None] = [None] * part_count
+
+            def _put_part(n: int) -> None:
+                sess = requests.Session(impersonate=IMPERSONATE)
+                if self.http.proxies:
+                    sess.proxies.update(self.http.proxies)
+                try:
+                    with path.open("rb") as fh:
+                        fh.seek((n - 1) * _PART_SIZE)
+                        chunk = fh.read(_PART_SIZE)
+                    last: Exception | None = None
+                    for _ in range(3):      # same CONNECT-blip tolerance as _proxy_retry
+                        try:
+                            r = sess.put(by_part[n], data=chunk,
+                                         headers={"Content-Type": ct},
+                                         timeout=max(self.timeout_s, 300))
+                            if not r.ok:
+                                raise OFAPIError(
+                                    f"S3 PUT part {n} failed: {r.status_code} {r.text[:200]}",
+                                    response=r)
+                            tag = (r.headers.get("etag") or "").strip('"')
+                            if not tag:
+                                raise OFAPIError(f"S3 PUT part {n} returned no ETag")
+                            done[n - 1] = {"ETag": tag, "PartNumber": n}
+                            return
+                        except OFAPIError:
+                            raise
+                        except Exception as e:      # transport/proxy blip
+                            last = e
+                            time.sleep(0.4)
+                    raise last or OFAPIError(f"S3 PUT part {n} failed")
+                finally:
+                    try:
+                        sess.close()
+                    except Exception:   # noqa: BLE001 — closing must not mask the real error
+                        pass
+
+            workers = max(1, min(_PART_CONCURRENCY, part_count))
+            with _Pool(max_workers=workers) as pool:
+                for fut in [pool.submit(_put_part, n) for n in range(1, part_count + 1)]:
+                    fut.result()        # re-raises the first failure
+            if any(p is None for p in done):
+                raise OFAPIError("multipart upload finished with missing parts")
+            finished = self.finish_signed_upload(
+                key=key, upload_id=signed["uploadId"], parts=done, secure=False)
+            # OF may answer with no ETag; the assembled object's tag is then the
+            # last part's, which is what OnlyStack falls back to. Either way this
+            # value is only ever echoed back to convert as `file[ETag]` — the
+            # dedupe handle stays `md5_hex`, computed from the source bytes.
+            etag = (finished or {}).get("ETag") or done[-1]["ETag"]
+            etag = str(etag).strip('"')
+            put_url = signed.get("getUrl") or f"{_S3_BASE}{key}"
+        else:
+            put_url = signed["putUrl"]
+            etag = _put(put_url, path.read_bytes())
 
         # Step 4: POST metadata to convert.onlyfans.com/file/upload to
         # register a claim. Response gives processId/host/extra which go
@@ -2541,16 +2712,41 @@ class OFClient:
         # OF's JS strips the query string from Location in the form
         s3_location = put_url.split("?")[0]
 
+        # Convert's response time scales with the object it has to register: a
+        # 443 MB video timed out at the old flat 60s AFTER every part had been
+        # stored, throwing away the whole transfer. Budget a minute per 100 MB
+        # on top of the floor, and retry once — the claim references a fixed S3
+        # object, so a duplicate claim is inert (nothing ever attaches it) and
+        # is far cheaper than re-uploading half a gigabyte.
+        convert_timeout = int(max(self.timeout_s, 120) + (size / (100 * 1024 * 1024)) * 60)
         try:
-            claim = self.convert_register(
-                s3_etag=etag, s3_location=s3_location,
-                s3_key=key, s3_bucket=s3_bucket,
-                filename=filename, secure=False,
-                watermark_text=watermark_text,
-                upload_args=upload_args,
-            )
-        except OFAPIError as e:
+            try:
+                claim = self.convert_register(
+                    s3_etag=etag, s3_location=s3_location,
+                    s3_key=key, s3_bucket=s3_bucket,
+                    filename=filename, secure=False,
+                    watermark_text=watermark_text,
+                    upload_args=upload_args,
+                    timeout_s=convert_timeout,
+                )
+            except Exception as first:
+                if "timed out" not in str(first).lower():
+                    raise
+                log_of.warning("convert claim timed out after %ss for %s (%.0f MB) "
+                               "— retrying once", convert_timeout, filename, size / 1e6)
+                claim = self.convert_register(
+                    s3_etag=etag, s3_location=s3_location,
+                    s3_key=key, s3_bucket=s3_bucket,
+                    filename=filename, secure=False,
+                    watermark_text=watermark_text,
+                    upload_args=upload_args,
+                    timeout_s=convert_timeout * 2,
+                )
+        except Exception as e:
             # Convert step failed — bytes are in S3 but no claim registered.
+            # Deliberately NOT just OFAPIError: a transport timeout is the most
+            # likely failure on a large object, and letting it escape turned a
+            # recoverable "claim failed" into an unhandled crash mid-batch.
             return {
                 "vault_id": None,
                 "ready": False,
@@ -2558,6 +2754,7 @@ class OFClient:
                 "upload_key": key,
                 "etag": etag,
                 "md5": md5_hex,
+                "dedupe_key": dedupe_key,
                 "size": size,
                 "filename": filename,
                 "deduped": False,
@@ -2591,12 +2788,232 @@ class OFClient:
             # NOT collide with the source vault item (whose stored master has a
             # different md5), so it's a safe handle for later hide-cleanup.
             "md5": md5_hex,
+            # What GET /vault/media/hash indexes — the S3 ETag, which differs
+            # from md5 once the upload is multipart. Use THIS for dedupe.
+            "dedupe_key": dedupe_key,
             "size": size,
             "filename": filename,
             "deduped": False,
             "claim": claim,             # full converter response (for debugging)
             "note": f"claim registered — processId {send_with.get('processId')}",
         }
+
+    # ── Vault materialization ──────────────────────────────────
+    #
+    # OnlyFans has no "save this upload to my vault" endpoint. VERIFIED LIVE
+    # 2026-09-07 against a real account, three ways: a registered claim on its
+    # own never becomes a vault item (waited 5 min; `/vault/media/processing`
+    # reported idle throughout), and neither `isDelay:false` nor
+    # `preset:of_drm` — the only two fields where our convert body differed
+    # from a captured OF web upload — changes that. Seven guessed
+    # `POST /vault/media*` routes all answer "Route not found".
+    #
+    # Media enters the vault only when something REFERENCES it. So we attach
+    # the claim to a carrier, read the vault id off the carrier, and delete the
+    # carrier. A far-future scheduled POST is the carrier of choice:
+    #   - it needs no recipient, so it works on an account with zero subscribers
+    #   - an unpublished scheduled post is invisible to fans
+    #   - `/chats/{id}/messages` (what the OnlyStack reference implementation
+    #     uses) is recorded HERE, verified live, as sending IMMEDIATELY despite
+    #     `scheduledDate` — see schedule_message. That trick mails a real fan.
+    # VERIFIED LIVE: vault id resolved ~1s after the post was created, and the
+    # vault item SURVIVES deletion of the carrier post.
+
+    _VAULT_MARKER = "FASTT VAULT UPLOAD — DO NOT PUBLISH — SAFE TO DELETE"
+
+    def materialize_to_vault(self, send_with: list, *,
+                             md5_hex: str | None = None, size: int | None = None,
+                             carrier_days: int = 30,
+                             timeout_s: int = 600,
+                             poll_interval_s: float = 2.0,
+                             on_carrier=None,
+                             create_post_fn=None) -> dict:
+        """Turn a fresh upload claim into a real vault media id.
+
+        `send_with` is `upload_media()["send_with"]` (claim-object form).
+        Returns `{vault_id, carrier_post_id, carrier_deleted, note}`.
+
+        `on_carrier(post_id)` is invoked the INSTANT the carrier exists, before
+        any polling. Persist the id there: a scheduled post that outlives this
+        process publishes to the whole feed on its `postedAt` date, and an id
+        held only on the stack cannot be cleaned up after a crash. This is the
+        failure the reference implementation has no answer for.
+
+        The carrier is deleted in a `finally`, and `carrier_deleted` says
+        whether that actually succeeded — a False there needs operator action.
+        """
+        import time as _time
+        from datetime import datetime, timedelta, timezone
+
+
+        posted_at = (datetime.now(timezone.utc)
+                     + timedelta(days=carrier_days)).isoformat()
+        # MEASURED LIVE: OnlyFans throttles post creation to roughly one per ten
+        # seconds and answers `400 {"message":"Please allow 10 seconds"}` when
+        # you outrun it — which a batch of small files does easily, since their
+        # uploads finish in under a second. Wait it out rather than failing the
+        # item: the bytes are already claimed and the retry is nearly free.
+        # `create_post_fn` lets a caller route this through the relay's own
+        # per-account write pacer (automation_executor.of_write_paced). That
+        # matters because OnlyFans throttles ALL writes per account, not just
+        # posts: an import pacing itself in isolation will happily consume the
+        # window an automation's fan message needed. Standalone callers (the
+        # CLI) pass nothing and get the local retry below as the backstop.
+        post = create_post_fn or (
+            lambda **kw: self.create_post(self._VAULT_MARKER, **kw))
+        resp = None
+        for attempt in range(4):
+            try:
+                resp = post(media_files=send_with, posted_at=posted_at,
+                            auto_tag=False)
+                break
+            except OFAPIError as e:
+                if "allow 10 seconds" not in str(e) or attempt == 3:
+                    raise
+                log_of.info("carrier post throttled — waiting %ss (attempt %d/3)",
+                            _CARRIER_MIN_GAP_S, attempt + 1)
+                _time.sleep(_CARRIER_MIN_GAP_S)
+        post_id = resp.get("id") if isinstance(resp, dict) else None
+        if post_id is None:
+            raise OFAPIError(
+                f"vault carrier post returned no id: {str(resp)[:300]}")
+        if on_carrier is not None:
+            try:
+                on_carrier(post_id)
+            except Exception:
+                log_of.exception("materialize_to_vault: on_carrier hook failed "
+                                 "— carrier %s is UNTRACKED", post_id)
+
+        vault_id = None
+        seen_id = None          # an id that exists but is still transcoding
+        transcoding = False
+        try:
+            deadline = _time.time() + timeout_s
+            while _time.time() < deadline:
+                detail = self.get_post(post_id)
+                media = detail.get("media") or []
+                with_ids = [m for m in media if m.get("id") is not None]
+                if with_ids:
+                    seen_id = with_ids[0]["id"]
+                ready = [m for m in with_ids if m.get("isReady") is not False]
+                if media and len(ready) == len(media):
+                    vault_id = ready[0]["id"]
+                    break
+                _time.sleep(poll_interval_s)
+            # Timed out while still transcoding. MEASURED: a 23-minute video's
+            # vault row appears within seconds and simply reports isReady=false
+            # for many minutes afterwards, finishing on its own long after the
+            # carrier is gone. The id is already the real, permanent vault id,
+            # so returning it beats failing an import whose media is in fact
+            # sitting in the vault.
+            if vault_id is None and seen_id is not None:
+                log_of.info("vault media %s still transcoding after %ss — "
+                            "accepting the id anyway", seen_id, timeout_s)
+                vault_id = seen_id
+                transcoding = True
+            # Transcoding a long video can outrun any timeout we pick. The md5
+            # lookup is the fallback handle — but ONLY for single-part uploads:
+            # a multipart object's S3 ETag is not the file md5, so `size`/`md5`
+            # may simply never resolve for large files. Hence carrier-id polling
+            # above is the primary path and this is the safety net.
+            if vault_id is None and md5_hex and size:
+                hit = self.vault_media_lookup_hash(md5_hex, size)
+                if hit:
+                    vault_id = hit.get("id")
+        finally:
+            deleted = False
+            try:
+                self.delete_post(post_id)
+                deleted = True
+            except Exception as e:
+                log_of.error("VAULT CARRIER LEFT BEHIND: post %s could not be "
+                             "deleted (%s) — it PUBLISHES on %s", post_id, e, posted_at)
+
+        return {
+            "vault_id": vault_id,
+            "still_transcoding": transcoding,
+            "carrier_post_id": post_id,
+            "carrier_deleted": deleted,
+            "note": (f"vault id {vault_id}"
+                     + (" (still transcoding — it will finish on its own)" if transcoding else "")
+                     if vault_id
+                     else "carrier ready but no media id surfaced before timeout"),
+        }
+
+    def claim_uploaded(self, *, upload_key: str, etag: str, filename: str,
+                       size: int = 0, watermark_text: str | None = None,
+                       timeout_s: int | None = None) -> dict:
+        """Re-run ONLY the convert claim for bytes already sitting in S3.
+
+        `convert.onlyfans.com` answers 504 on large objects when its transcoder
+        is busy — measured on a 443 MB video, *after* all 93 parts had been
+        stored. The S3 object survives that, so the expensive half of the work
+        is still done and the claim is worth retrying on its own. Feed this the
+        `upload_key` / `etag` / `filename` from a failed `upload_media()`.
+
+        Returns the same `send_with` shape as upload_media, or `ready: False`.
+        """
+        me = self.me()
+        upload_args = (me.get("upload") or {}).get("geoUploadArgs") or {
+            "preset": "of_beta", "needThumbs": True,
+            "additional": {"user": self.user_id},
+        }
+        location = f"{_S3_BASE}{upload_key}"
+        try:
+            claim = self.convert_register(
+                s3_etag=etag, s3_location=location, s3_key=upload_key,
+                s3_bucket="of2transcoder", filename=filename, secure=False,
+                watermark_text=watermark_text, upload_args=upload_args,
+                timeout_s=timeout_s or int(max(self.timeout_s, 120)
+                                           + (size / (100 * 1024 * 1024)) * 60),
+            )
+        except Exception as e:  # noqa: BLE001
+            return {"ready": False, "send_with": None, "upload_key": upload_key,
+                    "etag": etag, "note": f"claim retry failed: {e}"}
+
+        send_with = {"processId": claim.get("processId"),
+                     "host": claim.get("host"), "name": filename}
+        if "extra" in claim:
+            send_with["extra"] = claim["extra"]
+        if claim.get("thumbs"):
+            send_with["thumbId"] = (claim["thumbs"][0] or {}).get("id")
+        return {"ready": True, "send_with": [send_with], "upload_key": upload_key,
+                "etag": etag, "claim": claim, "deduped": False,
+                "dedupe_key": etag, "size": size, "filename": filename,
+                "note": f"claim re-registered — processId {send_with.get('processId')}"}
+
+    def upload_to_vault(self, file_path: str | Path, *,
+                        content_type: str | None = None,
+                        watermark_text: str | None = None,
+                        carrier_days: int = 30,
+                        timeout_s: int = 600,
+                        on_carrier=None,
+                        create_post_fn=None) -> dict:
+        """Upload a file and leave it sitting in the vault. The whole feature,
+        end to end: dedupe → S3 (multipart when needed) → convert claim →
+        carrier → vault id.
+
+        A dedupe hit short-circuits with the existing id and no carrier at all.
+        Note the hit may be a HIDDEN vault item (hiding is OF's only delete),
+        in which case the id is real but invisible in the UI — `deduped` lets
+        the caller decide whether to say so.
+        """
+        up = self.upload_media(file_path, content_type=content_type,
+                               check_dedupe=True, watermark_text=watermark_text)
+        if not up.get("ready"):
+            return {"vault_id": None, "ready": False, "deduped": False,
+                    "note": up.get("note"), "upload": up}
+        if up.get("deduped"):
+            return {"vault_id": up.get("vault_id"), "ready": True, "deduped": True,
+                    "carrier_post_id": None, "carrier_deleted": None,
+                    "note": up.get("note"), "upload": up}
+
+        res = self.materialize_to_vault(
+            up["send_with"], md5_hex=up.get("dedupe_key"), size=up.get("size"),
+            carrier_days=carrier_days, timeout_s=timeout_s, on_carrier=on_carrier,
+            create_post_fn=create_post_fn)
+        return {**res, "ready": res.get("vault_id") is not None,
+                "deduped": False, "upload": up}
 
     # ── Stories ────────────────────────────────────────────────
     # Captured live (HAR: "pick image from vault and upload it as story").

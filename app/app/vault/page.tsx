@@ -11,6 +11,7 @@
  * <VaultManagePanel/>; this page is just the titled shell, matching /automations.
  */
 
+import VaultImportCard from "@/components/vault/VaultImportCard";
 import VaultManagePanel from "@/components/vault/VaultManagePanel";
 import VaultReviewTab from "@/components/vault/VaultReviewTab";
 
@@ -26,6 +27,7 @@ export default function VaultPage() {
         </p>
       </header>
 
+      <VaultImportCard />
       <VaultManagePanel />
       <VaultReviewTab />
     </div>

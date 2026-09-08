@@ -187,3 +187,11 @@ priority_lane_stats.json
 # laptop; restored 2026-09-06 after `git add -A` re-staged the file.
 service/.session_secret
 service/.chatter_secret
+
+# Probe breadcrumbs: carry a real account id in the filename and live OF
+# object ids inside. Written by scripts/probe_vault_upload.py on the host only.
+service/.probe_vault_carriers_*.json
+
+# Vault batch-upload spool: creator media in transit to OnlyFans, plus run
+# state carrying real account ids and OF post ids. Host-only, never committed.
+service/vault_spool/

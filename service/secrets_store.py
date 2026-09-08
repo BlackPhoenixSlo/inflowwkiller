@@ -92,6 +92,16 @@ KNOWN: dict[str, dict] = {
         "help": "Paste credentials.json (OAuth client). Only needed to mint a new "
                 "token; the token above is what runtime uses.",
     },
+    "GOOGLE_DRIVE_API_KEY": {
+        "label": "Google Drive API key",
+        "group": "Vault import",
+        "secret": True,
+        "help": ("Lets the vault importer pull publicly-shared Drive links. A plain "
+                 "API key, NOT the Sheets OAuth token — different mechanism, and a "
+                 "Sheets token cannot read Drive. Create one at console.cloud.google.com "
+                 "→ APIs & Services → Credentials with the Drive API enabled, and "
+                 "restrict it to the Drive API."),
+    },
     "GOOGLE_SHEETS_SPREADSHEET_ID": {
         "label": "Spreadsheet ID",
         "group": "Google Sheets export",

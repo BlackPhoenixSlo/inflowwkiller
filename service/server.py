@@ -73,6 +73,7 @@ from stats import router as _stats_router  # noqa: E402
 from transactions import router as _transactions_router  # noqa: E402
 from vault import router as _vault_router  # noqa: E402
 import vault_cache  # noqa: E402  # shared TTL cache for /api/of/v2/vault/* responses
+import vault_upload  # noqa: E402  # batch vault import (spool -> OF -> clear spool)
 import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoints (Stage C will wire call-sites)
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
 from posts import router as _posts_router  # noqa: E402
@@ -1013,6 +1014,20 @@ async def _start_event_pumps() -> None:
     global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
     _main_loop = asyncio.get_running_loop()
     _event_stats["started_at"] = __import__("time").time()
+
+    # Vault-import crash recovery, FIRST and off the loop. A batch that died
+    # mid-flight can have left a scheduled carrier post on a real creator's
+    # feed; left alone it publishes on its postedAt date. Best-effort by
+    # design — a sweep failure must never stop the relay from booting.
+    async def _vault_sweep() -> None:
+        try:
+            res = await asyncio.to_thread(vault_upload.sweep, _load_client)
+            if res.get("carriers_failed"):
+                log.error("vault sweep: %d orphaned carrier(s) could NOT be "
+                          "deleted — check scheduled posts", res["carriers_failed"])
+        except Exception as e:  # noqa: BLE001
+            log.warning("vault sweep failed: %s", e)
+    asyncio.create_task(_vault_sweep())
 
     # Bump the anyio thread pool. `/img` is a sync streaming endpoint —
     # each in-flight video / avatar fetch holds one thread for as long as
@@ -7515,7 +7530,7 @@ def of_update_subscription(user_id: int, body: _SubscriptionPatchBody = Body(...
 # PUT bytes to presigned S3 URL → returns vault media id we can send in
 # subsequent /chats/{id}/messages or /posts with mediaFiles=[id].
 
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, Form
 
 @app.post("/api/of/v2/upload")
 async def of_upload_media(file: UploadFile = File(...)):
@@ -7544,6 +7559,123 @@ async def of_upload_media(file: UploadFile = File(...)):
     finally:
         try: os.unlink(tmp_path)
         except OSError: pass
+
+
+@app.post("/api/of/v2/vault/upload/batch")
+async def of_vault_upload_batch(
+    files: list[UploadFile] = File(default=[]),
+    drive_links: str = Form(default=""),
+    list_id: str = Form(default=""),
+):
+    """Start a batch import into the vault. Returns `{run_id}` immediately.
+
+    Accepts either uploaded files (repeated `files` parts) or `drive_links`
+    (newline/comma separated public Google Drive file or folder links), or
+    both. `list_id` optionally files everything into a vault folder at the end.
+
+    The work runs in a worker THREAD, not on the event loop: each file is a
+    multi-minute sequence of blocking network calls, and the relay serves every
+    other account from this same loop. Poll `/api/of/v2/vault/upload/status`.
+    """
+    import asyncio, re, shutil, tempfile
+    # Local import, matching every other automation_executor callsite here —
+    # importing it at module scope reintroduces the load cycle its own docstring
+    # warns about.
+    from automation_executor import of_write_paced
+    aid = _resolve_account_id(_request_ctx.get())
+    assert_account_owned(aid)
+    if vault_upload.is_running(aid):
+        raise HTTPException(status_code=409, detail="a vault upload is already running")
+
+    links = [s.strip() for s in re.split(r"[\n,]+", drive_links or "") if s.strip()]
+    # Spool uploaded bytes to disk here, inside the request, so the client's
+    # connection can close; the run itself must not depend on it staying open.
+    staged: list[str] = []
+    stage_dir = tempfile.mkdtemp(prefix="vault-in-")
+    for f in files or []:
+        if not f.filename:
+            continue
+        dest = os.path.join(stage_dir, os.path.basename(f.filename))
+        with open(dest, "wb") as out:
+            shutil.copyfileobj(f.file, out)
+        staged.append(dest)
+    if not staged and not links:
+        raise HTTPException(status_code=400, detail="no files and no drive links")
+
+    client = _get_client()
+
+    loop = asyncio.get_running_loop()
+
+    def _paced_post(**kw):
+        """Create the carrier post through the relay's per-account write pacer.
+
+        OnlyFans throttles EVERY write per account, so an import that paced
+        itself in isolation would eat the slot an automation's fan message
+        needed — the import failing is recoverable, a missed send is not. The
+        pacer lives on the event loop; we are on a worker thread, so hop across
+        and block this thread (not the loop) until it is our turn.
+        """
+        fut = asyncio.run_coroutine_threadsafe(
+            of_write_paced(
+                aid, lambda: client.create_post(client._VAULT_MARKER, **kw),
+                send_purpose="not_fan_dm"),   # a throwaway carrier post, not a fan DM
+            loop)
+        return fut.result()
+
+    def _run():
+        try:
+            return vault_upload.start(aid, client=client, local_paths=staged,
+                                      drive_links=links, paced_post=_paced_post,
+                                      list_id=int(list_id) if list_id else None)
+        finally:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+
+    async def _drive():
+        try:
+            await asyncio.to_thread(_run)
+        except Exception:
+            log.exception("vault batch upload failed")
+        finally:
+            try:
+                await vault_cache.invalidate(aid)
+            except Exception as e:  # noqa: BLE001 — never mask the run's own outcome
+                log.warning("vault_cache: invalidate-after-batch failed: %s", e)
+
+    asyncio.create_task(_drive())
+    return {"started": True, "files": len(staged), "drive_links": len(links)}
+
+
+@app.get("/api/of/v2/vault/upload/status")
+async def of_vault_upload_status(run_id: str | None = None):
+    """Progress for the current (or named) batch. Safe to poll every ~2s.
+
+    A run whose relay restarted mid-flight reports `interrupted` rather than a
+    forever-`running` lie — the process-local registry is the source of truth
+    for liveness, never the on-disk status.
+    """
+    aid = _resolve_account_id(_request_ctx.get())
+    assert_account_owned(aid)
+    state = (vault_upload.read_state(run_id) if run_id
+             else vault_upload.latest_run(aid))
+    if state is None:
+        return {"running": False, "run": None}
+    if str(state.get("account_id")) != str(aid):
+        raise HTTPException(status_code=403, detail="not your run")
+    items = state.get("items") or []
+    return {
+        "running": vault_upload.is_running(aid),
+        "run_id": state.get("run_id"),
+        "status": state.get("status"),
+        "phase": state.get("phase"),
+        "error": state.get("error"),
+        "total": len(items),
+        "done": sum(1 for i in items if i.get("status") == "done"),
+        "failed": sum(1 for i in items if i.get("status") == "failed"),
+        "skipped": sum(1 for i in items if i.get("status") == "skipped"),
+        "carriers_live": sum(1 for i in items
+                             if i.get("carrier_post_id") and not i.get("carrier_deleted")),
+        "items": items,
+    }
 
 
 # Stories writes ----------------------------------------------------

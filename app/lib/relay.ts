@@ -173,6 +173,12 @@ export const relay = {
     form.append(fieldName, file, file.name);
     return request<T>(path, { method: "POST", body: form }, ctx);
   },
+  /** Multipart POST of a FormData the caller assembled — several files, or
+   *  files mixed with text fields. `uploadFile` covers the single-file case;
+   *  this is for routes like the vault import that take both. */
+  uploadForm<T = unknown>(path: string, form: FormData, ctx?: RelayContext): Promise<T> {
+    return request<T>(path, { method: "POST", body: form }, ctx);
+  },
   post<T = unknown>(path: string, body?: unknown, ctx?: RelayContext): Promise<T> {
     return request<T>(path, {
       method: "POST",
