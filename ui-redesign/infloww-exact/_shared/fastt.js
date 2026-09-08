@@ -1084,6 +1084,13 @@
            the model switcher, which are what you navigate with. */
         .topstrip .add-creator{display:none}
         .topstrip .htab,.topstrip .am-hero{padding-left:10px;padding-right:10px}
+        /* The translate dropdown and the window/PiP square are Infloww desktop
+           chrome we cloned for looks -- neither is wired to anything (see the
+           two markAll() calls in messages.js). On a phone there is no second
+           window and no browser translate bar to open, so they are pure width.
+           .ft-pill / #ft-sfw-pill are injected separately and are unaffected. */
+        .topstrip .top-right .tr-box,
+        .topstrip .top-right .icon-btn{display:none}
         /* "Pop out" opens the thread in a second window -- there is no second
            window on a phone. */
         .thread-head .th-right{display:none}
@@ -1151,6 +1158,167 @@
     // Leaving phone width puts all three panes back, so a rotation to landscape
     // never strands the operator inside a one-pane view.
     mq.addEventListener("change", () => { if (!mq.matches) root.classList.remove("ft-chat-open"); });
+  }
+
+  /** PHONE MODEL PICKER — the roster becomes a sheet instead of a train.
+   *
+   *  On desktop row 1 is a tab bar: Home, All Models, one .ctab per creator,
+   *  Add a Creator. On a phone that row is wider than the screen, so it turned
+   *  into a horizontal scroller -- every creator past the second was off the
+   *  right edge, and the row below it (Group chat) made the whole header two
+   *  wrapped lines of half-cut tabs.
+   *
+   *  So the creator tabs move out of the row and become a full-width dropdown
+   *  under a single trigger that shows WHO you are currently talking as. The
+   *  row that is left is one line: Home, Group chat, All Models, that trigger.
+   *
+   *  #ctabs is REPOSITIONED, never cloned. messages.js owns its markup and
+   *  binds click/keyboard/drag on the container itself, so switching creators,
+   *  closing a tab and the live unread badges all keep working untouched --
+   *  the sheet is the same element wearing different CSS. */
+  function mountPhoneModelPicker() {
+    const strip = document.querySelector(".topstrip");
+    const ctabs = strip && strip.querySelector("#ctabs");
+    if (!strip || !ctabs) return;              // not the chat shell
+    const root = document.documentElement;
+    if (root.__ftPhoneModels) return;
+    root.__ftPhoneModels = 1;
+
+    styleOnce("ft-phonemodels-css", `
+      /* Hidden by default, not "hidden above 760": a 760.5px viewport matches
+         neither max-width:760 nor min-width:761, and that gap is a stray
+         button on someone's tablet. The phone block below opts them back in. */
+      #ft-models-btn,#ft-models-backdrop{display:none}
+      @media (max-width:760px){
+        .topstrip{gap:6px}
+        /* Home and Group chat are one-tap destinations whose labels were
+           costing ~130px of a 390px row. The icons already say it. */
+        .topstrip .htab{font-size:0;gap:0;padding:6px 11px}
+        .topstrip .htab svg{width:18px;height:18px;color:#e8e8e8}
+        /* The scope tab keeps a word -- it names a mode, not a place, so an
+           icon alone would not carry it. But "All Models" is 89px next to a
+           button that already says which model, so on a phone it is "All".
+           Swapped in CSS so the desktop markup and its href stay untouched. */
+        .topstrip .am-hero{margin-left:0;padding:0 12px;font-size:0}
+        .topstrip .am-hero svg{display:none}
+        .topstrip .am-hero:after{content:"All";font-size:13px;font-weight:700}
+        /* Row 2 exists only for popped-out fan tabs now; with none open it
+           collapses instead of holding a 34px empty stripe. */
+        .hometabs{height:auto;min-height:0;padding:0 8px;border-bottom:0}
+
+        /* ── the trigger ─────────────────────────────────────────────── */
+        #ft-models-btn{display:inline-flex;align-items:center;gap:7px;
+          align-self:flex-end;margin-bottom:5px;height:30px;padding:0 9px;
+          border-radius:8px;background:#2d2130;border:1px solid rgba(236,75,155,.55);
+          color:#ffd8ec;font:700 13px Inter,system-ui,sans-serif;flex:0 1 auto;min-width:0}
+        #ft-models-btn:active{background:#3a2a3e}
+        #ft-models-btn .ft-mb-av{width:22px;height:22px;border-radius:6px;flex:none;
+          overflow:hidden;display:grid;place-items:center;
+          background:linear-gradient(135deg,#f3a26d,#d96b8f 55%,#7b5cc0)}
+        #ft-models-btn .ft-mb-av img{width:100%;height:100%;object-fit:cover;display:block}
+        #ft-models-btn .ft-mb-name{max-width:88px;overflow:hidden;
+          text-overflow:ellipsis;white-space:nowrap}
+        #ft-models-btn .ft-mb-n{font-size:10px;font-weight:700;color:#d8b6c8;
+          background:rgba(236,75,155,.18);border-radius:7px;padding:1px 5px;flex:none}
+        #ft-models-btn .ft-mb-n:empty{display:none}
+        #ft-models-btn svg{width:13px;height:13px;flex:none;
+          transition:transform .14s}
+        html.ft-models-open #ft-models-btn svg{transform:rotate(180deg)}
+
+        /* ── the sheet (same #ctabs element) ─────────────────────────── */
+        .topstrip .ctabs{display:none}
+        html.ft-models-open .topstrip .ctabs{
+          display:flex;position:fixed;left:0;right:0;z-index:60;
+          flex-direction:column;align-items:stretch;gap:4px;
+          max-width:none;max-height:min(62vh,430px);overflow-y:auto;
+          background:var(--topbar);border-bottom:1px solid var(--border);
+          box-shadow:0 18px 40px rgba(0,0,0,.55);
+          padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
+        html.ft-models-open .topstrip .ctab{
+          top:0;width:auto;max-width:none;height:50px;padding:0 6px 0 8px;gap:10px;
+          border-radius:11px;border-bottom-width:1px}
+        html.ft-models-open .topstrip .ctab .cav{width:34px;height:34px;border-radius:9px}
+        html.ft-models-open .topstrip .ctab .cname{font-size:15px;flex:1 1 auto;
+          min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        /* 16px of ✕ beside a name is a mis-tap waiting to happen when the row
+           itself switches creator. */
+        html.ft-models-open .topstrip .ctab .cclose{width:40px;height:40px;
+          margin-left:0;font-size:15px;border-radius:9px}
+        html.ft-models-open .topstrip .ctabs-empty{padding:14px 10px;font-size:13px}
+        html.ft-models-open #ft-models-backdrop{display:block;position:fixed;
+          inset:0;z-index:59;background:rgba(0,0,0,.45)}
+      }`);
+
+    const btn = document.createElement("button");
+    btn.id = "ft-models-btn";
+    btn.type = "button";
+    btn.setAttribute("aria-haspopup", "true");
+    btn.setAttribute("aria-expanded", "false");
+    btn.innerHTML =
+      '<span class="ft-mb-av"></span><span class="ft-mb-name">Models</span>' +
+      '<span class="ft-mb-n"></span>' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+      'stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>';
+    ctabs.parentNode.insertBefore(btn, ctabs);
+
+    const backdrop = document.createElement("div");
+    backdrop.id = "ft-models-backdrop";
+    document.body.appendChild(backdrop);
+
+    const mq = window.matchMedia("(max-width:760px)");
+    const isOpen = () => root.classList.contains("ft-models-open");
+    const setOpen = (on) => {
+      on = !!on && mq.matches;
+      // Measured, not guessed: the strip's height changes with the safe area
+      // and with whether row 2 has any popped-out tabs in it.
+      if (on) ctabs.style.top = Math.max(0, Math.round(strip.getBoundingClientRect().bottom)) + "px";
+      else ctabs.style.top = "";
+      root.classList.toggle("ft-models-open", on);
+      btn.setAttribute("aria-expanded", on ? "true" : "false");
+    };
+    btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); setOpen(!isOpen()); });
+    backdrop.addEventListener("click", () => setOpen(false));
+    // Picking a creator -- or closing her tab -- is the end of the sheet's job.
+    // Deferred so messages.js's own delegated handler runs on a live element.
+    ctabs.addEventListener("click", (e) => {
+      if (isOpen() && e.target.closest(".ctab")) setTimeout(() => setOpen(false), 0);
+    });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && isOpen()) setOpen(false); });
+    window.addEventListener("resize", () => { if (!mq.matches) setOpen(false); });
+
+    // messages.js rewrites #ctabs wholesale on every switch, so the trigger
+    // reads its label back off the DOM rather than tracking state of its own.
+    const sync = () => {
+      const tabs = ctabs.querySelectorAll(".ctab");
+      const act = ctabs.querySelector(".ctab.active") || tabs[0];
+      const nm = act && act.querySelector(".cname");
+      const label = nm ? nm.textContent.trim() : "Models";
+      btn.querySelector(".ft-mb-name").textContent = label;
+      const av = btn.querySelector(".ft-mb-av");
+      const img = act && act.querySelector(".cav img");
+      av.textContent = "";
+      if (img) av.appendChild(img.cloneNode(true));
+      btn.querySelector(".ft-mb-n").textContent = tabs.length > 1 ? String(tabs.length) : "";
+      btn.setAttribute("aria-label", "Switch creator — currently " + label);
+    };
+    new MutationObserver(sync).observe(ctabs, { childList: true, subtree: true });
+    sync();
+
+    // Home and Group chat are both "leave this screen" -- on a phone they sit
+    // side by side in the one header row instead of on two stacked stripes.
+    const home = strip.querySelector(".htab");
+    const hometabs = document.querySelector(".hometabs");
+    const group = hometabs && hometabs.querySelector(".htab");
+    const place = () => {
+      if (!group) return;
+      if (mq.matches) {
+        if (group.parentNode !== strip) strip.insertBefore(group, home ? home.nextSibling : strip.firstChild);
+      } else if (group.parentNode === strip) {
+        hometabs.insertBefore(group, hometabs.firstChild);
+      }
+    };
+    place();
+    mq.addEventListener("change", () => { place(); setOpen(false); });
   }
 
   function mountSfwToggle() {
@@ -1261,6 +1429,7 @@
     mountRailToggle();
     mountPhoneLayout();
     mountPhoneChat();
+    mountPhoneModelPicker();
     mountSfwToggle();
     mountHelpLink();
     if (!state.accountId) noAccountBanner();
