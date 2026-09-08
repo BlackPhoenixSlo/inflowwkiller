@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { itemLabel, runSummary } from "./VaultImportCard";
+import { itemLabel, runSummary, showsError } from "./VaultImportCard";
 
 /**
  * The two pure formatters, kept separate from the polling component so the
@@ -29,6 +29,14 @@ describe("itemLabel", () => {
   it("shows the vault id for a real upload", () => {
     expect(itemLabel({ ...base, status: "done", deduped: false, vault_id: 42 }))
       .toBe("in vault · 42");
+  });
+
+  it("says a still-encoding upload is not yet playable, rather than plain done", () => {
+    // The vault id is real and permanent — OnlyFans finishes the encode on its
+    // own — but a chatter who sends it right now gets a broken attachment.
+    expect(itemLabel({ ...base, status: "done", deduped: false, vault_id: 42,
+                       still_transcoding: true }))
+      .toBe("in vault · 42 · still processing");
   });
 
   it("surfaces the server's reason for a skip rather than a generic word", () => {
@@ -75,5 +83,32 @@ describe("runSummary", () => {
   it("stays quiet about zero failures", () => {
     expect(runSummary({ running: false, run_id: "r", status: "done", done: 3, failed: 0, skipped: 0 }))
       .toBe("3 in vault");
+  });
+});
+
+describe("showsError", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.parse("2026-09-08T12:00:00Z");
+
+  it("shows a fresh failure", () => {
+    expect(showsError(
+      { running: false, run_id: "r", status: "failed", error: "no disk",
+        finished_at: "2026-09-08T11:00:00Z" }, now)).toBe(true);
+  });
+
+  it("stops showing a failure from last week on every page load", () => {
+    expect(showsError(
+      { running: false, run_id: "r", status: "failed", error: "no disk",
+        finished_at: new Date(now - 7 * DAY).toISOString() }, now)).toBe(false);
+  });
+
+  it("never shows an error banner over a run that succeeded", () => {
+    expect(showsError(
+      { running: false, run_id: "r", status: "done", error: "stale text",
+        finished_at: new Date(now - 60_000).toISOString() }, now)).toBe(false);
+  });
+
+  it("has nothing to show when there is no error", () => {
+    expect(showsError({ running: false, run_id: "r", status: "failed" }, now)).toBe(false);
   });
 });

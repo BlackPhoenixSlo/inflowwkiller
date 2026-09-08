@@ -90,12 +90,13 @@ SERVICE_DIR = Path(__file__).resolve().parent.parent / "service"
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
-MARKER = "FASTT VAULT UPLOAD PROBE - DO NOT PUBLISH - SAFE TO DELETE"
-# Far enough out that no realistic cleanup delay lets it fire, near enough that
-# it is still inside whatever scheduling horizon OF enforces (OnlyStack uses 180
-# days; nobody has verified OF accepts that, and a shorter window is strictly
-# safer if cleanup ever fails).
-CARRIER_DAYS = 30
+# THE SAME marker and horizon the shipping code uses, imported rather than
+# copied. A probe with its own spelling is a carrier that vault_upload.sweep
+# cannot find — and a probe carrier is a real scheduled post on a real feed.
+# `CARRIER_DAYS` is far enough out that no realistic cleanup delay lets it fire,
+# near enough that it is inside whatever scheduling horizon OF enforces.
+from of_client import CARRIER_DAYS, VAULT_MARKER as MARKER  # noqa: E402
+
 POLL_INTERVAL_S = 3
 POLL_TIMEOUT_S = 300
 

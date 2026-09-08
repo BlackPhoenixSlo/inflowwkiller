@@ -1009,17 +1009,36 @@ async def _pump_supervisor() -> None:
 _EXECUTOR_THREADS = lane_config.resolve("RELAY_EXECUTOR_THREADS", 64)
 
 
+# Background tasks the relay owns for its own lifetime. CPython keeps only a
+# WEAK reference to a task returned by create_task, so a fire-and-forget task
+# can be garbage-collected mid-flight — for a vault import that means the run
+# vanishes silently with its carriers still live, which is the one failure the
+# whole crash-safety design exists to prevent. Hold the reference until it is
+# actually done.
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_bg(coro, name: str) -> asyncio.Task:
+    task = asyncio.create_task(coro, name=name)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
+
 @app.on_event("startup")
 async def _start_event_pumps() -> None:
     global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
     _main_loop = asyncio.get_running_loop()
     _event_stats["started_at"] = __import__("time").time()
 
-    # Vault-import crash recovery, FIRST and off the loop. A batch that died
-    # mid-flight can have left a scheduled carrier post on a real creator's
-    # feed; left alone it publishes on its postedAt date. Best-effort by
-    # design — a sweep failure must never stop the relay from booting.
-    async def _vault_sweep() -> None:
+    # Vault-import crash recovery, FIRST and off the loop, then hourly. A batch
+    # that died mid-flight can have left a scheduled carrier post on a real
+    # creator's feed; left alone it publishes on its postedAt date. Boot alone
+    # is not a schedule — this container runs for weeks and a carrier is 30 days
+    # out, so a session that went stale mid-run would otherwise be retried once,
+    # never, at a restart that never comes. Best-effort by design: a sweep
+    # failure must never stop the relay from booting.
+    async def _vault_sweep_once() -> None:
         try:
             res = await asyncio.to_thread(vault_upload.sweep, _load_client)
             if res.get("carriers_failed"):
@@ -1027,7 +1046,12 @@ async def _start_event_pumps() -> None:
                           "deleted — check scheduled posts", res["carriers_failed"])
         except Exception as e:  # noqa: BLE001
             log.warning("vault sweep failed: %s", e)
-    asyncio.create_task(_vault_sweep())
+
+    async def _vault_sweep_loop() -> None:
+        while True:
+            await _vault_sweep_once()
+            await asyncio.sleep(3600)
+    _spawn_bg(_vault_sweep_loop(), "vault-sweep")
 
     # Bump the anyio thread pool. `/img` is a sync streaming endpoint —
     # each in-flight video / avatar fetch holds one thread for as long as
@@ -7561,7 +7585,80 @@ async def of_upload_media(file: UploadFile = File(...)):
         except OSError: pass
 
 
-@app.post("/api/of/v2/vault/upload/batch")
+_VAULT_BATCH_PATH = "/api/of/v2/vault/upload/batch"
+# Ceiling on one import write's wait for the per-account pacer. Generous by
+# design — it is a wedge detector, not a policy — but finite: an unbounded wait
+# here is an import that never ends, and an import that never ends keeps its
+# account marked live, which silences the carrier sweep and its warnings.
+_VAULT_WRITE_GATE_TIMEOUT_S = 30 * 60
+
+
+@app.middleware("http")
+async def _cap_vault_batch_body(request: Request, call_next):
+    """Refuse an oversized batch upload BEFORE anything is written to disk.
+
+    The per-file cap inside the handler is already too late: FastAPI resolves
+    the form before the handler body runs, and Starlette spills every part past
+    1 MB into TMPDIR. So 60 GB dragged into the browser filled TMPDIR in full
+    and only the SECOND copy — into the staging directory — was ever capped. A
+    full disk takes SQLite, and with it the whole relay, down.
+
+    The ceiling is what BOTH filesystems involved can hold: Starlette spills the
+    parts into TMPDIR and the handler then copies them into
+    `vault_upload.STAGE_ROOT` under the spool, so the batch has to fit twice
+    when those are the same device and into the tighter of the two when they are
+    not. Measuring only TMPDIR — while the staging copy had been moved to the
+    spool — passed batches the spool could not hold (aborting 507 only after the
+    whole upload had transferred) and, where /tmp is a small tmpfs, rejected
+    every batch citing a volume with nothing to do with it.
+
+    A body with no content-length cannot be measured before it is read, and the
+    handler's own cap runs too late, so this route requires one.
+    """
+    if request.method == "POST" and request.url.path == _VAULT_BATCH_PATH:
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            declared = 0
+        if declared <= 0:
+            return JSONResponse(
+                status_code=411,
+                content={"detail": (
+                    "this upload needs a content-length — the server has to "
+                    "know how big a batch is before it starts writing it to "
+                    "disk, and a chunked body cannot be measured until it has "
+                    "already landed there. Send it as a normal form upload, or "
+                    "(if a proxy in front of the relay re-encodes the body) "
+                    "import from Google Drive links instead.")})
+        else:
+            limits = vault_upload.Limits()
+            import shutil as _shutil, tempfile as _tempfile
+            tmp_dir = Path(_tempfile.gettempdir())
+            stage_root = vault_upload.STAGE_ROOT
+            try:
+                stage_root.mkdir(parents=True, exist_ok=True)
+                same_device = os.stat(tmp_dir).st_dev == os.stat(stage_root).st_dev
+                free = min(_shutil.disk_usage(tmp_dir).free,
+                           _shutil.disk_usage(stage_root).free)
+            except OSError:
+                same_device, free = True, _shutil.disk_usage(tmp_dir).free
+            # Both copies are live at once: the handler streams out of the
+            # spooled part while writing the staged one.
+            copies = 2 if same_device else 1
+            room = min(max(free - limits.min_free_bytes, 0) // copies,
+                       limits.max_files * limits.max_download_bytes)
+            if declared > room:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": (
+                        f"that batch is {declared / 1e9:.1f} GB; this server can "
+                        f"stage at most {room / 1e9:.1f} GB right now. Import it "
+                        f"in smaller batches, or from Google Drive links, which "
+                        f"are fetched one file at a time.")})
+    return await call_next(request)
+
+
+@app.post(_VAULT_BATCH_PATH)
 async def of_vault_upload_batch(
     files: list[UploadFile] = File(default=[]),
     drive_links: str = Form(default=""),
@@ -7573,59 +7670,145 @@ async def of_vault_upload_batch(
     (newline/comma separated public Google Drive file or folder links), or
     both. `list_id` optionally files everything into a vault folder at the end.
 
-    The work runs in a worker THREAD, not on the event loop: each file is a
-    multi-minute sequence of blocking network calls, and the relay serves every
-    other account from this same loop. Poll `/api/of/v2/vault/upload/status`.
+    The run record is created HERE, synchronously, so the response can name the
+    run: the worker starts on a thread and a client that polled before it got
+    there used to be told `running: false` and never start polling at all.
+
+    The work itself runs in a worker THREAD, not on the event loop: each file is
+    a multi-minute sequence of blocking network calls, and the relay serves every
+    other account from this same loop. Poll
+    `/api/of/v2/vault/upload/status?run_id=…`.
     """
     import asyncio, re, shutil, tempfile
+    from concurrent.futures import TimeoutError as FuturesTimeout
     # Local import, matching every other automation_executor callsite here —
     # importing it at module scope reintroduces the load cycle its own docstring
     # warns about.
     from automation_executor import of_write_paced
     aid = _resolve_account_id(_request_ctx.get())
     assert_account_owned(aid)
-    if vault_upload.is_running(aid):
-        raise HTTPException(status_code=409, detail="a vault upload is already running")
+    # Claim the account BEFORE staging a single byte. `begin` is the only
+    # gate: it takes the in-process claim and the cross-process lockfile
+    # together, so it also refuses while a CLI import holds the lock. The
+    # cheap pre-check that used to live here read the in-process registry
+    # only, which meant a 5 GB drag-in was transferred and written to disk
+    # in full before the lock refused it -- and, once a wedged run aged past
+    # the stall ceiling, it answered 409 to the very re-run the dashboard was
+    # telling the operator to start.
+    try:
+        run_id = vault_upload.begin(aid, list_id=int(list_id) if list_id else None)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=409, detail=str(e))
 
     links = [s.strip() for s in re.split(r"[\n,]+", drive_links or "") if s.strip()]
     # Spool uploaded bytes to disk here, inside the request, so the client's
     # connection can close; the run itself must not depend on it staying open.
+    #
+    # Streamed with a running byte count and a free-space check on the STAGING
+    # filesystem, which is usually not the spool's: dragging in 60 GB of raw
+    # footage used to fill the disk with no cap consulted at all, and a full disk
+    # takes SQLite — and with it the whole relay — down, which is the exact
+    # outcome this feature's design notes claim to prevent.
+    # pace_s=0: the write gate below already spaces every write for this
+    # account, so the module's own inter-file sleep would only double it. This
+    # is the POLICY, stated here — it used to be inferred from whether a gate
+    # was passed at all, which silently disabled pacing for any other gate.
+    limits = vault_upload.Limits(pace_s=0).checked()
     staged: list[str] = []
-    stage_dir = tempfile.mkdtemp(prefix="vault-in-")
-    for f in files or []:
-        if not f.filename:
-            continue
-        dest = os.path.join(stage_dir, os.path.basename(f.filename))
-        with open(dest, "wb") as out:
-            shutil.copyfileobj(f.file, out)
-        staged.append(dest)
-    if not staged and not links:
-        raise HTTPException(status_code=400, detail="no files and no drive links")
+    # Under the spool, not TMPDIR: a SIGKILL between staging and the run leaked
+    # the whole staged batch, and nothing in a container ever cleans /tmp. Here
+    # the boot sweep owns it.
+    vault_upload.STAGE_ROOT.mkdir(parents=True, exist_ok=True)
+    stage_dir = tempfile.mkdtemp(prefix="vault-in-",
+                                 dir=str(vault_upload.STAGE_ROOT))
+    _CHUNK = 1024 * 1024
+    _FREE_CHECK_EVERY = 64 * _CHUNK
+    try:
+        vault_upload.guard_space(0, limits, path=Path(stage_dir))
+        since_check = 0
+        for f in files or []:
+            if not f.filename:
+                continue
+            dest = os.path.join(stage_dir, os.path.basename(f.filename))
+            # The SAME cap rule the Drive path uses: only video ffmpeg can
+            # shrink earns the big download ceiling. Applying that ceiling to
+            # everything meant a 1.5 GB dragged-in JPEG was streamed to disk in
+            # full and then skipped at 200 MB.
+            cap = vault_upload.cap_for(f.filename, f.content_type, limits)
+            written = 0
+            with open(dest, "wb") as out:
+                while chunk := await f.read(_CHUNK):
+                    written += len(chunk)
+                    since_check += len(chunk)
+                    if written > cap:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(f"{f.filename} is over the "
+                                    f"{cap / 1e6:.0f} MB per-file limit"))
+                    if since_check >= _FREE_CHECK_EVERY:
+                        since_check = 0
+                        vault_upload.guard_space(0, limits, path=Path(stage_dir))
+                    out.write(chunk)
+            staged.append(dest)
+        if not staged and not links:
+            raise HTTPException(status_code=400, detail="no files and no drive links")
+    except HTTPException as e:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        vault_upload.abandon(run_id, str(e.detail))
+        raise
+    except Exception as e:  # noqa: BLE001 — a staging failure is the caller's answer
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        vault_upload.abandon(run_id, str(e))
+        raise HTTPException(status_code=507, detail=str(e))
 
     client = _get_client()
-
     loop = asyncio.get_running_loop()
 
-    def _paced_post(**kw):
-        """Create the carrier post through the relay's per-account write pacer.
+    def _write_gate(thunk):
+        """Run one OnlyFans write through the relay's per-account write pacer.
 
-        OnlyFans throttles EVERY write per account, so an import that paced
-        itself in isolation would eat the slot an automation's fan message
-        needed — the import failing is recoverable, a missed send is not. The
+        A GATE, not a post factory: the carrier create, the carrier delete and
+        the final foldering call all go through it, and none of them is
+        described here — `of_client` stays the only place that knows what a
+        carrier post is.
+
+        OnlyFans throttles EVERY write per account, so an import that paced only
+        its own posts would still eat the slot an automation's fan message
+        reserved — the import failing is recoverable, a missed send is not. The
         pacer lives on the event loop; we are on a worker thread, so hop across
         and block this thread (not the loop) until it is our turn.
+
+        The wait is BOUNDED. `fut.result()` with no timeout meant a wedged
+        pacer (or a loop that never got round to us) parked the import thread
+        for the life of the process, and an import that never ends keeps its
+        account marked live — which silences the sweep and the carrier warnings
+        for every one of its older runs. The ceiling is far above any real
+        wait: the pacer spaces writes 11 s apart and the write itself carries
+        its own network timeouts, so minutes here means something is stuck.
         """
         fut = asyncio.run_coroutine_threadsafe(
-            of_write_paced(
-                aid, lambda: client.create_post(client._VAULT_MARKER, **kw),
-                send_purpose="not_fan_dm"),   # a throwaway carrier post, not a fan DM
+            of_write_paced(aid, thunk, send_purpose="not_fan_dm"),  # carrier, not a fan DM
             loop)
-        return fut.result()
+        try:
+            return fut.result(timeout=_VAULT_WRITE_GATE_TIMEOUT_S)
+        except FuturesTimeout:
+            # Bounding the WAIT is not enough. `run_coroutine_threadsafe`
+            # returns a future whose timeout does not touch the coroutine:
+            # of_write_paced stays parked in its pacing sleep and still
+            # creates the post when its slot arrives -- after this call has
+            # raised past the `finally` that would have deleted it, after the
+            # run finished, and after the sweep concluded there was nothing
+            # scheduled and retired the intent. The post then appears with
+            # nothing on record tracking it, and publishes on its date.
+            fut.cancel()
+            raise
+
 
     def _run():
         try:
             return vault_upload.start(aid, client=client, local_paths=staged,
-                                      drive_links=links, paced_post=_paced_post,
+                                      drive_links=links, gate=_write_gate,
+                                      run_id=run_id, limits=limits,
                                       list_id=int(list_id) if list_id else None)
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
@@ -7635,14 +7818,16 @@ async def of_vault_upload_batch(
             await asyncio.to_thread(_run)
         except Exception:
             log.exception("vault batch upload failed")
+            vault_upload.abandon(run_id, "the import worker died before it started")
         finally:
             try:
                 await vault_cache.invalidate(aid)
             except Exception as e:  # noqa: BLE001 — never mask the run's own outcome
                 log.warning("vault_cache: invalidate-after-batch failed: %s", e)
 
-    asyncio.create_task(_drive())
-    return {"started": True, "files": len(staged), "drive_links": len(links)}
+    _spawn_bg(_drive(), "vault-import")
+    return {"run_id": run_id, "started": True,
+            "files": len(staged), "drive_links": len(links)}
 
 
 @app.get("/api/of/v2/vault/upload/status")
@@ -7650,30 +7835,61 @@ async def of_vault_upload_status(run_id: str | None = None):
     """Progress for the current (or named) batch. Safe to poll every ~2s.
 
     A run whose relay restarted mid-flight reports `interrupted` rather than a
-    forever-`running` lie — the process-local registry is the source of truth
-    for liveness, never the on-disk status.
+    forever-`running` lie, and `running` describes THIS run, not the account, so
+    an old run does not read as live because a new one is.
+
+    Every field here that turns on liveness — the run's status and both carrier
+    warnings — is `vault_upload._run_is_live` answering, once. It used to be two
+    different answers: this payload could report a CLI import as "interrupted"
+    (the dashboard renders that as "the relay restarted mid-run") while
+    suppressing its carrier warnings in the same breath BECAUSE the account was
+    busy.
     """
     aid = _resolve_account_id(_request_ctx.get())
     assert_account_owned(aid)
-    state = (vault_upload.read_state(run_id) if run_id
-             else vault_upload.latest_run(aid))
+    # ONE walk of the spool per request: the latest run and the account-wide
+    # carrier roll-up used to scan and re-parse every run.json separately, twice
+    # over, for every 2.5s poll of every open tab. OFF the event loop, too — it
+    # reads every run.json and, while another process holds an import lock, asks
+    # the OS about that process, which on a non-Linux host forks `ps`.
+    def _roll_up():
+        runs = vault_upload.account_runs(aid)
+        state = (vault_upload.read_state(run_id) if run_id
+                 else vault_upload.latest_of(runs))
+        return state, vault_upload.carriers_outstanding(aid, runs)
+
+    try:
+        state, (carriers_undeletable, carriers_unrecorded) = \
+            await asyncio.to_thread(_roll_up)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad run id")
     if state is None:
         return {"running": False, "run": None}
     if str(state.get("account_id")) != str(aid):
         raise HTTPException(status_code=403, detail="not your run")
     items = state.get("items") or []
+    counts = {st: sum(1 for i in items if i.get("status") == st)
+              for st in vault_upload.ITEM_STATUSES}
     return {
-        "running": vault_upload.is_running(aid),
+        "running": state.get("status") == "running",
         "run_id": state.get("run_id"),
         "status": state.get("status"),
         "phase": state.get("phase"),
         "error": state.get("error"),
+        "filing_error": state.get("filing_error"),
+        "finished_at": state.get("finished_at"),
         "total": len(items),
-        "done": sum(1 for i in items if i.get("status") == "done"),
-        "failed": sum(1 for i in items if i.get("status") == "failed"),
-        "skipped": sum(1 for i in items if i.get("status") == "skipped"),
-        "carriers_live": sum(1 for i in items
-                             if i.get("carrier_post_id") and not i.get("carrier_deleted")),
+        **counts,
+        # Across EVERY run for the account and only FINISHED ones: a carrier
+        # that could not be deleted must stay on screen until it is actually
+        # gone, and one that legitimately exists for the two seconds of a live
+        # import must never be reported as an escape. `carriers_unrecorded`
+        # counts the worse case — an intent whose create response was lost, so
+        # there is no id to name. The names are `vault_upload`'s own: this wire
+        # said `carriers_live` long after the module stopped, so the retired
+        # name was the one every consumer read.
+        "carriers_undeletable": carriers_undeletable,
+        "carriers_unrecorded": carriers_unrecorded,
         "items": items,
     }
 

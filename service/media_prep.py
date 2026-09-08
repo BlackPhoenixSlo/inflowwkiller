@@ -39,11 +39,35 @@ TARGET_MB = int(os.environ.get("VAULT_COMPRESS_TARGET_MB") or 190)
 MAX_HEIGHT = int(os.environ.get("VAULT_COMPRESS_MAX_HEIGHT") or 1080)
 AUDIO_KBPS = 128
 
-_VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg", ".wmv"}
+_VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg",
+                   ".wmv", ".ts", ".m2ts", ".mts", ".flv", ".3gp"}
 
 
 def have_ffmpeg() -> bool:
     return bool(shutil.which("ffmpeg"))
+
+
+def can_shrink(name: str | Path, mime: str | None = None) -> bool:
+    """Will compression be ATTEMPTED on this file? The single predicate.
+
+    There used to be two — a mime-type test on the Drive side and a suffix test
+    on the disk side — and they disagreed: a `.flv` with a `video/` mime was
+    fetched under the big download ceiling and then rejected as "cannot be
+    compressed", after the download had already been spent. A caller that
+    decides what to FETCH and a caller that decides what to COMPRESS have to be
+    answering the same question, so they ask it here.
+
+    MIME wins when Drive gave us one; the suffix is the fallback for a local
+    file, which has no declared type.
+    """
+    if not have_ffmpeg():
+        return False
+    if mime:
+        if mime.startswith("video/"):
+            return True
+        if mime.startswith(("image/", "audio/")):
+            return False
+    return is_video(Path(name))
 
 
 def probe_duration_s(path: Path) -> float | None:
@@ -83,8 +107,16 @@ def probe_height(path: Path) -> int | None:
         return None
 
 
-def needs_compression(path: Path, *, over_mb: int = COMPRESS_OVER_MB) -> bool:
+def needs_compression(path: Path, *, over_mb: int = COMPRESS_OVER_MB,
+                      mime: str | None = None) -> bool:
     """True if the file is oversized OR over-resolution.
+
+    `mime` matters: the callers that decide what to FETCH ask `can_shrink`,
+    which trusts a declared `video/*` over the filename. If this function asked
+    the suffix alone, a Drive file called `clip.dat` with `mimeType: video/mp4`
+    was admitted under the 2000 MB download ceiling, fetched in full, never
+    compressed, and then skipped as "over the 200 MB limit". One predicate, all
+    three passes.
 
     Resolution matters independently of size: a short 8K clip can sit under the
     size threshold and still be pointless to upload at full resolution, because
@@ -93,7 +125,7 @@ def needs_compression(path: Path, *, over_mb: int = COMPRESS_OVER_MB) -> bool:
     measured at ~3x realtime on two cores — so the trade is firmly worth it.
     """
     try:
-        if not is_video(path):
+        if not can_shrink(path.name, mime):
             return False
         if path.stat().st_size > over_mb * 1024 * 1024:
             return True
@@ -124,14 +156,19 @@ def compress(path: Path, dest_dir: Path, *, target_mb: int = TARGET_MB) -> Path 
     # target. Halve it past ten minutes — speech and music both survive 64k far
     # better than the video survives being starved of bits.
     audio_kbps = AUDIO_KBPS if not duration or duration <= 600 else 64
-    common = [
-        "ffmpeg", "-nostdin", "-y", "-i", str(path),
-        "-vf", f"scale=-2:'min({MAX_HEIGHT},ih)'",
-        "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", f"{audio_kbps}k",
-        "-movflags", "+faststart",
-    ]
+
+    def _common(height: int) -> list[str]:
+        # Built once the height is known, rather than built at MAX_HEIGHT and
+        # then patched by matching the formatted scale filter against itself.
+        return [
+            "ffmpeg", "-nostdin", "-y", "-i", str(path),
+            "-vf", f"scale=-2:'min({height},ih)'",
+            "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", f"{audio_kbps}k",
+            "-movflags", "+faststart",
+        ]
+
     if duration and duration > 1:
         # Bitrate the size target actually allows, once audio is paid for.
         video_kbps = int((target_mb * 8 * 1024) / duration - audio_kbps)
@@ -143,6 +180,8 @@ def compress(path: Path, dest_dir: Path, *, target_mb: int = TARGET_MB) -> Path 
         # the few bits available on something watchable AND hits the size.
         height = MAX_HEIGHT
         for h, needed in ((MAX_HEIGHT, 1500), (720, 800), (480, 400), (360, 200)):
+            # Not dead: MAX_HEIGHT is settable, and at 480 the fixed 720 rung
+            # would otherwise UPSCALE past the cap the operator asked for.
             if h > MAX_HEIGHT:
                 continue
             if video_kbps >= needed:
@@ -150,15 +189,14 @@ def compress(path: Path, dest_dir: Path, *, target_mb: int = TARGET_MB) -> Path 
                 break
             height = h      # keep stepping down; last one wins
         video_kbps = max(video_kbps, 150)    # a real floor, but a low one
-        cmd = [c if c != f"scale=-2:'min({MAX_HEIGHT},ih)'"
-               else f"scale=-2:'min({height},ih)'" for c in common]
-        cmd += ["-b:v", f"{video_kbps}k", "-maxrate", f"{int(video_kbps * 1.5)}k",
-                "-bufsize", f"{video_kbps * 2}k", str(out)]
+        cmd = _common(height) + [
+            "-b:v", f"{video_kbps}k", "-maxrate", f"{int(video_kbps * 1.5)}k",
+            "-bufsize", f"{video_kbps * 2}k", str(out)]
         log.info("media_prep: %s (%.0f MB, %.0fs) -> %dp @ %dk video + %dk audio",
                  path.name, path.stat().st_size / 1e6, duration, height,
                  video_kbps, audio_kbps)
     else:
-        cmd = common + ["-crf", "26", str(out)]
+        cmd = _common(MAX_HEIGHT) + ["-crf", "26", str(out)]
         log.info("media_prep: %s — no duration, falling back to CRF 26", path.name)
 
     try:
@@ -191,10 +229,16 @@ def compress(path: Path, dest_dir: Path, *, target_mb: int = TARGET_MB) -> Path 
 
 def prepare(path: str | Path, dest_dir: str | Path, *,
             over_mb: int = COMPRESS_OVER_MB,
-            target_mb: int = TARGET_MB) -> tuple[Path, bool]:
-    """`(path_to_upload, was_compressed)`. Never raises; falls back to the original."""
+            target_mb: int = TARGET_MB,
+            mime: str | None = None) -> tuple[Path, bool]:
+    """`(path_to_upload, was_compressed)`. Never raises; falls back to the original.
+
+    `mime` is the declared type when the caller has one (Drive gives us one; a
+    local file does not). It reaches `can_shrink` so that "is this compressible?"
+    has exactly one answer across the cap pass, the fetch pass and here.
+    """
     p = Path(path)
-    if not needs_compression(p, over_mb=over_mb):
+    if not needs_compression(p, over_mb=over_mb, mime=mime):
         return p, False
     try:
         smaller = compress(p, Path(dest_dir), target_mb=target_mb)

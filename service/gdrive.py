@@ -32,6 +32,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -47,6 +50,12 @@ _NATIVE_PREFIX = "application/vnd.google-apps."
 # "<" is never a real image/video and would otherwise land on disk as a
 # corrupt file that only fails much later, at the S3 PUT.
 _HTML_SNIFF = b"<"
+
+# Wall-clock ceiling for ONE file. The per-read `timeout=` cannot bound a
+# transfer — a server that dribbles a byte before each timeout expires holds the
+# socket open indefinitely — and the run that is waiting on it holds its
+# account's liveness claim the whole time.
+DOWNLOAD_MAX_S = float(os.environ.get("VAULT_DOWNLOAD_MAX_S") or 2 * 3600)
 
 
 class GDriveError(RuntimeError):
@@ -166,18 +175,72 @@ def _explain(status: int, body: str, what: str) -> GDriveError:
     return GDriveError(f"{what}: Drive returned {status} — {body[:200]}")
 
 
+_LOCAL = threading.local()
+
+
 def _session():
-    import requests
-    return requests
+    """One pooled `requests.Session` per THREAD for every Drive call.
+
+    A real session, not the module: a folder import is dozens of requests to
+    one host, and the streaming download in particular wants the connection
+    kept alive rather than a fresh TLS handshake per file.
+
+    Per-thread, not process-wide: `requests.Session` is not thread-safe, and
+    two imports for two accounts run on two relay worker threads — sharing one
+    session's connection pool between them (and racing the lazy init) buys
+    nothing and can interleave two responses.
+    """
+    s = getattr(_LOCAL, "session", None)
+    if s is None:
+        import requests
+        s = _LOCAL.session = requests.Session()
+    return s
+
+
+def _auth() -> dict:
+    """The API key as a HEADER.
+
+    NEVER as a `key=` query parameter: `requests` puts the full URL — query
+    string included — into the text of a ConnectionError, and this repo stores
+    an item's error text in the run record and renders it in the dashboard. One
+    transient DNS blip would have written the key to disk and to the screen.
+    """
+    return {"x-goog-api-key": api_key()}
+
+
+def redact(text: str) -> str:
+    """Strip the API key out of anything about to be stored or displayed.
+
+    The header change above closes the URL leak; this closes every other one —
+    a stack trace, a proxy error, a Drive body that echoes the request. Call it
+    on anything derived from an exception before it leaves this module.
+    """
+    text = str(text)
+    try:
+        key = api_key()
+    except GDriveError:
+        return text
+    return text.replace(key, "<GOOGLE_DRIVE_API_KEY>") if key else text
+
+
+def _get(url: str, *, params: dict, refs, what: str, **kw):
+    """One Drive GET, with the key in the header and out of every error path."""
+    try:
+        return _session().get(url, params=params,
+                              headers={**_auth(), **_headers(*refs)}, **kw)
+    except GDriveError:
+        raise
+    except Exception as e:  # noqa: BLE001 — transport errors must be redacted too
+        raise GDriveError(f"{what}: {redact(e)}") from None
 
 
 def metadata(ref: DriveRef) -> DriveFile:
     """One `files.get` — resolves what the id actually is."""
-    r = _session().get(
-        f"{API}/{ref.id}",
-        params={"fields": "id,name,mimeType,size,md5Checksum,shortcutDetails",
-                "supportsAllDrives": "true", "key": api_key()},
-        headers=_headers(ref), timeout=30)
+    r = _get(f"{API}/{ref.id}",
+             params={"fields": "id,name,mimeType,size,md5Checksum,resourceKey,"
+                               "shortcutDetails",
+                     "supportsAllDrives": "true"},
+             refs=(ref,), what=f"Drive item {ref.id}", timeout=30)
     if not r.ok:
         raise _explain(r.status_code, r.text, f"Drive item {ref.id}")
     d = r.json()
@@ -191,17 +254,27 @@ def metadata(ref: DriveRef) -> DriveFile:
     return DriveFile(id=d["id"], name=d.get("name") or d["id"],
                      mime_type=d.get("mimeType") or "application/octet-stream",
                      size=int(d["size"]) if d.get("size") else None,
-                     resource_key=ref.resource_key, md5=d.get("md5Checksum"))
+                     # The item's OWN key when Drive reports one; the link's
+                     # only as a fallback. A resource key belongs to one file —
+                     # handing a child its parent folder's is a 404 waiting to
+                     # happen (see parse_link on why the key matters at all).
+                     resource_key=d.get("resourceKey") or ref.resource_key,
+                     md5=d.get("md5Checksum"))
 
 
 def list_folder(ref: DriveRef, *, recursive: bool = True,
                 max_files: int = 500, _depth: int = 0) -> list[DriveFile]:
-    """Every downloadable file in a public folder.
+    """Every downloadable file in a public folder, up to `max_files`.
 
     Paginates properly — `fields=files(...)` alone silently omits
     `nextPageToken`, which caps you at one page and looks like a small folder.
     Recurses into subfolders, depth-capped so a cyclic shortcut graph can't
     spin forever.
+
+    `max_files` is a BUDGET FOR THE WHOLE TREE, not per folder. It used to be
+    handed to each subfolder in full and never re-checked by the parent, so a
+    20-subfolder tree could return 20x the cap — and every one of those listings
+    is API quota spent on files the caller was always going to drop.
     """
     if _depth > 8:
         log.warning("gdrive: folder nesting deeper than 8, stopping at %s", ref.id)
@@ -211,41 +284,50 @@ def list_folder(ref: DriveRef, *, recursive: bool = True,
     while True:
         params = {
             "q": f"'{ref.id}' in parents and trashed=false",
-            "fields": "nextPageToken, files(id,name,mimeType,size,md5Checksum,shortcutDetails)",
+            "fields": "nextPageToken, files(id,name,mimeType,size,md5Checksum,"
+                      "resourceKey,shortcutDetails)",
             "pageSize": "200",
             "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
-            "key": api_key(),
         }
         if token:
             params["pageToken"] = token
-        r = _session().get(API, params=params, headers=_headers(ref), timeout=30)
+        r = _get(API, params=params, refs=(ref,),
+                 what=f"Drive folder {ref.id}", timeout=30)
         if not r.ok:
             raise _explain(r.status_code, r.text, f"Drive folder {ref.id}")
         page = r.json()
         for d in page.get("files") or []:
             mime = d.get("mimeType") or ""
+            # Every item carries its OWN resourceKey when it has one; the
+            # parent's is not inheritable (see metadata).
+            rkey = d.get("resourceKey")
             if mime == FOLDER_MIME:
-                if recursive:
-                    out.extend(list_folder(DriveRef(id=d["id"], kind="folder",
-                                                    resource_key=ref.resource_key),
-                                           recursive=True, max_files=max_files,
-                                           _depth=_depth + 1))
+                if recursive and len(out) < max_files:
+                    out.extend(list_folder(
+                        DriveRef(id=d["id"], kind="folder", resource_key=rkey),
+                        recursive=True, max_files=max_files - len(out),
+                        _depth=_depth + 1))
+                    if len(out) >= max_files:
+                        return out[:max_files]
                 continue
             if mime == SHORTCUT_MIME:
                 try:
                     out.append(metadata(DriveRef(id=d["id"], kind="unknown",
-                                                 resource_key=ref.resource_key)))
+                                                 resource_key=rkey)))
                 except GDriveError as e:
                     log.warning("gdrive: skipping shortcut %s — %s", d.get("name"), e)
+                if len(out) >= max_files:
+                    log.warning("gdrive: folder %s hit the %d-file cap", ref.id, max_files)
+                    return out[:max_files]
                 continue
             out.append(DriveFile(id=d["id"], name=d.get("name") or d["id"],
                                  mime_type=mime,
                                  size=int(d["size"]) if d.get("size") else None,
-                                 resource_key=ref.resource_key,
+                                 resource_key=rkey,
                                  md5=d.get("md5Checksum")))
             if len(out) >= max_files:
                 log.warning("gdrive: folder %s hit the %d-file cap", ref.id, max_files)
-                return out
+                return out[:max_files]
         token = page.get("nextPageToken")
         if not token:
             return out
@@ -269,14 +351,21 @@ def resolve(links: list[str], *, max_files: int = 500) -> list[DriveFile]:
     seen: set[str] = set()
     out: list[DriveFile] = []
     for link in links:
+        # `max_files` is the budget for the whole call, not per link — three
+        # folder links must not resolve to three times the cap.
+        remaining = max_files - len(out)
+        if remaining <= 0:
+            log.warning("gdrive: %d-file cap reached, not resolving %d more link(s)",
+                        max_files, len(links) - links.index(link))
+            break
         ref = parse_link(link)
         if ref.kind == "folder":
-            files = list_folder(ref, max_files=max_files)
+            files = list_folder(ref, max_files=remaining)
         else:
             meta = metadata(ref)
             files = (list_folder(DriveRef(id=meta.id, kind="folder",
-                                          resource_key=ref.resource_key),
-                                 max_files=max_files)
+                                          resource_key=meta.resource_key),
+                                 max_files=remaining)
                      if meta.mime_type == FOLDER_MIME else [meta])
         for f in files:
             if f.id not in seen:
@@ -286,12 +375,23 @@ def resolve(links: list[str], *, max_files: int = 500) -> list[DriveFile]:
 
 
 def download(f: DriveFile, dest_dir: str | Path, *,
-             max_bytes: int | None = None) -> Path:
+             max_bytes: int | None = None,
+             min_free_bytes: int | None = None,
+             max_seconds: float = DOWNLOAD_MAX_S) -> Path:
     """Stream one Drive file to `dest_dir`. Returns the written path.
 
     Enforces `max_bytes` **while streaming**, not just against the declared
     metadata size — Drive's `size` is absent for some items and a caller that
     trusted it alone could still be handed a gigabyte.
+
+    `min_free_bytes` is re-checked as the bytes land, for the same reason: a
+    caller's up-front free-space guard can only guard the size Drive declared,
+    which for those same items is nothing at all.
+
+    `max_seconds` bounds the WHOLE transfer. `timeout=` below is per socket
+    read, so a server trickling one byte before every timeout streams forever
+    and never trips it — and a fetch that never returns is an import that never
+    ends, which leaves the account marked live and its carriers unswept.
     """
     if max_bytes is not None and f.size is not None and f.size > max_bytes:
         raise GDriveError(
@@ -304,14 +404,33 @@ def download(f: DriveFile, dest_dir: str | Path, *,
     safe = re.sub(r"[^\w.\- ]+", "_", Path(f.name).name).strip() or f.id
     dest = dest_dir / f"{f.id}_{safe}"
 
-    r = _session().get(f"{API}/{f.id}",
-                       params={"alt": "media", "supportsAllDrives": "true",
-                               "key": api_key()},
-                       headers=_headers(f), stream=True, timeout=120)
+    # allow_redirects=False on purpose. `requests` strips `Authorization` when
+    # it follows a cross-host redirect, but it does NOT strip a custom header —
+    # so `x-goog-api-key` would have travelled to whatever host Drive named for
+    # the media body. Follow by hand, without the key.
+    r = _get(f"{API}/{f.id}",
+             params={"alt": "media", "supportsAllDrives": "true"},
+             refs=(f,), what=f"downloading {f.name}", stream=True, timeout=120,
+             allow_redirects=False)
+    for _ in range(5):
+        if r.status_code not in (301, 302, 303, 307, 308):
+            break
+        location = r.headers.get("location")
+        if not location:
+            break
+        r.close()
+        try:
+            r = _session().get(location, stream=True, timeout=120,
+                               allow_redirects=False)
+        except Exception as e:  # noqa: BLE001
+            raise GDriveError(f"downloading {f.name}: {redact(e)}") from None
     if not r.ok:
         raise _explain(r.status_code, r.text, f"downloading {f.name}")
 
     written = 0
+    since_check = 0
+    deadline = time.monotonic() + max_seconds
+    _FREE_CHECK_EVERY = 64 * 1024 * 1024
     try:
         with dest.open("wb") as fh:
             for chunk in r.iter_content(1024 * 256):
@@ -322,9 +441,21 @@ def download(f: DriveFile, dest_dir: str | Path, *,
                         f"{f.name}: Drive served an HTML page instead of the file "
                         f"— it is probably not publicly shared.")
                 written += len(chunk)
+                if time.monotonic() > deadline:
+                    raise GDriveError(
+                        f"{f.name}: gave up after {max_seconds / 60:.0f} minutes "
+                        f"({written / 1e6:.0f} MB in) — the download is not "
+                        f"making progress")
                 if max_bytes is not None and written > max_bytes:
                     raise GDriveError(
                         f"{f.name}: exceeded the {max_bytes / 1e6:.0f} MB limit mid-download")
+                since_check += len(chunk)
+                if min_free_bytes is not None and since_check >= _FREE_CHECK_EVERY:
+                    since_check = 0
+                    if shutil.disk_usage(dest_dir).free < min_free_bytes:
+                        raise GDriveError(
+                            f"{f.name}: stopping the download — free disk would "
+                            f"fall below the {min_free_bytes / 1e9:.1f} GB floor")
                 fh.write(chunk)
     except Exception:
         dest.unlink(missing_ok=True)   # never leave a partial file for the uploader
