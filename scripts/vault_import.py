@@ -37,6 +37,7 @@ the second one exits rather than fighting for the write window.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
@@ -79,7 +80,13 @@ def main(argv: list[str]) -> int:
                    help="delete carrier posts orphaned by an earlier crash, then exit")
     args = p.parse_args(argv)
 
+    # Every service-side import this script needs, in ONE place, after argparse
+    # has had its say — `--help` and a bad flag answer without dragging in the
+    # relay stack. `vault_ingest` joins them rather than being imported from the
+    # middle of the function body: an import that only runs on one branch is an
+    # ImportError nobody sees until that branch is taken.
     import client_pool
+    import vault_ingest
     import vault_upload
     _check_marks(vault_upload.ITEM_STATUSES)
 
@@ -136,6 +143,23 @@ def main(argv: list[str]) -> int:
         drive_links=list(args.drive), list_id=args.list_id, limits=limits)
 
     items = state.get("items") or []
+    # Same mirror write the relay does after a batch — without it the dashboard
+    # grid, which serves from the mirror, cannot show what this run uploaded.
+    # Which ids "landed" is `vault_upload`'s rule to state, not this script's:
+    # it owns the run-state shape, and the one subtle part (a `skipped` item can
+    # carry a real vault id, but it is a dedupe onto media HIDDEN on OF) was
+    # written down in the relay's copy and simply absent from this one.
+    #
+    # After the run rather than through `start`'s `on_landed` hook: nothing is
+    # polling this run's status, so there is no invalidation edge to get in front
+    # of, and doing it here keeps the report below printing last.
+    ids = vault_upload.landed_ids(state)
+    if ids:
+        try:
+            asyncio.run(vault_ingest.ingest_ids(args.account, ids, client))
+        except Exception as e:  # noqa: BLE001 — the upload already succeeded
+            print(f"  (mirror not updated: {e} — a vault re-collect fixes it)")
+
     print(f"\nrun {state['run_id']} — {state['status']}")
     for i in items:
         mark = _MARKS.get(i["status"], "?")

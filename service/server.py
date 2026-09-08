@@ -73,6 +73,7 @@ from stats import router as _stats_router  # noqa: E402
 from transactions import router as _transactions_router  # noqa: E402
 from vault import router as _vault_router  # noqa: E402
 import vault_cache  # noqa: E402  # shared TTL cache for /api/of/v2/vault/* responses
+import vault_ingest  # noqa: E402  # a finished import -> mirror rows (the grid reads the mirror)
 import vault_upload  # noqa: E402  # batch vault import (spool -> OF -> clear spool)
 import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoints (Stage C will wire call-sites)
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
@@ -7591,6 +7592,25 @@ _VAULT_BATCH_PATH = "/api/of/v2/vault/upload/batch"
 # here is an import that never ends, and an import that never ends keeps its
 # account marked live, which silences the carrier sweep and its warnings.
 _VAULT_WRITE_GATE_TIMEOUT_S = 30 * 60
+# Ceiling on the post-import mirror write. The run reports `running` for the
+# whole of it (that is the point — see `vault_upload._mirror_landed`), so a
+# wedged read here would hold the account's lock open and silence the carrier
+# sweep exactly like an unbounded pacer wait would.
+#
+# It is NOT an order of magnitude above the work, which is what this comment
+# used to claim. The honest worst case is `resolve_budget`'s `max_files * 2` —
+# 80 landed ids at the default cap, because `_apply_caps` counts only `pending`
+# items and a Google Drive memo hit is already `done` before caps run — each one
+# a serial OF by-id read. At an OF read timeout in the tens of seconds, 80 of
+# those exceed 15 minutes. So the ceiling is a DEADLINE for the whole write and
+# the write is chunked underneath it: a slow OF loses the tail rather than the
+# whole thing, which matters because a cancelled write is the pre-import grid
+# coming back on exactly the largest imports — the symptom the mirror write was
+# added to remove.
+_VAULT_MIRROR_TIMEOUT_S = 15 * 60
+# Ids per hop. Small enough that a chunk's own share of the deadline is a real
+# bound, large enough that the loop hop and the commit are amortised.
+_VAULT_MIRROR_CHUNK = 10
 
 
 @app.middleware("http")
@@ -7631,7 +7651,9 @@ async def _cap_vault_batch_body(request: Request, call_next):
                     "(if a proxy in front of the relay re-encodes the body) "
                     "import from Google Drive links instead.")})
         else:
-            limits = vault_upload.Limits()
+            # .checked() so the staging loop's cap matches the run's — an
+            # unchecked Limits still carries the raw two-ceiling pair.
+            limits = vault_upload.Limits().checked()
             import shutil as _shutil, tempfile as _tempfile
             tmp_dir = Path(_tempfile.gettempdir())
             stage_root = vault_upload.STAGE_ROOT
@@ -7679,7 +7701,7 @@ async def of_vault_upload_batch(
     other account from this same loop. Poll
     `/api/of/v2/vault/upload/status?run_id=…`.
     """
-    import asyncio, re, shutil, tempfile
+    import asyncio, re, shutil, tempfile, time
     from concurrent.futures import TimeoutError as FuturesTimeout
     # Local import, matching every other automation_executor callsite here —
     # importing it at module scope reintroduces the load cycle its own docstring
@@ -7687,6 +7709,17 @@ async def of_vault_upload_batch(
     from automation_executor import of_write_paced
     aid = _resolve_account_id(_request_ctx.get())
     assert_account_owned(aid)
+    # BEFORE `begin`, because it can raise. `_get_client` answers 503 for an
+    # account whose OnlyFans session is dead — a first-class state here, with
+    # its own columns and its own banner on the vault page — and it used to sit
+    # below the staging block, outside the `try` that abandons the run. So the
+    # 503 left `_live[aid]` claimed, the lockfile on disk and `run.json` saying
+    # `running`, with nothing to release any of it: `begin()` refuses on `_live`
+    # unconditionally and there is no stall ceiling on the in-process claim, so
+    # every later import for that account answered 409 until the relay was
+    # restarted. Restoring the session did not help. Asking for the client while
+    # we still hold nothing costs one lookup and cannot strand anything.
+    client = _get_client()
     # Claim the account BEFORE staging a single byte. `begin` is the only
     # gate: it takes the in-process claim and the cross-process lockfile
     # together, so it also refuses while a CLI import holds the lock. The
@@ -7715,15 +7748,26 @@ async def of_vault_upload_batch(
     # was passed at all, which silently disabled pacing for any other gate.
     limits = vault_upload.Limits(pace_s=0).checked()
     staged: list[str] = []
+    stage_dir: str | None = None
+    _CHUNK = 1024 * 1024
+    _FREE_CHECK_EVERY = 64 * _CHUNK
+    # INSIDE the try, with everything else that touches the spool filesystem.
+    # The rule this obeys is the one stated above `_get_client()`: between
+    # `begin()` and a handler that abandons, NOTHING may raise. Both calls below
+    # do — on a full, read-only or permission-broken spool volume — and out here
+    # they left `_live[aid]` claimed, the lockfile on disk and `run.json` saying
+    # `running`, with nothing to release any of it. That is a permanent 409 for
+    # this account until the relay restarts, reached through the exact failure
+    # this route worries about most: `guard_space` was already inside the try
+    # while the two calls that need the same filesystem sat outside it.
+    #
     # Under the spool, not TMPDIR: a SIGKILL between staging and the run leaked
     # the whole staged batch, and nothing in a container ever cleans /tmp. Here
     # the boot sweep owns it.
-    vault_upload.STAGE_ROOT.mkdir(parents=True, exist_ok=True)
-    stage_dir = tempfile.mkdtemp(prefix="vault-in-",
-                                 dir=str(vault_upload.STAGE_ROOT))
-    _CHUNK = 1024 * 1024
-    _FREE_CHECK_EVERY = 64 * _CHUNK
     try:
+        vault_upload.STAGE_ROOT.mkdir(parents=True, exist_ok=True)
+        stage_dir = tempfile.mkdtemp(prefix="vault-in-",
+                                     dir=str(vault_upload.STAGE_ROOT))
         vault_upload.guard_space(0, limits, path=Path(stage_dir))
         since_check = 0
         for f in files or []:
@@ -7753,15 +7797,18 @@ async def of_vault_upload_batch(
         if not staged and not links:
             raise HTTPException(status_code=400, detail="no files and no drive links")
     except HTTPException as e:
-        shutil.rmtree(stage_dir, ignore_errors=True)
+        if stage_dir:
+            shutil.rmtree(stage_dir, ignore_errors=True)
         vault_upload.abandon(run_id, str(e.detail))
         raise
     except Exception as e:  # noqa: BLE001 — a staging failure is the caller's answer
-        shutil.rmtree(stage_dir, ignore_errors=True)
+        # `stage_dir` is None when mkdtemp itself was what failed; the run still
+        # has to be abandoned, which is the whole point of moving it in here.
+        if stage_dir:
+            shutil.rmtree(stage_dir, ignore_errors=True)
         vault_upload.abandon(run_id, str(e))
         raise HTTPException(status_code=507, detail=str(e))
 
-    client = _get_client()
     loop = asyncio.get_running_loop()
 
     def _write_gate(thunk):
@@ -7804,11 +7851,89 @@ async def of_vault_upload_batch(
             raise
 
 
+    def _hop(coro, timeout: float):
+        """Run one coroutine on the relay's loop from this worker thread, bounded.
+
+        Factored out only because the mirror step now takes several hops and
+        each of them needs the same `fut.cancel()` caveat `_write_gate` spells
+        out: cancelling the FUTURE does not stop a coroutine that has already
+        started. It keeps running, on the loop, past this call.
+        """
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            return fut.result(timeout=timeout)
+        except FuturesTimeout:
+            fut.cancel()
+            raise
+
+    def _mirror_gate(media_ids: list[int]) -> None:
+        """Write the ids this run landed into the local mirror, BEFORE the run
+        reports finished.
+
+        The grid reads the LOCAL mirror the moment the mirror holds any row for
+        this account, and an upload only ever reached OnlyFans — so without this
+        the file the operator just watched succeed appears in no vault view at
+        all until somebody runs a full re-collect.
+
+        It is a `vault_upload` hook rather than something this route does after
+        the run because of the ORDER. The card polls the status route and fires
+        its cache invalidations on the `running → not running` edge, exactly
+        once; a mirror write that lands after that edge is a write nothing
+        refetches (the mirror query has a 30 s staleTime, no interval, and
+        `refetchOnWindowFocus` is off). Two hundred imported photos then stay
+        invisible until the next collect — precisely the failure the mirror
+        write was added to fix. `vault_upload` calls this while the run is still
+        `running`, so the edge the client watches now comes after the write.
+
+        Same loop-hop as `_write_gate`, for the same reason: `vault_upload.start`
+        is on a worker thread and `ingest_ids` needs the relay's loop (and its DB
+        session).
+
+        CHUNKED under one deadline — see `_VAULT_MIRROR_TIMEOUT_S`, which can be
+        smaller than the work it bounds. One 80-id write that runs out of time
+        loses ALL of it (`fut.cancel()` does not stop the coroutine, so the rows
+        land later, after the edge nothing refetches — the pre-import grid, back
+        on the largest imports). Chunked, the same slow OF loses only the tail,
+        and everything before it is in the mirror before the run reports
+        finished.
+
+        The server-side listing cache is dropped here too, and unconditionally,
+        because it is the SAME ordering rule applied to the other cache — and it
+        matters most for the account `ingest_ids` stands aside for. An account
+        that was never collected has no mirror, so its only view of the import is
+        `/api/of/v2/vault/media`, which is served out of `vault_cache` on a 24 h
+        TTL to a client whose `vault-media` staleTime is three days with
+        `refetchOnWindowFocus` off. Dropping it in `_drive`'s `finally` — after
+        `start` published `done` — leaves a refetch that beats the drop by a
+        millisecond showing the pre-import listing for a day. `_drive` keeps its
+        invalidate as belt-and-braces for the run that never reached this hook.
+        """
+        ids = list(media_ids)
+        deadline = time.monotonic() + _VAULT_MIRROR_TIMEOUT_S
+        try:
+            for i in range(0, len(ids), _VAULT_MIRROR_CHUNK):
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise FuturesTimeout(
+                        f"vault mirror write ran out of time with "
+                        f"{len(ids) - i} of {len(ids)} ids unwritten")
+                _hop(vault_ingest.ingest_ids(aid, ids[i:i + _VAULT_MIRROR_CHUNK],
+                                             client), left)
+        finally:
+            # Its own `finally`, and not conditional on the ingest: a chunk that
+            # timed out or raised still leaves a stale listing behind, and the
+            # media IS on OnlyFans either way.
+            try:
+                _hop(vault_cache.invalidate(aid), 30)
+            except Exception as e:  # noqa: BLE001 — never mask the run's outcome
+                log.warning("vault_cache: invalidate-before-finish failed: %s", e)
+
     def _run():
         try:
             return vault_upload.start(aid, client=client, local_paths=staged,
                                       drive_links=links, gate=_write_gate,
                                       run_id=run_id, limits=limits,
+                                      on_landed=_mirror_gate,
                                       list_id=int(list_id) if list_id else None)
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
@@ -7820,6 +7945,11 @@ async def of_vault_upload_batch(
             log.exception("vault batch upload failed")
             vault_upload.abandon(run_id, "the import worker died before it started")
         finally:
+            # Its own `finally`, not a sibling `except Exception`: the relay
+            # shutting down mid-run cancels this task, and `CancelledError` is a
+            # BaseException — it would have walked straight past an `except
+            # Exception` and left the server-side TTL cache serving the
+            # PRE-import listing until it aged out on its own.
             try:
                 await vault_cache.invalidate(aid)
             except Exception as e:  # noqa: BLE001 — never mask the run's own outcome

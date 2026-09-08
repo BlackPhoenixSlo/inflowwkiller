@@ -42,6 +42,21 @@ from fansly_vault import VaultMixin
 
 log = logging.getLogger("of-relay.fansly.shim")
 
+# How many vault-upload parts go up at once (see FanslyShimClient.upload_media).
+# A single stream to S3 is usually throttled well below the box's uplink, so on
+# a fast host this is where the wall-clock win is; on a home connection the
+# uplink saturates first and the setting barely matters.
+#
+# Peak memory is this x Fansly's server-chosen `partSize` (20 MiB live, so
+# 80 MB at the default), REGARDLESS of file size, because each worker opens its
+# own file handle and reads only its own slice. Deliberately a different env
+# var from OnlyFans' VAULT_UPLOAD_PART_CONCURRENCY: the two platforms have
+# different part sizes (20 MiB vs 5 MiB), so the same number means four times
+# the memory here and they must be tunable apart.
+_UPLOAD_PART_CONCURRENCY = int(_os.environ.get("FANSLY_UPLOAD_PART_CONCURRENCY") or 4)
+# Read size for the streaming md5 pass — never the whole file.
+_UPLOAD_HASH_CHUNK = 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Capability contract — deliberate no-ops
@@ -663,8 +678,8 @@ def of_message(msg: dict, *, account_id: str,
         # set, scoped to this thread's fan by the caller — so a priced message
         # opens only once a purchase by THIS fan names one of its own grants.
         # Confirmed live 2026-09-02: a real $3 unlock on fan
-        # 900404711209099264 produced type 2007, correlationId
-        # <grant id> (a grant on the message), metadata
+        # 951404711209099264 produced type 2007, correlationId
+        # 951440044332167168 (a grant on the message), metadata
         # {"accountMediaPrice":3000} — 1/1000-dollar units, like every other
         # Fansly price (FANSLY_PRICE_UNIT). Absent that evidence a priced
         # message stays locked: telling a chatter a fan paid when they have
@@ -718,8 +733,8 @@ def of_chat_row(membership: dict, fan: dict | None, last_message: dict | None,
     #       fan message: genuinely blue, leave it.
     #   they DIFFER                          -> something newer than the newest
     #       unread exists (our reply): OF would have cleared it, so we do.
-    # Verified live: on one account the two pointers DIFFERED (our reply was
-    # newest -> cleared); on another they were EQUAL (fan spoke last -> stays 2).
+    # Verified live: ava 951212311962460160 vs ...5751051792384 (our reply ->
+    # cleared); bonnie 951007747011272705 == itself (fan last -> stays 2).
     # Both ids must be present — absent pointers mean "can't tell", and the safe
     # answer is to keep the unread rather than hide a waiting fan.
     _last_id = str(membership.get("lastMessageId") or "")
@@ -854,7 +869,7 @@ def _purchasable_ids(item: dict, media: list | None) -> set:
         `_resolve_attachments` expands a bundle into its members and drops it.
 
     Both are included deliberately. A single-media buy is CONFIRMED live to
-    report the grant id (2026-09-02: grant <grant id>, $3). A BUNDLE
+    report the grant id (2026-09-02: grant 951440044332167168, $3). A BUNDLE
     buy has never happened on this account, so whether Fansly's 2007 row names
     the bundle or one member grant is UNVERIFIED — and if it names the bundle,
     matching only on `media[]` would leave every bundled PPV permanently
@@ -1562,6 +1577,19 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         {"type": 1005, "value": "\"\""},
     ]
 
+    def _upload_session(self) -> "requests.Session":
+        """A fresh HTTP session for ONE part worker.
+
+        `self.http` is a single session shared by every call this client makes
+        and is not safe to drive from several threads at once. A presigned S3
+        PUT authenticates by URL, so a worker needs nothing off the client
+        session except its proxy settings. Also the seam the offline tests stub
+        instead of `self.http.put`."""
+        sess = requests.Session()
+        if getattr(self.http, "proxies", None):
+            sess.proxies.update(self.http.proxies)
+        return sess
+
     def upload_media(self, file_path: Any, *,
                      content_type: str | None = None,
                      check_dedupe: bool = True,
@@ -1583,8 +1611,9 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         Steps, each matching the capture field-for-field:
           1. POST mediav2 /media/upload/create  -> upload id + presigned S3
              url PER PART (`partSize` 20 MiB; a bigger file gets several parts).
-          2. PUT each part's bytes to its presigned url. NO Fansly headers —
-             the presign is the auth. Keep each response's ETag header.
+          2. PUT each part's bytes to its presigned url, several parts at once.
+             NO Fansly headers — the presign is the auth. Keep each response's
+             ETag header.
           3. POST /media/upload/complete echoing every ETag back, QUOTES
              INCLUDED, by part index.
           4. Poll GET /media/upload/{id} until status 6 — `mediaId` is null
@@ -1603,10 +1632,22 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         path = _Path(str(file_path))
         if not path.exists():
             raise FileNotFoundError(str(path))
-        data = path.read_bytes()
-        size = len(data)
         ct = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        md5_hex = hashlib.md5(data).hexdigest()
+        # Size and md5 in ONE STREAMING PASS — never `read_bytes()`. This runs
+        # inside the relay that also serves chat for every account, and the
+        # files this path now carries are multi-GB videos; buffering one would
+        # be multiple GB of RSS in a shared process. The md5 is NOT a dedupe
+        # key on Fansly (vault_media_lookup_hash is a declared no-op and
+        # /media/upload/* never sees a hash) — it is carried only so the OF
+        # result shape keeps its `md5` field, so unlike OnlyFans' S3-ETag
+        # dedupe key it is in no way coupled to the part size.
+        md5 = hashlib.md5()
+        size = 0
+        with path.open("rb") as fh:
+            while chunk := fh.read(_UPLOAD_HASH_CHUNK):
+                md5.update(chunk)
+                size += len(chunk)
+        md5_hex = md5.hexdigest()
 
         # 1. create
         desc = self._request("POST", "/media/upload/create", base=MEDIA_BASE,
@@ -1637,26 +1678,80 @@ class FanslyShimClient(VaultMixin, FanslyClient):
 
         # 2. PUT every part straight to S3 (presigned; Fansly auth would be
         # rejected there). The browser sends only `ngsw-bypass: true`.
-        etags: list[tuple[int, str]] = []
-        for part in sorted(parts, key=lambda p: int(p.get("index", 0))):
+        #
+        # PAIRED WITH `service/of_client.py`'s part loop in
+        # `OFClient.upload_media`. The two are deliberately separate — same S3
+        # multipart shape, but Fansly's `partSize` is server-chosen while
+        # OnlyFans' is pinned at 5 MiB by its dedupe ETag, and the error types
+        # and session classes differ — and they live on sys.path together only
+        # inside the running relay, while this file's tests run offline. They
+        # are NOT accidentally similar: a change to the retry/concurrency rule
+        # here should be considered there too.
+        #
+        # Parts go up CONCURRENTLY, each read straight off disk: a worker opens
+        # its own file handle, seeks to its own offset and reads only its own
+        # slice, so peak memory is _UPLOAD_PART_CONCURRENCY x part_size no
+        # matter how big the file is. Sequentially slicing one in-RAM buffer —
+        # what this used to do — cost the whole file in RSS *and* left the
+        # upload capped at whatever one S3 stream gives.
+        ordered = sorted(parts, key=lambda p: int(p.get("index", 0)))
+        results: list[tuple[int, str] | None] = [None] * len(ordered)
+
+        def _put_part(slot: int, part: dict) -> None:
             idx = int(part.get("index", 0))
-            chunk = data[idx * part_size:(idx + 1) * part_size]
-            put = self.http.put(part["uploadUrl"], data=chunk,
-                                headers={"ngsw-bypass": "true"},
-                                timeout=max(float(self.timeout), 120.0))
-            if not put.ok:
-                raise FanslyAPIError(
-                    f"S3 PUT part {idx} failed: {put.status_code} "
-                    f"{put.text[:200]}", put)
-            etag = put.headers.get("ETag") or put.headers.get("etag")
-            if not etag:
-                raise FanslyAPIError(
-                    f"S3 PUT part {idx} returned no ETag; complete needs it")
-            # S3 returns the ETag already double-quoted and Fansly wants it
-            # echoed EXACTLY that way. Only add quotes if S3 dropped them.
-            if not etag.startswith('"'):
-                etag = f'"{etag}"'
-            etags.append((idx, etag))
+            # Its OWN session: one requests.Session is not safe to drive from
+            # several threads, and a presigned PUT needs no auth beyond the
+            # URL, so a bare session carrying the same proxy settings is all a
+            # part needs.
+            sess = self._upload_session()
+            try:
+                with path.open("rb") as fh:
+                    fh.seek(idx * part_size)
+                    chunk = fh.read(part_size)
+                last: Exception | None = None
+                for _attempt in range(3):   # transport/proxy blip tolerance
+                    try:
+                        put = sess.put(part["uploadUrl"], data=chunk,
+                                       headers={"ngsw-bypass": "true"},
+                                       timeout=max(float(self.timeout), 300.0))
+                        if not put.ok:
+                            raise FanslyAPIError(
+                                f"S3 PUT part {idx} failed: {put.status_code} "
+                                f"{put.text[:200]}", put)
+                        etag = put.headers.get("ETag") or put.headers.get("etag")
+                        if not etag:
+                            raise FanslyAPIError(
+                                f"S3 PUT part {idx} returned no ETag; "
+                                f"complete needs it")
+                        # S3 returns the ETag already double-quoted and Fansly
+                        # wants it echoed EXACTLY that way. Only add quotes if
+                        # S3 dropped them.
+                        if not etag.startswith('"'):
+                            etag = f'"{etag}"'
+                        results[slot] = (idx, etag)
+                        return
+                    except FanslyAPIError:
+                        raise           # a real API answer — never retried
+                    except Exception as e:      # transport/proxy blip
+                        last = e
+                        time.sleep(0.4)
+                raise last or FanslyAPIError(f"S3 PUT part {idx} failed")
+            finally:
+                try:
+                    sess.close()
+                except Exception:   # noqa: BLE001 — a close must not mask the real error
+                    pass
+
+        workers = max(1, min(_UPLOAD_PART_CONCURRENCY, len(ordered)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_put_part, slot, part)
+                       for slot, part in enumerate(ordered)]
+            for fut in futures:
+                fut.result()        # re-raises the first failure
+        if any(r is None for r in results):
+            raise FanslyAPIError(
+                f"upload {upload_id} finished with missing parts")
+        etags: list[tuple[int, str]] = [r for r in results if r is not None]
 
         # 3. complete
         self._request("POST", "/media/upload/complete", base=MEDIA_BASE,

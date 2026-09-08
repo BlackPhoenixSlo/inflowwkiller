@@ -126,20 +126,11 @@ async def _run_collect(account_id: str, run_id: int) -> None:
                             if pf:
                                 drm_posters.append((vals["media_id"], pf))
                     # Preserve AI / operator / describe fields on conflict —
-                    # only refresh the mirror bookkeeping. `last_seen_run_id` is
-                    # the sweep's own bookkeeping, so it rides on top of the
-                    # shared list rather than inside it.
-                    refresh = {k: vals[k]
-                               for k in vault_mirror.MIRROR_REFRESH_FIELDS + ("last_seen_run_id",)}
-                    stmt = (
-                        sqlite_insert(VaultItem)
-                        .values(**vals)
-                        .on_conflict_do_update(
-                            index_elements=["account_id", "media_id"],
-                            set_=refresh,
-                        )
-                    )
-                    await s.execute(stmt)
+                    # only refresh the mirror bookkeeping. The statement is
+                    # `vault_mirror`'s, shared with the import ingest: one
+                    # on-conflict set, so the two writers cannot disagree about
+                    # what seeing a media again is allowed to overwrite.
+                    await s.execute(vault_mirror.upsert_stmt(vals))
                     upserted += 1
                 await s.commit()
             pages += 1
@@ -720,12 +711,24 @@ async def delete_folder(folder_id: int, account_id: str = Query(...)) -> dict[st
 
 @router.post("/admin/vault-ai/folders/{folder_id}/add")
 async def add_to_folder(folder_id: int, payload: dict = Body(...)) -> dict[str, Any]:
-    """Add selected media ids to an internal folder (idempotent)."""
+    """Add selected media ids to an internal folder (idempotent).
+
+    Guarded even though nothing here talks to OnlyFans, and that is exactly why
+    it is the one that matters most. This route PERSISTS client-supplied media
+    ids, and `publish_folder_to_of` reads them straight back out — its
+    `WHERE account_id == …` is satisfied, because a poisoned row carries THIS
+    account's id — and hands them to `add_media_to_vault_list` on her real
+    OnlyFans list. A folder poisoned once by a stale tab stays poisoned across
+    reload, remount and every UI fix, and fires on the next publish. The other
+    three call sites refuse an id on its way to OF; this one refuses it on its
+    way to disk, which is the only place the refusal can still be cheap.
+    """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
     media_ids = [int(x) for x in (payload.get("media_ids") or []) if str(x).lstrip("-").isdigit()]
     if not media_ids:
         raise HTTPException(status_code=400, detail={"error": "media_ids_required"})
+    await _reject_foreign_media(account_id, media_ids)
     async with get_session() as s:
         for mid in media_ids:
             stmt = (
@@ -1244,6 +1247,18 @@ async def publish_folder_to_of(folder_id: int, payload: dict = Body(...)) -> dic
     if not members:
         # An empty OF list is noise in her vault and tells the operator nothing.
         raise HTTPException(status_code=400, detail={"error": "folder_empty"})
+
+    # These ids came out of the DB, not off the wire — and they are checked
+    # anyway, because /folders/{id}/add wrote them there from the wire. A folder
+    # poisoned while the unguarded version was live is still sitting on disk
+    # with another model's ids in it, carrying this account's `account_id`, and
+    # this is the last point before they are posted to her OnlyFans list.
+    #
+    # Refused whole rather than filtered down: the other guarded routes refuse
+    # the batch, silently publishing a subset is a folder whose contents nobody
+    # can account for, and the refusal names the offending ids so the operator
+    # can drop them with /folders/{id}/remove and publish again.
+    await _reject_foreign_media(account_id, members)
 
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:
@@ -2140,6 +2155,72 @@ async def hide_duplicates(payload: dict = Body(...)) -> dict[str, Any]:
     return out
 
 
+async def _reject_foreign_media(account_id: str, media_ids: list[int]) -> None:
+    """Refuse media ids that are not this account's, BEFORE they reach OnlyFans.
+
+    The routes that take client-supplied `media_ids` used to check only that the
+    caller owned the ACCOUNT — never that the media belonged to it. That made an
+    ordinary stale browser tab into a real write against the wrong creator: the
+    vault manager carried its selection across a model switch, so thirty ids
+    picked while looking at one model were posted into the next model's OF
+    folder, over that model's session, with the relay forwarding them verbatim.
+    The UI bug is fixed (the panel remounts per model), but "the client will
+    always be right about which model it is on" is exactly the assumption that
+    was already wrong once, and OF's folder-add and hide are not undoable.
+
+    Called from FIVE places, and the list is the contract — grep it before
+    adding a route that forwards ids:
+
+        of-folders                    create an OF folder with media in it
+        of-folders/{id}/add           add media to an existing OF folder
+        items/{id}/hide               OF's "remove from vault" (no unhide)
+        folders/{id}/add              → PERSISTS ids, which
+        folders/{id}/publish          later reads back and sends to OF
+
+    The last pair is one hazard in two halves. `folders/{id}/add` touches no OF
+    endpoint at all, so it looks harmless; what it does is write the ids to
+    `vault_folder_items`, where publish reads them back — under this account's
+    id, so every ownership check downstream passes — and posts them to her real
+    vault list. Guarding only the routes that call OF directly leaves a poisoned
+    folder that survives reload, remount and every fix to the UI.
+
+    Routes that do NOT need this, deliberately: `hide_duplicates` and the flags
+    sweep re-derive their ids from the mirror; `remove_from_folder` and
+    `reorder` only ever narrow what is already stored; `describe` reads.
+
+    The escape hatch is deliberate: an account with NO mirror at all has never
+    been collected, its grid is served straight from OnlyFans, and this function
+    knows nothing about its media. Refusing there would break foldering for every
+    uncollected account to guard against a case it cannot detect.
+    """
+    if not media_ids:
+        return
+    async with get_session() as s:
+        known = set((await s.execute(
+            select(VaultItem.media_id).where(
+                VaultItem.account_id == account_id,
+                VaultItem.media_id.in_(media_ids),
+            )
+        )).scalars().all())
+        if not known:
+            collected = await s.scalar(
+                select(func.count()).select_from(VaultItem)
+                .where(VaultItem.account_id == account_id)
+            )
+            if not collected:
+                return
+    foreign = [m for m in media_ids if m not in known]
+    if foreign:
+        log.warning("vault: refused %d media not in account=%s mirror (%s…)",
+                    len(foreign), account_id, foreign[:5])
+        raise HTTPException(status_code=404, detail={
+            "error": "not_in_mirror",
+            "detail": ("these media are not in this model's vault — the page was "
+                       "probably showing another model when they were selected"),
+            "media_ids": foreign[:20],
+        })
+
+
 @router.post("/admin/vault-ai/of-folders")
 async def create_of_folder(payload: dict = Body(...)) -> dict[str, Any]:
     """Create a REAL OF vault folder (POST /vault/lists) and optionally add the
@@ -2150,6 +2231,9 @@ async def create_of_folder(payload: dict = Body(...)) -> dict[str, Any]:
     if not name:
         raise HTTPException(status_code=400, detail={"error": "name_required"})
     media_ids = [int(x) for x in (payload.get("media_ids") or []) if str(x).lstrip("-").isdigit()]
+    # Before the folder is created, not after: a refusal that leaves an empty
+    # folder behind on her OnlyFans is still litter the operator has to clear.
+    await _reject_foreign_media(account_id, media_ids)
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:
         folder = await asyncio.to_thread(client.create_vault_list, name[:120])
@@ -2178,6 +2262,7 @@ async def add_to_of_folder(list_id: int, payload: dict = Body(...)) -> dict[str,
     media_ids = [int(x) for x in (payload.get("media_ids") or []) if str(x).lstrip("-").isdigit()]
     if not media_ids:
         raise HTTPException(status_code=400, detail={"error": "media_ids_required"})
+    await _reject_foreign_media(account_id, media_ids)
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:
         await asyncio.to_thread(client.add_media_to_vault_list, list_id, media_ids)
@@ -3622,12 +3707,15 @@ async def hide_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
     before calling this.
 
     Unlike /duplicates/hide there is no cluster to re-derive — the operator is
-    pointing at one specific item — so ownership is the only guard.
+    pointing at one specific item — so the guards are ownership of the account
+    and membership of the media: hiding cannot be undone, and a details drawer
+    left open across a model switch pointed this at another model's media id.
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
     if not account_id:
         raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    await _reject_foreign_media(account_id, [int(media_id)])
 
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:

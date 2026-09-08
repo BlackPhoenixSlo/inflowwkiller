@@ -37,6 +37,19 @@ describe("AccountChips", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("still renders when the ONE pickable account is not the selected one", () => {
+    // The way out of a dead end, and it used to be hidden. `useActiveAccounts`
+    // filters on `has_session`, and /vault deliberately keeps pointing at a
+    // model whose session drops rather than switching creators in silence — so
+    // with two models and the selected one's session dead the roster is length
+    // 1, the old `<= 1` shortcut rendered nothing, and the banner told the
+    // operator to "pick another model above" over empty space. The remembered
+    // id brought the same dead end back on every reload.
+    roster.accounts = [{ id: "ACCOUNT_ID_2", nickname: "blake" }];
+    render(<AccountChips accountId="ACCOUNT_ID" onChange={() => {}} />);
+    expect(screen.getByRole("button", { name: "blake" })).toBeTruthy();
+  });
+
   it("renders nothing when the roster has not loaded", () => {
     roster.accounts = [];
     const { container } = render(<AccountChips accountId={null} onChange={() => {}} />);

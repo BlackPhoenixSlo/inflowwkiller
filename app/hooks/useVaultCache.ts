@@ -13,9 +13,10 @@
  * consume it unchanged — search is a local LIKE-scan, no OF round-trip.
  */
 
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, type QueryClient } from "@tanstack/react-query";
 
 import { useSweepStatus } from "@/hooks/useVaultSweep";
+import { vaultListsKey, vaultMediaKey } from "@/hooks/useVaultMedia";
 import { relay, type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import { proxyImage } from "@/lib/mediaUrl";
@@ -200,9 +201,13 @@ export interface OfFolderMirror {
  *  where OF's live vault/lists lies (bogus hasMedia) or drops a folder
  *  entirely (e.g. a freshly-touched one). Non-empty folders only — the panel
  *  unions this with the live list to also show empty folders. */
+export function ofFoldersMirrorKey(accountId: string | null) {
+  return ["vault-of-folders-mirror", accountId] as const;
+}
+
 export function useOfFoldersMirror(accountId: string | null, enabled = true) {
   return useQuery<{ list: OfFolderMirror[] }>({
-    queryKey: ["vault-of-folders-mirror", accountId],
+    queryKey: ofFoldersMirrorKey(accountId),
     enabled: enabled && !!accountId,
     queryFn: () =>
       relay.get(`/admin/vault-ai/of-folders?account_id=${encodeURIComponent(accountId!)}`),
@@ -656,9 +661,13 @@ export interface CollectRun {
 }
 
 /** Poll while a sweep is running so the button shows live progress. */
+export function cacheSummaryKey(accountId: string | null) {
+  return ["vault-cache-summary", accountId] as const;
+}
+
 export function useVaultCacheSummary(accountId: string | null) {
   return useQuery<VaultCacheSummary>({
-    queryKey: ["vault-cache-summary", accountId],
+    queryKey: cacheSummaryKey(accountId),
     enabled: !!accountId,
     queryFn: () =>
       relay.get<VaultCacheSummary>(
@@ -700,6 +709,12 @@ interface MirrorResp {
   source: string;
 }
 
+/** The cache root for this model's mirror listing. The real keys append the
+ *  (type, sort, query, folder) view; this prefix matches all of them. */
+export function mirrorItemsKey(accountId: string | null) {
+  return ["vault-mirror-items", accountId] as const;
+}
+
 /** Paginated read of the LOCAL mirror. Same surface as useVaultMedia so the
  *  panel can swap between "Local (fast)" and "Live (OF)" transparently. */
 export function useMirrorItems(opts: MirrorItemsOpts) {
@@ -709,7 +724,7 @@ export function useMirrorItems(opts: MirrorItemsOpts) {
   } = opts;
   const q = query.trim();
   const inf = useInfiniteQuery<MirrorResp>({
-    queryKey: ["vault-mirror-items", accountId, type, sort, q, internalFolderId, ofFolderId],
+    queryKey: [...mirrorItemsKey(accountId), type, sort, q, internalFolderId, ofFolderId],
     enabled: enabled && !!accountId,
     initialPageParam: 0,
     getNextPageParam: (last, all) => (last.hasMore ? all.length * PAGE : undefined),
@@ -913,4 +928,50 @@ export function mirrorFullSrc(accountId: string, mediaId: number): string {
  *  still, so the operator drags across frame 0 → N-1 to see the whole thing. */
 export function mirrorPosterSrc(accountId: string, mediaId: number, i: number): string {
   return `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId)}&media_id=${mediaId}&i=${i}`;
+}
+
+/**
+ * Every cache root that answers "what is in this model's vault" — the list an
+ * import, a bulk move or a delete should invalidate.
+ *
+ * BUILT from the key factories above and in `useVaultMedia`, not written out as
+ * five string literals. The literal version drifted on the day it was added:
+ * the panel's `refreshAll` was the same concept hand-written as four keys,
+ * missing `vault-of-folders-mirror`, so after an import the folder counts
+ * refreshed and after an add-to-folder they did not. Two lists, one concept,
+ * disagreeing immediately — and nothing could have caught it, because neither
+ * list had any connection to the keys the hooks actually use. Derived, a rename
+ * is a type error rather than a silent miss.
+ *
+ * SCOPE, because the sentence above is easy to over-read: it holds for these
+ * five roots, for the queries the hooks here and in `useVaultMedia` issue, and
+ * for `VaultManagePanel`, which asks these factories for the ten invalidations
+ * it used to hand-write. It does NOT hold for the rest of the app — the vault
+ * modals, `chat/VaultPicker`, `ChatList`, `/inbox` and `settings/ChattersTab`
+ * still spell their keys out, so renaming the string inside `mirrorItemsKey`
+ * type-checks and orphans theirs. Repointing them is a separate diff; until it
+ * happens, a rename here means grepping for the literal too.
+ *
+ * Each entry is a `[name, accountId]` PREFIX. TanStack matches key prefixes by
+ * element equality, so this covers every (type, folder, sort, search) variant of
+ * that model's queries and nothing belonging to another model. It is also why
+ * the prefix has to come from the hook: an invalidation of `["vault"]` looks
+ * like it covers `["vault-media", …]` and covers nothing at all, which is
+ * exactly what the importer used to do against a three-day-old cache.
+ */
+export function vaultGridKeys(accountId: string | null): readonly (readonly unknown[])[] {
+  return [
+    vaultMediaKey(accountId),        // live OF listing
+    vaultListsKey(accountId),        // OF folders (the rail, the import picker)
+    mirrorItemsKey(accountId),       // the local mirror the grid prefers
+    cacheSummaryKey(accountId),      // "N cached", and the flag that CHOOSES the mirror
+    ofFoldersMirrorKey(accountId),   // mirror-derived folder counts
+  ];
+}
+
+/** Invalidate all of them. One call, so a caller cannot refresh four of five. */
+export function invalidateVaultGrid(qc: QueryClient, accountId: string | null): void {
+  for (const queryKey of vaultGridKeys(accountId)) {
+    void qc.invalidateQueries({ queryKey });
+  }
 }

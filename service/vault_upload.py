@@ -82,24 +82,43 @@ STAGE_ROOT = SPOOL_ROOT / "incoming"
 # exists because every file costs a carrier post, and a runaway batch is a
 # runaway number of scheduled posts on a real feed.
 MAX_FILES = int(os.environ.get("VAULT_UPLOAD_MAX_FILES") or 40)
-# MEASURED CEILING. `convert.onlyfans.com` registers a 157 MB object fine (198s
-# end to end) and answers a hard 504 Gateway Time-out on a 443 MB one — three
-# claim attempts spread over 80s, all 504, so it is a size limit and not
-# congestion. The exact cutoff is somewhere in between and untested; 200 MB is
-# the conservative side of it. Video above VAULT_COMPRESS_OVER_MB is re-encoded
-# before it ever reaches this check (see media_prep), so in practice this cap
-# only catches non-video and files ffmpeg could not shrink.
-MAX_MB = int(os.environ.get("VAULT_UPLOAD_MAX_MB") or 200)
+# THERE IS NO MEASURED SIZE CEILING. This used to sit at 200 MB, recorded as a
+# "MEASURED CEILING" because a 443 MB object drew 504s out of
+# `convert.onlyfans.com`. A HAR capture of the real OnlyFans web client says
+# that reading was a misattribution: a 2.31 GiB .mp4 in it went up and was
+# registered without complaint, while the 443 MB .mov failed at convert ALONE,
+# with all 89 of its S3 parts already stored. (The figures behind that — the
+# timings, the part counts, the twelve 504s and their durations — live in ONE
+# place, the `_CONVERT_TIMEOUT_S` comment in `of_client.py`. Cite it; do not
+# copy it here, which is how eight copies of a wrong number came to be written.)
+# The variable was the CONTAINER, not the byte count. (Honestly: one .mov
+# failing twice against one large .mp4 succeeding once. That is enough to retire
+# the size theory and to make the container the prime suspect; it is not a proof
+# that every .mov fails.) `media_prep` now normalises the container instead of
+# shrinking the file.
+#
+# So this number is a sanity backstop on a single item, not a protocol limit.
+# THE REAL GUARD IS DISK, and it is already here and already correct:
+# `guard_space` + `MIN_FREE_BYTES` refuse a file that would eat the free-space
+# floor, which is the constraint that genuinely exists on this box.
+MAX_MB = int(os.environ.get("VAULT_UPLOAD_MAX_MB") or 4000)
 MAX_BYTES = MAX_MB * 1024 * 1024
 # Free space we refuse to drop below while spooling. A batch that fills the
 # disk breaks the whole relay, not just itself.
 MIN_FREE_BYTES = int(os.environ.get("VAULT_UPLOAD_MIN_FREE_MB") or 2048) * 1024 * 1024
-# How large a source we are willing to FETCH, as opposed to upload. These differ
-# because compression sits between them: a 450 MB Drive video is far over the
-# upload ceiling but becomes ~85 MB once re-encoded, and we cannot compress what
-# we refused to download. Only compressible video is allowed past MAX_MB here;
-# anything else is still capped at what OnlyFans will actually take.
-MAX_DOWNLOAD_MB = int(os.environ.get("VAULT_DOWNLOAD_MAX_MB") or 2000)
+# How large a source we are willing to FETCH, as opposed to upload. A ceiling
+# ABOVE the upload ceiling is only ever worth having when the step in between
+# can make the file smaller — which is now only the opt-in compress hatch. A
+# remux and a pass-through do not shrink anything, so under the default
+# settings a file that fetches under this number and cannot be uploaded under
+# MAX_MB is a multi-gigabyte download spent for nothing: exactly the bug
+# `can_shrink` exists to prevent, one step further down the pipeline. `Limits`
+# therefore collapses the two into one ceiling unless the hatch is on — see
+# `Limits.checked`. This constant is the ceiling for the hatch-on case only.
+# 2000 was the old value and it was itself a phantom: the largest file we have
+# direct evidence of uploading is 2368 MiB, so that ceiling would have refused
+# the very file that proves the point (see MAX_MB above).
+MAX_DOWNLOAD_MB = int(os.environ.get("VAULT_DOWNLOAD_MAX_MB") or 5000)
 MAX_DOWNLOAD_BYTES = MAX_DOWNLOAD_MB * 1024 * 1024
 # Pause between files. MEASURED, not guessed: OnlyFans throttles POST /posts to
 # roughly one per ten seconds and 400s with "Please allow 10 seconds" when a
@@ -116,6 +135,12 @@ PACE_S = float(os.environ.get("VAULT_UPLOAD_PACE_S") or 11.0)
 # produced) when this was five separate lists.
 ITEM_STATUSES = ("pending", "uploading", "done", "failed", "skipped")
 RUN_STATUSES = ("running", "done", "failed", "interrupted")
+# The phases a run passes through, same reason. `mirroring` is the one the
+# dashboard branches on to say "caching previews" instead of "uploading", so a
+# rename here that nothing pins is a label that silently degrades on the one
+# phase whose whole job is to explain a wait; `RUN_PHASES` is what the
+# dashboard's own union is written against.
+RUN_PHASES = ("collecting", "uploading", "mirroring", "finished")
 
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}-\d{8}T\d{6}-[0-9a-f]{6}")
 
@@ -131,10 +156,25 @@ class Limits:
     `start()` and threaded through, is what makes an override actually mean
     something end to end.
 
-    `target_bytes < max_bytes` is the cross-module invariant: `media_prep` aims
-    a re-encode at the target, and a target above the upload ceiling means every
-    large video pays a full ffmpeg pass and is then skipped. It was asserted in
-    a comment and enforced nowhere; it is enforced here.
+    `target_bytes < max_bytes` is the cross-module invariant: `media_prep`'s
+    opt-in `compress` pass aims a re-encode at the target, and a target above
+    the upload ceiling means every large video pays a full ffmpeg pass and is
+    then skipped. It was asserted in a comment and enforced nowhere; it is
+    enforced in `checked()` — and only when the escape hatch is actually ON,
+    because a rule that fires loudly for a run in which `compress()` can never
+    execute is a rule people learn to scroll past.
+
+    `max_download_bytes` is DERIVED in `checked()`, not independent. Two
+    ceilings only pay for themselves when the step between them can shrink the
+    file; with the hatch off nothing does, so they collapse to one and an
+    oversized video is refused before its bytes are fetched instead of after.
+    That derivation is also what makes a `--max-mb` override mean the same
+    thing in the cap pass, the fetch pass and the upload pass — the CLI sets
+    only `max_bytes`, and without it `--max-mb 500` still downloaded every
+    video up to 5 GB before skipping it at 500 MB.
+
+    Build it, then call `checked()`. The raw dataclass is the operator's
+    stated intent; `checked()` is the coherent version of it.
     """
     max_files: int = MAX_FILES
     max_bytes: int = MAX_BYTES
@@ -144,17 +184,36 @@ class Limits:
     min_free_bytes: int = MIN_FREE_BYTES
     pace_s: float = PACE_S
 
+    @property
+    def compress_enabled(self) -> bool:
+        """Did the operator switch `media_prep`'s size-targeted pass on?
+
+        It is the only step in the pipeline that makes a file SMALLER, so it is
+        the only reason to fetch something bigger than we can upload, and the
+        only reason the compression target has to sit under the upload ceiling.
+        """
+        return self.compress_over_bytes < media_prep.COMPRESS_OFF_MB * 1024 * 1024
+
     def checked(self) -> "Limits":
-        """The same limits with the invariant repaired, loudly."""
-        if self.target_bytes < self.max_bytes:
-            return self
-        target = int(self.max_bytes * 0.95)
-        log.error("vault limits: compression target %.0f MB is not below the "
-                  "%.0f MB upload ceiling — every large video would be "
-                  "re-encoded and then skipped. Clamping the target to %.0f MB; "
-                  "fix VAULT_COMPRESS_TARGET_MB / VAULT_UPLOAD_MAX_MB.",
-                  self.target_bytes / 1e6, self.max_bytes / 1e6, target / 1e6)
-        return replace(self, target_bytes=target)
+        """The same limits, made coherent — loudly where an operator set them."""
+        out = self
+        if not out.compress_enabled and out.max_download_bytes > out.max_bytes:
+            # Nothing between the fetch and the upload can shrink this file, so
+            # a bigger fetch ceiling can only ever buy a wasted download.
+            out = replace(out, max_download_bytes=out.max_bytes)
+        elif out.max_download_bytes < out.max_bytes:
+            # An explicit --max-mb ABOVE the fetch ceiling would refuse to
+            # download a file it is willing to upload. Follow the override.
+            out = replace(out, max_download_bytes=out.max_bytes)
+        if out.compress_enabled and out.target_bytes >= out.max_bytes:
+            target = int(out.max_bytes * 0.95)
+            log.error("vault limits: compression target %.0f MB is not below the "
+                      "%.0f MB upload ceiling — every large video would be "
+                      "re-encoded and then skipped. Clamping the target to %.0f MB; "
+                      "fix VAULT_COMPRESS_TARGET_MB / VAULT_UPLOAD_MAX_MB.",
+                      out.target_bytes / 1e6, out.max_bytes / 1e6, target / 1e6)
+            out = replace(out, target_bytes=target)
+        return out
 
     @property
     def compress_over_mb(self) -> int:
@@ -372,9 +431,24 @@ def _reconcile(state: dict, cache: dict | None = None) -> dict:
     here — the in-process registry alone — meant a CLI import holding the
     cross-process lock was reported as "the relay restarted mid-run" in the same
     payload that suppressed its carrier warnings because the account was busy.
+
+    A run in the `mirroring` phase is the exception, and it is not a special
+    case so much as the same rule read properly. `_mirror_landed` holds the
+    record at `running` on purpose while it writes the local mirror — that
+    ordering is the whole reason a large import is visible in the grid at all —
+    but by then the terminal status is already DECIDED, and every file that was
+    going to reach the creator's vault has reached it. The window used to be
+    microseconds; it is now minutes. Calling that "relay restarted mid-run" is
+    a failure reported on a complete import, and the operator's documented next
+    move is to re-run the batch onto OnlyFans' byte dedupe. So a stashed
+    `terminal_status` is preferred: the run really did finish, it just never got
+    to finish MIRRORING, and the mirror is recoverable by a re-collect.
     """
     if state.get("status") != "running" or _run_is_live(state, cache):
         return state
+    decided = state.get("terminal_status")
+    if state.get("phase") == "mirroring" and decided in ("done", "failed"):
+        return {**state, "status": decided, "terminal_status": None}
     return {**state, "status": "interrupted",
             "error": state.get("error") or "relay restarted mid-run"}
 
@@ -649,8 +723,44 @@ def _new_state(run_id: str, aid: str, list_id: int | None) -> dict:
         # that only appears once something happened is a key every reader has to
         # guess at (the item schema got this treatment in `_item`).
         "filed_into_list": None, "spool_cleared_bytes": None,
+        # Set only for the window `_mirror_landed` holds the record at
+        # `running` (see there and `_reconcile`); declared here for the same
+        # reason as the two above — a key that appears only mid-flight is a key
+        # every reader has to guess at.
+        "terminal_status": None,
         "items": [],
     }
+
+
+def landed_ids(state: dict) -> list[int]:
+    """The vault ids this run actually put in the VISIBLE vault.
+
+    This module owns the run-state shape, so it owns the reading of it. Both
+    consumers of a finished import — the relay's batch route and the CLI — need
+    exactly this list to write the local mirror, and both had re-derived it
+    inline from `items`, which is how the one subtle part of the rule ends up
+    documented in one copy and absent from the other.
+
+    The subtle part: `skipped` is EXCLUDED even though a skipped item can carry a
+    perfectly real `vault_id`. A skip is a dedupe onto media that is HIDDEN on
+    OnlyFans (`_memo_lookup` and `of_client`'s byte dedupe both report the hidden
+    id and `_upload_one` marks it skipped), and mirroring a hidden id would put a
+    tile in the grid for bytes the creator deliberately removed from her vault.
+    `status == "done"` is the only status that means "in the vault the operator
+    is looking at".
+
+    `.get` throughout, not `[...]`: a run record can be read back off disk after
+    a crash mid-write of an item, and a KeyError here would lose the ids of every
+    file that DID land.
+    """
+    out: list[int] = []
+    for it in (state or {}).get("items") or []:
+        if not isinstance(it, dict) or it.get("status") != "done":
+            continue
+        vid = it.get("vault_id")
+        if vid:
+            out.append(int(vid))
+    return out
 
 
 def begin(account_id: str, *, list_id: int | None = None) -> str:
@@ -702,11 +812,101 @@ def abandon(run_id: str, error: str) -> None:
     _release_lock(_lock_path(aid) if aid else None, run_id)
 
 
+def _mirror_landed(state: dict,
+                   on_landed: Callable[[list[int]], Any] | None) -> None:
+    """Let the caller write the landed ids somewhere, while the run is still
+    reporting `running`.
+
+    This exists for ORDERING, and the ordering is the whole point. The dashboard
+    polls the status route every 2.5 s and invalidates its query cache the moment
+    the run stops being `running` — once. If the mirror write happens after that
+    edge, the grid refetches the PRE-import mirror and nothing ever invalidates
+    it again: `refetchOnWindowFocus` is off, the mirror query has a 30 s
+    staleTime and no interval, and the status query stops polling. A small import
+    won that race and a large one never did, which is the failure that reads as
+    "the import worked for three photos and lost two hundred".
+
+    Called from the `finally` rather than the success path on purpose: a batch
+    can die on its LAST file with a dozen already in the creator's vault, and
+    those dozen deserve their mirror rows just as much. Called BEFORE the first
+    `_save` of the `finally`, because that save is the moment the run's status
+    stops being `running` on disk — which is the edge the client is watching.
+
+    A consequence worth stating, because it looks like a bug on the wire: on the
+    FAILURE path a run reads `failed → running → failed`. The `except` has
+    already decided `failed` in memory, this hook overwrites it with `running`
+    and saves, and the terminal save lands after the mirror write. A dashboard
+    that had rendered the failure flips back to "Importing…" for the length of
+    the mirror window before failing again. That is intended and it is not a
+    lie: the run IS still working, on the files it did land, and the alternative
+    is either skipping the mirror for a partially-successful batch or publishing
+    `failed` early and reopening the race this whole hook exists to close. What
+    it must not do is outlive the process invisibly — `_reconcile` reads the
+    `terminal_status` stashed below for exactly that.
+
+    Never fatal, and `BaseException` is the reason that sentence needs saying
+    twice. The relay's hook blocks on `concurrent.futures.Future.result()`, and
+    a loop shutting down mid-wait raises `CancelledError` — which since 3.8 IS
+    `asyncio.CancelledError`, a BaseException. An `except Exception` here let it
+    walk out of `start`'s own `finally`, skipping `phase="finished"`, the
+    terminal `_save`, `_cleanup_carriers`, `_clear_spool`, the `_live` pop and
+    `_release_lock`. The worst of those is not the lie in `run.json`: it is that
+    carrier cleanup is skipped for a run whose uploads all SUCCEEDED — the pass
+    that stops a carrier post publishing to the creator's whole feed 30 days out
+    — and that `_live[aid]` is left claimed, which `begin()` refuses on
+    unconditionally, locking that account out of imports for the life of the
+    process. The media is already on OnlyFans; a mirror row we could not write
+    is recoverable by a re-collect. Nothing this hook can do is worth the
+    teardown. Same reasoning, one frame away, on the batch route's
+    invalidate-in-its-own-`finally`.
+    """
+    if on_landed is None:
+        return
+    ids = landed_ids(state)
+    if not ids:
+        return
+    # The terminal status is decided by now (the `try` set `done`, or the
+    # `except` set `failed`) but it is NOT published until the save below this
+    # call, and it must not be published early here either: a poll that reads
+    # `done` off disk is the edge the dashboard invalidates on, and that is the
+    # whole race being closed. So the record keeps saying `running` — which is
+    # the truth, since this run is still doing work — and names the work it is
+    # doing, so the wait does not read as a wedge.
+    terminal = state["status"]
+    state["status"] = "running"
+    state["phase"] = "mirroring"
+    # Written to disk so a relay that restarts INSIDE this window can still
+    # report the truth. `_reconcile` turns a `running` record whose process is
+    # gone into `interrupted`, which was right while that window was
+    # microseconds wide; it is now up to `_VAULT_MIRROR_TIMEOUT_S` of serial OF
+    # reads, and it sits exactly where every file has ALREADY reached the
+    # creator's vault. Reporting that as "relay restarted mid-run" tells the
+    # operator a complete import failed, and the documented next move is to
+    # re-run it onto OnlyFans' byte dedupe. See `_reconcile`.
+    state["terminal_status"] = terminal
+    _save(state)
+    try:
+        on_landed(ids)
+    except BaseException as e:  # noqa: BLE001 — see the docstring: nothing this
+        # hook raises, not even a cancellation, may pre-empt the run's teardown.
+        # Deliberately NOT re-raised: re-raising is exactly what skipped
+        # `_cleanup_carriers` and left the account claimed in `_live`.
+        log.warning("vault run %s: mirror hook failed: %s: %s",
+                    state.get("run_id"), type(e).__name__, e)
+    finally:
+        state["status"] = terminal
+        # Cleared again: the hint is only meaningful while the record lies about
+        # being `running`, and a finished run carrying a second status field is
+        # two answers to one question for every reader of run.json.
+        state["terminal_status"] = None
+
+
 def start(account_id: str, *, client, gate=None,
           local_paths: list[str] | None = None,
           drive_links: list[str] | None = None,
           list_id: int | None = None,
           run_id: str | None = None,
+          on_landed: Callable[[list[int]], Any] | None = None,
           limits: Limits | None = None) -> dict:
     """Run a whole batch, synchronously. Returns the final state.
 
@@ -728,6 +928,11 @@ def start(account_id: str, *, client, gate=None,
 
     `run_id` adopts a run already claimed by `begin()`; without it this claims
     one itself (the CLI path).
+
+    `on_landed(vault_ids)` runs while the run still reports `running` — see
+    `_mirror_landed` for why that ordering is load-bearing. The relay passes one
+    that writes the local mirror; the CLI passes nothing and does its own write
+    afterwards, which is fine because nothing is polling it.
     """
     aid = str(account_id)
     limits = (limits or Limits()).checked()
@@ -769,6 +974,9 @@ def start(account_id: str, *, client, gate=None,
         # never been scrubbed of the API key.
         state["error"] = gdrive.redact(f"{type(e).__name__}: {e}")
     finally:
+        # BEFORE the save below: that save is where the run stops reporting
+        # `running`, and everything watching this run acts on that edge.
+        _mirror_landed(state, on_landed)
         state["phase"] = "finished"
         state["finished_at"] = _now()
         _save(state)
@@ -845,7 +1053,17 @@ def _plan(state: dict, local_paths: list[str], drive_links: list[str],
 # not been filtered yet — Google-native docs, duplicates and oversized files all
 # still count — so resolving exactly the cap would let a folder of shared
 # spreadsheets consume every slot the operator meant for media. Two-to-one is
-# headroom, not a second cap: `_apply_caps` is what actually enforces the batch.
+# headroom, not a second cap: `_apply_caps` enforces the batch.
+#
+# With one exception, and it is worth stating because a reader reasonably assumes
+# `max_files` bounds the whole run: `_apply_caps` counts only `pending` items,
+# and a Drive MEMO HIT is already `done` when caps run (`_plan` recognises the
+# file by Drive's md5 and skips the download entirely). So a re-run of a Drive
+# folder whose every file is already in the vault can finish with up to
+# `max_files * _RESOLVE_HEADROOM` done items. That is correct — nothing was
+# uploaded, no carrier was posted, no cap was meant to stop it — but it IS the
+# real bound on how many ids a post-run consumer (`landed_ids`, and the mirror
+# write behind it) has to deal with.
 _RESOLVE_HEADROOM = 2
 
 
@@ -856,11 +1074,11 @@ def resolve_budget(limits: Limits) -> int:
 def cap_for(name: str, mime: str | None, limits: Limits) -> int:
     """The largest this file may be — the ONE place that rule is decided.
 
-    Video ffmpeg can shrink is allowed up to the (much larger) DOWNLOAD ceiling:
-    compression runs later and is the whole reason a 443 MB file can be imported
-    at all, and `_upload_one` re-checks the real upload cap once the compressed
-    size is known. Everything else is capped at what OnlyFans will actually
-    take, since nothing downstream shrinks it.
+    Video ffmpeg can take a pass at is allowed up to the (much larger) DOWNLOAD
+    ceiling: the container-normalising pass runs later and cannot judge a file
+    it was never allowed to fetch, and `_upload_one` re-checks the real upload
+    cap once the prepared size is known. Everything else is capped at the
+    per-file backstop, since nothing downstream will change its size.
 
     It lived in three places — the cap pass, the Drive fetch, and the HTTP
     staging loop, which applied the DOWNLOAD ceiling to everything and so
@@ -889,7 +1107,8 @@ def _apply_caps(items: list[dict], limits: Limits) -> None:
             it.update(status="skipped",
                       error=f"{it['size'] / 1e6:.0f} MB exceeds the "
                             f"{cap / 1e6:.0f} MB limit"
-                            + ("" if shrinkable else " and cannot be compressed"))
+                            + ("" if shrinkable else " and is not video ffmpeg "
+                                                      "can prepare"))
             continue
         pending += 1
         if pending > limits.max_files:
@@ -1007,13 +1226,16 @@ def _upload_one(state: dict, item: dict, client, gate, limits: Limits) -> None:
         item["carrier_deleted"] = True
         _save(state)
 
-    # Shrink oversized video first. OF's convert step answers 504 on large
-    # objects, so this is not an optimisation — above the ceiling it is the
-    # difference between an upload that lands and one that cannot.
+    # Normalise the container first. Not a size pass any more: OF demonstrably
+    # accepts multi-gigabyte objects, and the failure that used to justify
+    # shrinking was a .mov that died at convert with every S3 part already
+    # stored (see MAX_MB above). So this is a remux when the codec is already
+    # mp4-legal — seconds, lossless — and a real transcode only for streams mp4
+    # cannot carry.
     #
     # ffmpeg writes its output NEXT TO a source that may already be 2 GB, so the
     # free-space floor is checked once more here — the earlier guard covered the
-    # download, not the re-encode it feeds.
+    # download, not the pass it feeds.
     try:
         if media_prep.can_shrink(item["name"], item.get("mime_type")):
             guard_space(Path(path).stat().st_size, limits,
@@ -1021,26 +1243,29 @@ def _upload_one(state: dict, item: dict, client, gate, limits: Limits) -> None:
     except Exception as e:  # noqa: BLE001 — one file, not the whole run
         item.update(status="failed", error=f"{type(e).__name__}: {e}")
         return
-    upload_path, compressed = media_prep.prepare(
+    upload_path, prepared = media_prep.prepare(
         path, _run_dir(state["run_id"]),
         over_mb=limits.compress_over_mb, target_mb=limits.target_mb,
         mime=item.get("mime_type"))
-    if compressed:
+    if prepared:
+        # `compressed_from` is the dashboard's "<before> → <after>" pair. It
+        # stays honest for a remux: both numbers are real, and the second is
+        # genuinely the size of the object that went up.
         item["compressed_from"] = item["size"]
         item["size"] = Path(upload_path).stat().st_size
         _save(state)
 
-    # Now that the real upload size is known, enforce the ceiling. Above it,
-    # OnlyFans' convert step answers a hard 504 AFTER every byte has been
-    # stored, so refusing here saves a pointless multi-minute upload.
+    # Now that the real upload size is known, enforce the ceiling. This is the
+    # operator's own backstop, NOT a protocol limit — see MAX_MB.
     final_size = Path(upload_path).stat().st_size
     if final_size > limits.max_bytes:
         item.update(status="skipped",
                     error=(f"{final_size / 1e6:.0f} MB is over the "
-                           f"{limits.max_bytes / 1e6:.0f} MB limit"
-                           + (" even after compression" if compressed else "")
-                           + " — OnlyFans rejects objects this large"))
-        if compressed and str(upload_path) != str(path):
+                           f"{limits.max_bytes / 1e6:.0f} MB per-file limit"
+                           + (" even after preparation" if prepared else "")
+                           + " — raise VAULT_UPLOAD_MAX_MB if that is not what "
+                             "you meant"))
+        if prepared and str(upload_path) != str(path):
             Path(upload_path).unlink(missing_ok=True)
         return
 
@@ -1078,7 +1303,14 @@ def _upload_one(state: dict, item: dict, client, gate, limits: Limits) -> None:
         elif res.get("vault_id"):
             item["status"] = "done"
         else:
-            item.update(status="failed", error=res.get("note") or "no vault id")
+            # `note` names the file that was actually UPLOADED, which after a
+            # remux is media_prep's output, not anything the operator can find
+            # on their disk. Say which of their items it was.
+            note = res.get("note") or "no vault id"
+            if prepared and str(upload_path) != str(path):
+                note = f"{note} (uploaded as {Path(upload_path).name}, "\
+                       f"normalised from {item['name']})"
+            item.update(status="failed", error=note)
     except Exception as e:
         log.exception("vault upload failed for %s", item["name"])
         item.update(status="failed", error=f"{type(e).__name__}: {e}")
@@ -1093,9 +1325,9 @@ def _upload_one(state: dict, item: dict, client, gate, limits: Limits) -> None:
 
     # Clear the spooled copy as soon as it is no longer needed — the whole
     # point of "push it up and let go of it" is that the disk stays flat.
-    # The compressed copy is always ours to delete; the source only if we
+    # The prepared copy is always ours to delete; the source only if we
     # spooled it (a local file is the operator's own original).
-    if compressed and str(upload_path) != str(path):
+    if prepared and str(upload_path) != str(path):
         Path(upload_path).unlink(missing_ok=True)
     if item["status"] == "done" and item.get("drive_md5") and item.get("vault_id"):
         _memo_remember(state["account_id"], item["drive_md5"], item["vault_id"])

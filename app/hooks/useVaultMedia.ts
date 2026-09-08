@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef } from "react";
-import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type RelayContext, type VaultList, type VaultListsResp, type VaultMedia, type VaultMediaResp } from "@/lib/relay";
 import { perfDelivered, perfError, perfLog, perfOpId } from "@/lib/perfLog";
@@ -85,11 +85,24 @@ export async function fetchAllVaultLists(ctx: RelayContext): Promise<VaultListsR
   return { list: merged, hasMore: false };
 }
 
+/** The cache root for this model's OF folder list. Exported so nothing has to
+ *  spell the literal again — an invalidation that misses by a typo is silent. */
+export function vaultListsKey(accountId: string | null) {
+  return ["vault-lists", accountId] as const;
+}
+
+/** The cache root for this model's LIVE OF media listing. The real keys append
+ *  (type, listId, sort, query); this prefix matches every one of them, which is
+ *  what an "the vault changed" invalidation wants. */
+export function vaultMediaKey(accountId: string | null) {
+  return ["vault-media", accountId] as const;
+}
+
 /** Vault folders / lists. The model can put items into custom folders;
  *  this drives the picker's folder filter dropdown. OF requires `view=main`. */
 export function useVaultLists(accountId: string | null, enabled = true, includeEmpty = false) {
   return useQuery<VaultListsResp>({
-    queryKey: ["vault-lists", accountId],
+    queryKey: vaultListsKey(accountId),
     enabled: enabled && !!accountId,
     queryFn: async () => {
       const opId = perfOpId("vault.lists");
@@ -147,7 +160,7 @@ export function useVaultMedia(opts: UseVaultMediaOpts) {
   const bypassServerCacheRef = useRef(false);
 
   const q = useInfiniteQuery<VaultMediaResp>({
-    queryKey: ["vault-media", accountId, type, listId, sort, queryTrimmed],
+    queryKey: [...vaultMediaKey(accountId), type, listId, sort, queryTrimmed],
     enabled: enabled && !!accountId,
     initialPageParam: 0,
     getNextPageParam: (last, all) =>
@@ -195,7 +208,13 @@ export function useVaultMedia(opts: UseVaultMediaOpts) {
       }
     },
     staleTime: 3 * 24 * 60 * 60_000,
-    placeholderData: keepPreviousData,
+    // Keep the previous pages while a FILTER changes (type, folder, sort,
+    // search) — that is what makes those switches feel instant. Never across a
+    // model change: `keepPreviousData` there painted one creator's vault under
+    // another creator's name, with no loading state to say otherwise, and the
+    // only clue that the page had not switched yet was recognising the media.
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey?.[1] === accountId ? prev : undefined,
   });
 
   // Once page 1 lands, eagerly pull page 2 in the background so the first
@@ -233,8 +252,8 @@ export function useVaultMedia(opts: UseVaultMediaOpts) {
       // POST is a single DELETE — adds ~30-80ms to a user-initiated
       // refresh, which is invisible next to the OF roundtrip that follows.
       bypassServerCacheRef.current = true;
-      qc.removeQueries({ queryKey: ["vault-media", accountId] });
-      qc.removeQueries({ queryKey: ["vault-lists", accountId] });
+      qc.removeQueries({ queryKey: vaultMediaKey(accountId) });
+      qc.removeQueries({ queryKey: vaultListsKey(accountId) });
       qc.removeQueries({ queryKey: ["wall-media", accountId] });
       if (accountId) {
         try {

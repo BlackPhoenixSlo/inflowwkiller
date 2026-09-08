@@ -57,20 +57,57 @@ DEFAULT_TIMEOUT_S = 30
 # Media upload (see upload_media). 5 MiB is S3's minimum for a non-final part
 # and what OF's own web client uses, so it also decides where OF switches the
 # signed/create response from `putUrl` to `keys[]`.
+# DO NOT CHANGE THIS. The vault dedupe key IS the S3 multipart ETag, and that
+# value is a mathematical function of the part size: `md5(concat of the parts'
+# md5 digests)-<part count>`. Raising it to 16 MiB to cut the part count would
+# silently invalidate every `GET /vault/media/hash` lookup for every file over
+# one part — no error, just a permanent re-upload of everything already in the
+# vault. Throughput comes from _PART_CONCURRENCY instead.
 _PART_SIZE = 5 * 1024 * 1024
 _HASH_CHUNK = 1024 * 1024
 _S3_BASE = "https://of2transcoder.s3-accelerate.amazonaws.com/"
 # Parts uploaded at once. A single S3 stream is usually throttled well below a
 # server's uplink, so this is where the wall-clock win is on a fast box; on a
 # home connection the uplink saturates first and the setting barely matters.
-# Peak memory is this x _PART_SIZE (20 MB at the default), because each worker
-# reads only its own slice from its own file handle.
-_PART_CONCURRENCY = int(os.environ.get("VAULT_UPLOAD_PART_CONCURRENCY") or 4)
+# Peak memory is this x _PART_SIZE (8 x 5 MiB = 40 MB at the default), because
+# each worker reads only its own slice from its own file handle. 8 rather than 4
+# because the part size is pinned at 5 MiB (see above), which makes the HAR's
+# largest upload 474 parts — concurrency is the only knob left for wall-clock.
+# That 40 MB is PER UPLOAD, not per process. `vault_upload` takes its import
+# lock per ACCOUNT, so N accounts importing at once is N x 40 MB of relay RSS —
+# which is the number this comment exists to bound, so budget it that way.
+_PART_CONCURRENCY = int(os.environ.get("VAULT_UPLOAD_PART_CONCURRENCY") or 8)
 # OnlyFans throttles POST /posts to about one per ten seconds — measured live
 # when a batch of small files tripped `400 "Please allow 10 seconds"`. This is
 # the floor a bulk import paces itself against: 40 files cannot take less than
 # ~7 minutes of carrier spacing no matter how fast the uploads are.
 _CARRIER_MIN_GAP_S = 11
+# How long to wait on the convert claim. FLAT, not scaled by file size.
+#
+# THIS COMMENT IS THE CANONICAL RECORD OF THE HAR EVIDENCE. It was previously
+# retold in full at eight sites, and when the "~1.4s" figure in it turned out to
+# be an inference rather than a measurement, all eight were wrong at once. Every
+# other place that leans on this capture now cites `_CONVERT_TIMEOUT_S` instead
+# of restating the numbers — the one deliberate exception is the operator-facing
+# note in `_claim_uploaded`, which spells a figure out because its reader cannot
+# follow a code reference.
+#
+# This used to be `max(timeout,120) + (size/100MB)*60` — about 25 minutes for a
+# 2.31 GiB file, doubled to ~50 on the retry — on the theory that convert's
+# response time scales with the object. A HAR of the real OF web client says it
+# does not: the convert call is metadata-only (~1.8 KB of form fields, NO
+# bytes), and for that same 2.31 GiB .mp4 it answered success in ~9 s wall
+# clock, 8.9 s of it server wait (HAR entry: time 9269.7 ms, timings.wait
+# 8942.8 ms). Do NOT quote the `duration: 1395` field in that response body as
+# a latency — the protocol note records it as an inference about server-side
+# processing, not a measurement.
+#
+# The ceiling that actually bounds this wait is convert's OWN nginx, which
+# gives up on its upstream at a fixed ~60 s: the twelve 504s the 443 MB .mov
+# drew all came back in 60.1-60.4 s. So 120 s is roughly double the longest
+# answer convert will ever give, and waiting longer buys nothing while costing
+# an hour of a batch.
+_CONVERT_TIMEOUT_S = int(os.environ.get("VAULT_CONVERT_TIMEOUT_S") or 120)
 # The carrier post's text, and how far out it is scheduled. Module-level and
 # public because they are the ONE handle a cleanup has on a carrier that was
 # created but never recorded: a scheduled post carrying this text belongs to an
@@ -79,6 +116,30 @@ _CARRIER_MIN_GAP_S = 11
 # carrier no sweep can find. See vault_upload.sweep.
 VAULT_MARKER = "FASTT VAULT UPLOAD — DO NOT PUBLISH — SAFE TO DELETE"
 CARRIER_DAYS = 30
+
+
+def convert_rejected(exc: BaseException) -> bool:
+    """Did `convert.onlyfans.com` answer a GATEWAY error, as opposed to hanging?
+
+    This distinction is the whole retry policy. A 504 from convert's nginx is
+    the transcoder REFUSING an object after a fixed ~60s upstream timeout — the
+    HAR shows twelve of them on one .mov while the big .mp4 in the same capture
+    was answered first time (figures: `_CONVERT_TIMEOUT_S`). More patience
+    cannot fix it, so a 504 must fail fast; only an actual transport timeout is
+    worth a retry.
+
+    Asked at BOTH decision sites — the inline retry in `upload_media` and the
+    claim-retry loop in `upload_to_vault` — so that "is this worth waiting on?"
+    has one answer. The loop cannot catch an exception (`_claim_uploaded`
+    returns its failure as data), so it reads the `rejected` flag that function
+    sets from this same predicate.
+    """
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if code in (502, 503, 504):
+        return True
+    # No capture group: the status is not extracted, only matched. The
+    # alternation has to be grouped to sit under `\b`.
+    return bool(re.search(r"convert register failed: (?:50[234])\b", str(exc)))
 
 
 def post_is_gone(exc: BaseException) -> bool:
@@ -2574,12 +2635,6 @@ class OFClient:
             out["thumbId"] = (claim["thumbs"][0] or {}).get("id")
         return out
 
-    def _convert_timeout(self, size: int) -> int:
-        """Convert's response time scales with the object it registers: a 443 MB
-        video timed out at a flat 60s AFTER every part had been stored, throwing
-        away the whole transfer. A minute per 100 MB on top of the floor."""
-        return int(max(self.timeout_s, 120) + (size / (100 * 1024 * 1024)) * 60)
-
     def upload_media(self, file_path: str | Path, *,
                      content_type: str | None = None,
                      check_dedupe: bool = True,
@@ -2698,6 +2753,15 @@ class OFClient:
                 raise OFAPIError(
                     f"signed/create returned {len(by_part)} part URLs but "
                     f"{part_count} were requested (missing parts {missing[:5]})")
+            # PAIRED WITH `fansly/fansly_shim.py`'s part loop in
+            # `FanslyShimClient.upload_media`. The two are deliberately
+            # separate — same S3 multipart shape, but different part sizes
+            # (5 MiB pinned here by the dedupe ETag, server-chosen there),
+            # different error types and different session classes — and they
+            # live on sys.path together only inside the running relay. They are
+            # NOT accidentally similar: a change to the retry/concurrency rule
+            # here should be considered there too.
+            #
             # Parts go up concurrently: a single stream to S3 is usually capped
             # well below the box's actual uplink, so on a VPS this is most of
             # the wall-clock win. Peak memory stays bounded at
@@ -2792,10 +2856,15 @@ class OFClient:
         # OF's JS strips the query string from Location in the form
         s3_location = put_url.split("?")[0]
 
-        # Retry once on a timeout — the claim references a fixed S3 object, so a
-        # duplicate claim is inert (nothing ever attaches it) and is far cheaper
-        # than re-uploading half a gigabyte. See _convert_timeout for the budget.
-        convert_timeout = self._convert_timeout(size)
+        # Retry once on a TRANSPORT timeout — the claim references a fixed S3
+        # object, so a duplicate claim is inert (nothing ever attaches it) and is
+        # far cheaper than re-uploading half a gigabyte.
+        #
+        # A 504 is NOT retried. It is convert's nginx reporting that the
+        # transcoder refused the object — see _CONVERT_TIMEOUT_S for the capture
+        # and convert_rejected for the predicate. Retrying it used to cost ~50
+        # minutes per file before failing anyway.
+        convert_timeout = _CONVERT_TIMEOUT_S
         try:
             try:
                 claim = self.convert_register(
@@ -2807,7 +2876,7 @@ class OFClient:
                     timeout_s=convert_timeout,
                 )
             except Exception as first:
-                if "timed out" not in str(first).lower():
+                if convert_rejected(first) or "timed out" not in str(first).lower():
                     raise
                 log_of.warning("convert claim timed out after %ss for %s (%.0f MB) "
                                "— retrying once", convert_timeout, filename, size / 1e6)
@@ -2817,16 +2886,47 @@ class OFClient:
                     filename=filename, secure=False,
                     watermark_text=watermark_text,
                     upload_args=upload_args,
-                    timeout_s=convert_timeout * 2,
+                    timeout_s=convert_timeout,
                 )
         except Exception as e:
             # Convert step failed — bytes are in S3 but no claim registered.
             # Deliberately NOT just OFAPIError: a transport timeout is the most
             # likely failure on a large object, and letting it escape turned a
             # recoverable "claim failed" into an unhandled crash mid-batch.
+            #
+            # The shape here (ready:false + note) is load-bearing: upload_to_vault
+            # reads it and re-runs ONLY the claim via _claim_uploaded, which is
+            # why the S3 bytes are not wasted. Keep both fields.
+            #
+            # ONE predicate, asked ONCE: the note below and the `rejected` flag
+            # the retry loop reads are two halves of the same answer, and asking
+            # twice is how they would ever come to disagree.
+            rejected = convert_rejected(e)
+            if rejected:
+                # The "convert it yourself" advice is only true for a file that
+                # is NOT already an mp4. On the vault-import path media_prep has
+                # usually remuxed the source first, so `filename` is the mp4 it
+                # produced — telling the operator to convert that to mp4 is
+                # nonsense for the exact case the message was written for.
+                fix = (f"The likeliest cause is the CONTAINER: try converting "
+                       f"{filename} to .mp4 (h264/aac) and re-importing."
+                       if not filename.lower().endswith((".mp4", ".m4v")) else
+                       f"{filename} is already an .mp4, so the usual container "
+                       f"advice does not apply — this one is worth retrying "
+                       f"later.")
+                note = (f"bytes are safely in S3 but OnlyFans' transcoder "
+                        f"refused to register them ({e}). This is NOT a size "
+                        f"problem — a 2.31 GiB .mp4 registers in ~9s. {fix} "
+                        f"Nothing needs re-uploading to fix a claim — see "
+                        f"_claim_uploaded, upload_key {key}.")
+            else:
+                note = f"bytes in S3 but claim failed: {e}"
             return {
                 "vault_id": None,
                 "ready": False,
+                # Read by upload_to_vault's claim-retry loop: a refusal must
+                # not be retried, a hang must.
+                "rejected": rejected,
                 "send_with": None,
                 "upload_key": key,
                 "etag": etag,
@@ -2836,7 +2936,7 @@ class OFClient:
                 "filename": filename,
                 "deduped": False,
                 "existing": None,
-                "note": f"bytes in S3 but claim failed: {e}",
+                "note": note,
             }
 
         send_with = self._send_with(claim, filename)
@@ -3056,15 +3156,32 @@ class OFClient:
                         timeout_s: int | None = None) -> dict:
         """Re-run ONLY the convert claim for bytes already sitting in S3.
 
-        `convert.onlyfans.com` answers 504 on large objects when its transcoder
-        is busy — measured on a 443 MB video, *after* all 93 parts had been
-        stored. The S3 object survives that, so the expensive half of the work
-        is still done and the claim is worth retrying on its own.
+        THE CHEAP RECOVERY PATH, and it is cheap because the claim is
+        metadata-only: ~1.8 KB of form fields naming an S3 object that is
+        already there. Nothing is re-uploaded.
+
+        Worth retrying because the two halves fail independently. In the HAR,
+        the 443 MB .mov's hashing, signed/create, all 89 part PUTs and
+        signed/finish were clean 200s; only convert failed. (That was NOT a size
+        limit, as this docstring used to say — the same capture registers a far
+        larger .mp4 without complaint; the suspect is the container. See
+        `_CONVERT_TIMEOUT_S`.) So the expensive half survives a claim failure
+        and this can be re-run on its own.
+
+        It is also worth retrying only a bounded number of times — and a 504 is
+        not worth retrying at all: it is a refusal, not congestion. That
+        decision belongs to the retry loop, so a failure comes back HERE AS
+        DATA: `rejected` is `convert_rejected(e)` for whatever was raised. The
+        loop cannot see an exception this function swallowed, which is why it
+        used to retry a refused .mov on the full `claim_retry_delays` ladder —
+        ~4.3 minutes of waiting for an answer that could not change — while the
+        docstrings above it claimed the opposite.
 
         Private: the retry that uses it lives in upload_to_vault, so callers
         never have to know that a `ready:false` result is half-recoverable.
 
-        Returns the same `send_with` shape as upload_media, or `ready: False`.
+        Returns the same `send_with` shape as upload_media, or `ready: False`
+        plus `rejected` and a `note`.
         """
         try:
             claim = self.convert_register(
@@ -3072,14 +3189,16 @@ class OFClient:
                 s3_key=upload_key, s3_bucket="of2transcoder",
                 filename=filename, secure=False,
                 watermark_text=watermark_text, upload_args=self._upload_args(),
-                timeout_s=timeout_s or self._convert_timeout(size),
+                timeout_s=timeout_s or _CONVERT_TIMEOUT_S,
             )
         except Exception as e:  # noqa: BLE001
-            return {"ready": False, "send_with": None, "upload_key": upload_key,
+            return {"ready": False, "rejected": convert_rejected(e),
+                    "send_with": None, "upload_key": upload_key,
                     "etag": etag, "note": f"claim retry failed: {e}"}
 
         send_with = self._send_with(claim, filename)
-        return {"ready": True, "send_with": [send_with], "upload_key": upload_key,
+        return {"ready": True, "rejected": False,
+                "send_with": [send_with], "upload_key": upload_key,
                 "etag": etag, "claim": claim, "deduped": False,
                 "dedupe_key": etag, "size": size, "filename": filename,
                 "note": f"claim re-registered — processId {send_with.get('processId')}"}
@@ -3104,12 +3223,16 @@ class OFClient:
         vault id is real and permanent but OnlyFans had not finished the encode
         when the carrier went away; the item is usable, just not yet playable,
         and a caller that reports it as a plain success is hiding the one thing
-        an operator would want to know before sending it to a fan. In particular a claim that failed AFTER the
-        bytes reached S3 is retried HERE, on `claim_retry_delays`: the
-        expensive half is done and the S3 object persists, so re-running just
-        the claim beats re-uploading half a gigabyte. A caller re-driving that
-        from outside would have to know the three-step flow, and would silently
-        stop matching it the day the flow changes.
+        an operator would want to know before sending it to a fan.
+
+        In particular a claim that failed AFTER the bytes reached S3 is retried
+        HERE, on `claim_retry_delays`: the expensive half is done and the S3
+        object persists, so re-running just the claim beats re-uploading half a
+        gigabyte. A caller re-driving that from outside would have to know the
+        three-step flow, and would silently stop matching it the day the flow
+        changes. `claim_retry_delays` is skipped entirely when
+        `convert_rejected` says convert REFUSED the object rather than hanging
+        on it — see the loop below.
 
         A dedupe hit short-circuits with the existing id and no carrier at all.
         `hidden` is true when that id is a vault item the creator REMOVED:
@@ -3128,7 +3251,22 @@ class OFClient:
         claim_retries = 0
         if not up.get("ready"):
             # Bytes may still be in S3 with only the claim missing (typically a
-            # convert 504 on a big object). Retry the cheap half.
+            # convert 504). Retry the cheap half — metadata only, nothing is
+            # re-uploaded. The bound matters: with a flat 120s convert timeout
+            # this whole loop is ~5 minutes, where the old size-scaled budget
+            # spent ~50 minutes per file before giving up. `up["note"]` from the
+            # first failure survives an exhausted loop, so the operator still
+            # gets the "likely the container" message.
+            #
+            # A REFUSAL is not retried at all. `convert_rejected` is the single
+            # predicate for "convert answered, and its answer was no"; the first
+            # failure already carries it, and `_claim_uploaded` hands the same
+            # verdict back as data because this loop has no exception to test.
+            # Without that check a refused file burned the whole ladder — 20s +
+            # 60s of sleeping on top of three ~60s upstream timeouts, ~4.3
+            # minutes per file, for an answer more waiting cannot change.
+            if up.get("rejected"):
+                claim_retry_delays = ()
             for delay in (claim_retry_delays or ()):
                 if not up.get("upload_key"):
                     break
@@ -3144,6 +3282,13 @@ class OFClient:
                 if again.get("ready"):
                     up = {**up, **again, "md5": up.get("md5"),
                           "dedupe_key": up.get("dedupe_key") or again.get("dedupe_key")}
+                    break
+                if again.get("rejected"):
+                    # Convert answered no again. Stop; keep the FIRST note,
+                    # which is the one that explains the likely cause, rather
+                    # than the bare "claim retry failed" from this attempt.
+                    log_of.warning("vault: convert refused %s again — not retrying",
+                                   up.get("filename"))
                     break
         if not up.get("ready"):
             return {"vault_id": None, "ready": False, "deduped": False,

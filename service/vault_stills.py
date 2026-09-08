@@ -239,7 +239,10 @@ async def _refresh_mirror(account_id: str, media_id: int, media: dict) -> None:
         item = await s.get(VaultItem, (account_id, media_id))
         if item is None:
             return
-        vals = vault_mirror.row_values(account_id, media, int(item.last_seen_run_id or 0))
+        # No run id: this is a re-sign, not a sweep, and `last_seen_run_id` is
+        # not in the refresh set below anyway. Passing the row's own value back
+        # was a round-trip that said nothing.
+        vals = vault_mirror.row_values(account_id, media)
         if vals is None:
             return
         for k in vault_mirror.MIRROR_REFRESH_FIELDS:
@@ -289,7 +292,8 @@ class Fresh(NamedTuple):
     reason: str  # "ok" | "gone" | "fetch_failed"
 
 
-async def resolve_fresh(account_id: str, media_id: int, client: Any) -> Fresh:
+async def resolve_fresh(account_id: str, media_id: int, client: Any,
+                        *, mark_gone: bool = True) -> Fresh:
     """Re-read one media from OF for a freshly signed url set, and write the
     refreshed payload back over the mirror row.
 
@@ -298,10 +302,24 @@ async def resolve_fresh(account_id: str, media_id: int, client: Any) -> Fresh:
     re-asking. Shared with the video path in `vault_frames`: a stale mp4 url is
     the same stale signature as a stale jpeg url, and re-deriving it from the
     same fresh payload is what keeps the two from disagreeing about which media
-    they are looking at."""
+    they are looking at.
+
+    `mark_gone=False` keeps the READ and drops the soft-delete, for the one
+    caller whose 404 is not evidence of a deletion. The render and describe
+    paths ask about a media the mirror already claims exists, so a 404 there
+    really does mean "OF no longer has this" and burying the row is the point —
+    it is also what keeps the negative cache in `bytes_for` from costing two OF
+    calls per render. `vault_ingest` asks about a media THIS PROCESS just
+    uploaded seconds ago; a 404 on that is an OF-side blip or a session pointed
+    at the wrong OF user, and stamping `removed_at` on the strength of it makes
+    an IMPORT delete existing media from the operator's grid (a Drive memo hit
+    re-imports an id that already has a mirror row). The reason still comes
+    back as `gone`, so the caller can log the distinction; only the write is
+    withheld."""
     fresh = await asyncio.to_thread(_resolve_fresh_sync, client, media_id)
     if fresh.gone:
-        await _mark_gone(account_id, media_id)
+        if mark_gone:
+            await _mark_gone(account_id, media_id)
         return Fresh(None, "gone")
     if fresh.media is None:
         return Fresh(None, "fetch_failed")

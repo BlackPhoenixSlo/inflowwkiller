@@ -13,19 +13,15 @@
 import { type DragEvent as ReactDragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { AccountChips } from "@/components/AccountChips";
-import {
-  isDrmOnlyVideo,
-  progressiveVideoSrc,
-  VaultVideoPreview,
-} from "@/components/chat/VaultPicker";
+import { VaultVideoPreview } from "@/components/chat/VaultPicker";
+import { useVaultAccountId } from "@/components/vault/VaultAccount";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultDisputesModal from "@/components/vault/VaultDisputesModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
 import VaultDuplicatesModal from "@/components/vault/VaultDuplicatesModal";
+import VaultPreviewMedia from "@/components/vault/VaultPreviewMedia";
 import VaultPackPickerModal from "@/components/vault/VaultPackPickerModal";
 import VaultTile from "@/components/vault/VaultTile";
-import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import {
   addToOfFolder,
@@ -43,7 +39,9 @@ import {
   useDescribePlan,
   useMirrorItems,
   useVaultCacheSummary,
-  mirrorFullSrc,
+  cacheSummaryKey,
+  invalidateVaultGrid,
+  mirrorItemsKey,
 } from "@/hooks/useVaultCache";
 import {
   describeSweepText,
@@ -52,9 +50,7 @@ import {
   useVaultSweep,
 } from "@/hooks/useVaultSweep";
 import { relay, type VaultList, type VaultMedia } from "@/lib/relay";
-import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId } from "@/lib/fanId";
-import ImageLightbox from "@/components/vault/ImageLightbox";
 
 type MediaType = "all" | "photo" | "video" | "gif" | "audio";
 type Tile = VaultMedia & { _ai?: Record<string, unknown> };
@@ -115,9 +111,12 @@ function folderCounts(f: VaultList): string {
 }
 
 export default function VaultManagePanel() {
-  const accounts = useActiveAccounts();
+  // Shared with the importer and the review queue — see `VaultAccount`. Local
+  // state here meant the panel's own chips moved the grid and nothing else.
+  // A plain string, never null: the page does not mount this panel until a
+  // model is chosen, and remounts it when the choice changes.
+  const accountId = useVaultAccountId();
   const qc = useQueryClient();
-  const [accountId, setAccountId] = useState<string | null>(null);
   const [type, setType] = useState<MediaType>("all");
   // FanId, not number: Fansly album ids are snowflakes above 2^53, and a
   // narrowed one selects a DIFFERENT album. Media ids below stay number[].
@@ -144,9 +143,6 @@ export default function VaultManagePanel() {
   const loadMoreRef = useRef<() => void>(() => {});
   const canLoadRef = useRef(false);
 
-  useEffect(() => {
-    if (!accountId && accounts.length > 0) setAccountId(accounts[0].id);
-  }, [accounts, accountId]);
   useEffect(() => {
     const t = setTimeout(() => setQuery(searchRaw.trim()), 250);
     return () => clearTimeout(t);
@@ -184,11 +180,11 @@ export default function VaultManagePanel() {
 
   // On a search, harvest OF's own results in the BACKGROUND and merge them in.
   useEffect(() => {
-    if (!accountId || !query) return;
+    if (!query) return;
     let cancelled = false;
     searchOf(accountId, query)
       .then(() => {
-        if (!cancelled) qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+        if (!cancelled) qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
       })
       .catch(() => {});
     return () => {
@@ -204,7 +200,7 @@ export default function VaultManagePanel() {
   const describeSweep = useVaultSweep({
     kind: "describe-all",
     accountId,
-    liveKeys: [["vault-mirror-items", accountId]],
+    liveKeys: [mirrorItemsKey(accountId)],
     settleKeys: [
       ["vault-describe-plan", accountId],
       ["vault-flags-review"],
@@ -223,7 +219,7 @@ export default function VaultManagePanel() {
   const harvestSweep = useVaultSweep({
     kind: "harvest-keywords",
     accountId,
-    liveKeys: [["vault-mirror-items", accountId]],
+    liveKeys: [mirrorItemsKey(accountId)],
   });
   const cachedCount = summary.data?.count ?? 0;
   const isCollecting = !!summary.data?.running;
@@ -361,30 +357,28 @@ export default function VaultManagePanel() {
   const activeFolder = folders.find((f) => f.id === ofFolderId);
   const headerTitle = activeFolder?.name ?? "All media";
 
+  /** Everything that answers "what is in this vault" — the SAME list the import
+   *  card uses, from `useVaultCache`, rather than a second hand-written copy.
+   *  The copy that used to live here was missing `vault-of-folders-mirror` and
+   *  (before that) the grid's own `vault-media` key, which made an add-to-folder
+   *  move the sidebar count to "2" while the tiles underneath kept showing the
+   *  pre-add page — the one thing the user is actually looking at was the one
+   *  thing that never refetched. */
   function refreshAll() {
-    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
-    qc.invalidateQueries({ queryKey: ["vault-lists", accountId] });
-    qc.invalidateQueries({ queryKey: ["vault-cache-summary", accountId] });
-    // The GRID's own key. Everything above refreshes the folder rail and the
-    // counts, so an add-to-folder made the sidebar say "2" while the tiles
-    // underneath still showed the pre-add page — the one thing the user is
-    // actually looking at was the one thing that never refetched. A prefix
-    // match covers every (type, listId, sort, query) combination, so the
-    // target album refreshes even while a different folder is on screen.
-    qc.invalidateQueries({ queryKey: ["vault-media", accountId] });
+    invalidateVaultGrid(qc, accountId);
   }
 
   async function onCollect() {
-    if (!accountId || isCollecting) return;
+    if (isCollecting) return;
     try {
       await startCollect(accountId);
     } catch {
       /* already running */
     }
-    qc.invalidateQueries({ queryKey: ["vault-cache-summary", accountId] });
+    qc.invalidateQueries({ queryKey: cacheSummaryKey(accountId) });
     for (let i = 0; i < 4; i++) {
       await new Promise((r) => setTimeout(r, 2500));
-      qc.invalidateQueries({ queryKey: ["vault-cache-summary", accountId] });
+      qc.invalidateQueries({ queryKey: cacheSummaryKey(accountId) });
       const st = await fetchCollectStatus(accountId).catch(() => null);
       if (st?.run && (st.run.total_seen ?? 0) > 0) {
         refreshAll();
@@ -394,7 +388,7 @@ export default function VaultManagePanel() {
   }
 
   async function onDescribeAll(mode: "new" | "restage" | "force" = "new") {
-    if (!accountId || describeSweep.busy) return;
+    if (describeSweep.busy) return;
     if (capped) {
       // Reachable with a plan up to 30s stale (its staleTime) — the button is
       // already grey once the refetch lands. Say it rather than no-op.
@@ -437,7 +431,7 @@ export default function VaultManagePanel() {
   }
 
   async function addSelectedToFolder(listId: FanId) {
-    if (!accountId || selected.size === 0) return;
+    if (selected.size === 0) return;
     setBusy("adding to OF…");
     try {
       await addToOfFolder(accountId, listId, [...selected]);
@@ -449,7 +443,6 @@ export default function VaultManagePanel() {
   }
 
   async function newFolderWithSelection() {
-    if (!accountId) return;
     const name = window.prompt("New OF folder name:");
     if (!name?.trim()) return;
     setBusy("creating OF folder…");
@@ -463,7 +456,7 @@ export default function VaultManagePanel() {
   }
 
   async function describeSelected() {
-    if (!accountId || selected.size === 0) return;
+    if (selected.size === 0) return;
     const ids = [...selected];
     // STOPS on the cap rather than grinding through the rest: every remaining
     // call would be refused before it fires, so continuing only keeps the
@@ -481,7 +474,7 @@ export default function VaultManagePanel() {
     }
     setBusy("");
     setSelected(new Set());
-    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+    qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
     if (stopped) {
       plan.refetch();
       window.alert(stopped);
@@ -489,7 +482,6 @@ export default function VaultManagePanel() {
   }
 
   async function describeOne(m: Tile) {
-    if (!accountId) return;
     setBusy("describing");
     try {
       const r = await describeMedia(accountId, m.id);
@@ -499,7 +491,7 @@ export default function VaultManagePanel() {
         return;
       }
       setPreview({ ...m, _ai: { ...(m._ai ?? {}), ...r } });
-      qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+      qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
     } finally {
       setBusy("");
     }
@@ -510,15 +502,15 @@ export default function VaultManagePanel() {
   // grid so the S9 overlay picks up the new description/tags.
   function onSavedItem(updated: Record<string, unknown>) {
     setPreview((prev) => (prev ? { ...prev, _ai: { ...(prev._ai ?? {}), ...updated } } : prev));
-    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+    qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
   }
 
   async function setOrder(m: VaultMedia, value: number | null) {
-    if (!accountId || ofFolderId == null) return;
+    if (ofFolderId == null) return;
     await reorderItems(accountId, ofFolderId, [{ media_id: m.id, manual_order: value }]).catch(
       () => {},
     );
-    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+    qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
   }
 
   // ── Folder management (real OF writes) ──────────────────────────
@@ -527,21 +519,18 @@ export default function VaultManagePanel() {
   const [localOrder, setLocalOrder] = useState<FanId[] | null>(null);
   const [draggedId, setDraggedId] = useState<FanId | null>(null);
   async function onNewFolder() {
-    if (!accountId) return;
     const name = window.prompt("New OF folder name:");
     if (!name?.trim()) return;
     await createOfFolder(accountId, name.trim(), []).catch(() => {});
     refreshAll();
   }
   async function onRenameFolder(f: VaultList) {
-    if (!accountId) return;
     const name = window.prompt("Rename folder:", f.name);
     if (!name?.trim() || name.trim() === f.name) return;
     await renameOfFolder(accountId, f.id, name.trim()).catch(() => {});
     refreshAll();
   }
   async function onDeleteFolder(f: VaultList) {
-    if (!accountId) return;
     if (!window.confirm(`Delete folder “${f.name}”? (media stays in your vault)`)) return;
     await deleteOfFolder(accountId, f.id).catch(() => {});
     if (ofFolderId === f.id) setOfFolderId(null);
@@ -570,7 +559,7 @@ export default function VaultManagePanel() {
   }
   async function onDropFolder() {
     setDraggedId(null);
-    if (!accountId || !localOrder) return;
+    if (!localOrder) return;
     await sortOfFolders(accountId, { customOrder: localOrder }).catch(() => {});
     refreshAll();
   }
@@ -580,15 +569,10 @@ export default function VaultManagePanel() {
       ? (localOrder.map((id) => folders.find((f) => f.id === id)).filter(Boolean) as VaultList[])
       : folders;
 
-  if (accounts.length === 0) {
-    return <div className="text-sm text-fg-dim">No model accounts with a live session.</div>;
-  }
-
   return (
     <div className="space-y-3">
-      {/* top controls */}
-      <div className="flex flex-wrap items-center gap-3 justify-between">
-        <AccountChips accountId={accountId} onChange={setAccountId} />
+      {/* top controls — the model picker is the page header's, not this panel's */}
+      <div className="flex flex-wrap items-center gap-3 justify-end">
         <div className="flex flex-wrap md:flex-nowrap items-center gap-2">
           <span className="text-xs text-fg-dim">
             {isCollecting ? (
@@ -609,7 +593,7 @@ export default function VaultManagePanel() {
             <button
               type="button"
               onClick={onCollect}
-              disabled={isCollecting || !accountId}
+              disabled={isCollecting}
               className="px-3 py-1.5 rounded-lg text-sm border border-accent bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50"
             >
               {isCollecting ? "Collecting…" : cachedCount > 0 ? "Re-collect" : "Collect all"}
@@ -755,7 +739,7 @@ export default function VaultManagePanel() {
               // The album id stays EXACTLY as it came off the wire. This was
               // `Number(e.target.value)`, and every Fansly album id is an
               // 18-digit snowflake past 2^53 — the "asdf" album
-              // (900605470987055104) went out as 900605470987055100, an album
+              // (951605470987055104) went out as 951605470987055100, an album
               // that does not exist, so Fansly answered 500 'error getting
               // album'. Creating a folder never hit this: create sends no
               // existing id.
@@ -1005,7 +989,7 @@ export default function VaultManagePanel() {
         </section>
       </div>
 
-      {preview && !selectMode && accountId && (
+      {preview && !selectMode && (
         // Right-side slide-over, deliberately WITHOUT a dimming backdrop so the
         // grid stays visible AND clickable behind it — click another tile and the
         // drawer just swaps to that item.
@@ -1068,7 +1052,7 @@ export default function VaultManagePanel() {
                   accountId={accountId}
                   onDeleted={() => {
                     setPreview(null);
-                    qc.invalidateQueries({ queryKey: ["vault-mirror-items", accountId] });
+                    qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
                   }}
                 />
               }
@@ -1083,10 +1067,10 @@ export default function VaultManagePanel() {
           onClose={() => setPlayMedia(null)}
         />
       )}
-      {showDupes && accountId && (
+      {showDupes && (
         <VaultDuplicatesModal accountId={accountId} onClose={() => setShowDupes(false)} />
       )}
-      {showPackPicker && accountId && (
+      {showPackPicker && (
         <VaultPackPickerModal
           accountId={accountId}
           category="feet"
@@ -1119,127 +1103,19 @@ export default function VaultManagePanel() {
         </div>
       )}
 
-      {showFlagsReview && accountId && (
+      {showFlagsReview && (
         <VaultFlagsReviewModal
           accountId={accountId}
           onClose={() => setShowFlagsReview(false)}
         />
       )}
 
-      {showDisputes && accountId && (
+      {showDisputes && (
         <VaultDisputesModal accountId={accountId} onClose={() => setShowDisputes(false)} />
       )}
 
-      {showAiFolders && accountId && (
+      {showAiFolders && (
         <VaultAiFoldersModal accountId={accountId} onClose={() => setShowAiFolders(false)} />
-      )}
-    </div>
-  );
-}
-
-/** A voice note in the details drawer: the player, and nothing else.
- *
- *  Its own component because it shares NOTHING with the picture path below — no
- *  still, no lightbox, no zoom, no ⤢ — and every one of those would resolve to
- *  `files.full`, which for audio IS the audio. `preload="none"` so the file is
- *  fetched only if somebody presses play. */
-function VaultAudioPreview({ media: m, accountId }: { media: VaultMedia; accountId: string }) {
-  const src = proxyImage(m.files?.full?.url, accountId);
-  return (
-    <div className="w-full rounded-lg bg-black px-3 py-4 grid gap-2 justify-items-center text-fg-dim">
-      <span className="text-2xl leading-none" aria-hidden>🎤</span>
-      <audio src={src || undefined} controls preload="none" className="w-full" />
-    </div>
-  );
-}
-
-/** Media block in the details drawer.
- *
- *  A selected video plays INLINE with native controls (same `.vault-video`
- *  styling the full-screen player uses), so watching a clip never leaves the
- *  grid. The ⤢ button hands off to the picker's `VaultVideoPreview` for
- *  full-screen. DRM videos have no progressive mp4 to play, so they fall back to
- *  the still + a ▶ that opens VaultVideoPreview's poster-frame lightbox — the
- *  same behaviour as the picker. Photos just render. */
-function VaultPreviewMedia({
-  media: m,
-  accountId,
-  onExpand,
-}: {
-  media: VaultMedia;
-  accountId: string;
-  onExpand: () => void;
-}) {
-  const isVideo = m.type === "video";
-  const rawSrc = isVideo ? progressiveVideoSrc(m) : null;
-  const drmOnly = isVideo && isDrmOnlyVideo(m);
-  const playable = isVideo && !!rawSrc && !drmOnly;
-  const idNum = Number(m.id);
-  const [zoom, setZoom] = useState(false);
-  if (m.type === "audio") return <VaultAudioPreview media={m} accountId={accountId} />;
-  // A PHOTO shows the FULL FRAME from the permanent cache — not `_thumb`, which
-  // is a 300x300 centre-crop that lops the top and bottom off a 3:4 portrait and
-  // hides edge-of-frame detail. A VIDEO keeps its poster (the square is fine as a
-  // play affordance; ⤢ opens the real player).
-  const photoFull = !isVideo && Number.isFinite(idNum) ? mirrorFullSrc(accountId, idNum) : null;
-  const still =
-    photoFull ||
-    m._thumb ||
-    proxyImage(
-      m.files?.full?.url || m.files?.preview?.url || m.files?.thumb?.url,
-      accountId,
-    );
-
-  return (
-    <div className="relative w-full rounded-lg overflow-hidden bg-black">
-      {playable ? (
-        <video
-          src={proxyImage(rawSrc, accountId)}
-          poster={still || undefined}
-          controls
-          loop
-          playsInline
-          className="vault-video w-full max-h-[30vh] object-contain bg-black"
-        />
-      ) : (
-        <>
-          {still && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={still}
-              alt=""
-              aria-hidden={isVideo}
-              onClick={isVideo ? undefined : () => setZoom(true)}
-              title={isVideo ? undefined : "Click to view full size"}
-              className={`w-full max-h-[30vh] object-contain${isVideo ? "" : " cursor-zoom-in"}`}
-            />
-          )}
-          {isVideo && (
-            <button
-              type="button"
-              onClick={onExpand}
-              title={drmOnly ? "DRM — show preview frames" : "Preview video"}
-              aria-label="Preview video"
-              className="absolute inset-0 grid place-items-center group"
-            >
-              <span className="w-14 h-14 rounded-full bg-black/60 border border-white/70 grid place-items-center text-white text-xl pl-1 transition-colors group-hover:bg-black/85">
-                ▶
-              </span>
-            </button>
-          )}
-        </>
-      )}
-      <button
-        type="button"
-        onClick={isVideo ? onExpand : () => setZoom(true)}
-        title="Full screen"
-        aria-label="Full screen"
-        className="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-black/60 hover:bg-black/85 text-white text-xs leading-none"
-      >
-        ⤢
-      </button>
-      {zoom && Number.isFinite(idNum) && (
-        <ImageLightbox accountId={accountId} mediaId={idNum} onClose={() => setZoom(false)} />
       )}
     </div>
   );

@@ -1,11 +1,17 @@
 """One OF media dict → one `VaultItem` row. The mapping, stated once.
 
 This is the only place that knows how OF's media shape lands in our mirror, and
-it exists as its own module because TWO callers need it and they sit on opposite
-sides of an import edge:
+it exists as its own module because three callers need it and two of them sit on
+opposite sides of an import edge:
 
     vault_ai_api.collect      pages the whole vault and upserts every row
     vault_stills.serve        re-reads ONE media by id after a signature expires
+    vault_ingest.ingest_ids   upserts the handful of ids a batch just uploaded
+
+It holds no session and imports no engine, and that is a rule rather than an
+accident. The moment this module opens a session it stops being importable from
+the leaves — which is the entire reason it was carved out. A use case that needs
+rows lives beside `vault_ingest`, not here.
 
 `vault_stills` used to reach back into `vault_ai_api` through a lazy in-function
 import to get at this — the same cycle-dodge that was just removed from
@@ -20,8 +26,15 @@ the producer and the refresh list side by side is what stops them drifting.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any
+
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from db.models import VaultItem
+
+log = logging.getLogger("of-relay.vault_mirror")
 
 
 def parse_iso(v: Any) -> datetime | None:
@@ -69,8 +82,20 @@ def thumb_of(files: dict | None) -> str | None:
     return None
 
 
-def row_values(account_id: str, m: dict, run_id: int) -> dict[str, Any] | None:
-    """Mirror-field values for one OF media dict. None if it has no id."""
+def row_values(account_id: str, m: dict,
+               run_id: int | None = None) -> dict[str, Any] | None:
+    """Mirror-field values for one OF media dict. None if it has no id.
+
+    `run_id` is the COLLECT SWEEP's run, and it is optional because only a sweep
+    has one. Omitting it omits the column, which leaves `last_seen_run_id` NULL
+    on a first sight rather than 0 — and 0 is not a neutral value here. The
+    soft-delete guard `VaultCacheRun` documents removes items whose
+    `last_seen_run_id` lags two completed runs; a row stamped 0 lags every run
+    that will ever exist. It is latent today (that guard is documented, not
+    implemented), which is exactly the kind of sentinel that gets planted now and
+    deletes a creator's media the day somebody builds the thing it was waiting
+    for. An import writes no run id at all, because an import is not a sweep and
+    has nothing truthful to say about which sweep last paged this account."""
     mid = m.get("id")
     if mid is None:
         return None
@@ -96,7 +121,6 @@ def row_values(account_id: str, m: dict, run_id: int) -> dict[str, Any] | None:
         "raw_json": json.dumps(m, ensure_ascii=False, default=str),
         "created_at": parse_iso(m.get("createdAt")) or now,
         "updated_at_of": m.get("updatedAt") if isinstance(m.get("updatedAt"), str) else None,
-        "last_seen_run_id": run_id,
         "updated_at": now,
         "of_folder_ids": json.dumps(of_folders),
         # OF just handed us this media, so it is NOT removed — and saying so here
@@ -112,6 +136,7 @@ def row_values(account_id: str, m: dict, run_id: int) -> dict[str, Any] | None:
         # DON'T overwrite it (preserve describe output).
         "search_text": str(kind).lower(),
         "tags": "[]",
+        **({"last_seen_run_id": run_id} if run_id is not None else {}),
     }
 
 
@@ -135,3 +160,27 @@ MIRROR_REFRESH_FIELDS = (
     # the media permanently, and a full re-collect could not bring it back.
     "removed_at",
 )
+
+
+def upsert_stmt(vals: dict[str, Any]):
+    """INSERT this media, or refresh the row we already hold for it.
+
+    The `on_conflict_do_update` set is `MIRROR_REFRESH_FIELDS` and nothing else,
+    so the AI / operator / describe columns survive being seen again.
+
+    `last_seen_run_id` joins that set exactly when `row_values` was given a run
+    id — which is the same question as "is this caller a collect sweep", asked
+    once, here. It used to be a `refresh_fields` parameter: a two-valued knob
+    that every call site had to get right from memory, with the rule ("a sweep's
+    run id is news; an import's is a lie") written in this docstring rather than
+    in the code. Deriving it from the values means a caller that has no run id
+    cannot accidentally claim one, and a caller that has one cannot forget it.
+    """
+    refresh = MIRROR_REFRESH_FIELDS + (
+        ("last_seen_run_id",) if "last_seen_run_id" in vals else ())
+    return (
+        sqlite_insert(VaultItem)
+        .values(**vals)
+        .on_conflict_do_update(index_elements=["account_id", "media_id"],
+                               set_={k: vals[k] for k in refresh})
+    )

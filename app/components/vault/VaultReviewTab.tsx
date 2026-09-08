@@ -12,10 +12,9 @@
  * Nothing hits OF until a downstream consumer applies. `approved ≠ applied`.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
-import { AccountChips } from "@/components/AccountChips";
-import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useVaultAccountId } from "@/components/vault/VaultAccount";
 import {
   type ReviewItem,
   type ReviewKind,
@@ -42,14 +41,17 @@ function cx(...parts: (string | false | null | undefined)[]): string {
 }
 
 export default function VaultReviewTab() {
-  const accounts = useActiveAccounts();
-  const [accountId, setAccountId] = useState<string | null>(null);
+  // The page's model, not this tab's — the picker lives in the header now, and
+  // a plain string because the page mounts this tab only once a model is chosen.
+  const accountId = useVaultAccountId();
+  // Both are statements about the model we were just looking at: a row this tab
+  // has already actioned, and the note saying so. Carrying either across a model
+  // switch would report the previous creator's queue as this one's — which is
+  // handled by the page REMOUNTING this tab per model, not by an effect here.
+  // The effect that used to do it could no longer fire (a remount means
+  // `accountId` never changes under it) and read as load-bearing anyway.
   const [staleIds, setStaleIds] = useState<Set<number>>(new Set());
   const [flash, setFlash] = useState<string>("");
-
-  useEffect(() => {
-    if (!accountId && accounts.length > 0) setAccountId(accounts[0].id);
-  }, [accounts, accountId]);
 
   const review = useVaultReview(accountId);
   const approveSection = useApproveSection(accountId);
@@ -65,17 +67,7 @@ export default function VaultReviewTab() {
     };
   }, [review.data]);
 
-  // Clear stale badges the moment the operator switches accounts — those ids
-  // belong to a different ledger and would falsely flag cards that just happen
-  // to share the numeric id.
-  function onAccountChange(next: string | null) {
-    setAccountId(next);
-    setStaleIds(new Set());
-    setFlash("");
-  }
-
   async function onApproveSection(kind: ReviewKind) {
-    if (!accountId) return;
     setFlash("");
     try {
       const r = await approveSection.mutateAsync(kind);
@@ -91,7 +83,6 @@ export default function VaultReviewTab() {
   }
 
   async function onReject(id: number) {
-    if (!accountId) return;
     setFlash("");
     try {
       const r = await rejectIds.mutateAsync([id]);
@@ -107,7 +98,6 @@ export default function VaultReviewTab() {
   }
 
   async function onApproveOne(id: number) {
-    if (!accountId) return;
     setFlash("");
     try {
       const r = await approveIds.mutateAsync([id]);
@@ -127,16 +117,11 @@ export default function VaultReviewTab() {
     }
   }
 
-  if (accounts.length === 0) {
-    return <div className="text-sm text-fg-dim">No model accounts with a live session.</div>;
-  }
-
   const busy = approveSection.isPending || approveIds.isPending || rejectIds.isPending;
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3 justify-between">
-        <AccountChips accountId={accountId} onChange={onAccountChange} />
+      <div className="flex flex-wrap items-center gap-3 justify-end">
         <div className="text-xs text-fg-dim">
           {review.isLoading
             ? "Loading…"
