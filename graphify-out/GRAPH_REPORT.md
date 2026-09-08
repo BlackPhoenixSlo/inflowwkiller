@@ -1,4 +1,4 @@
-# Graph Report - /home/dev/inflowwkiller  (2026-08-28)
+# Graph Report - inflowwkiller  (2026-08-28)
 
 ## Corpus Check
 - 711 files · ~1,500,717 words

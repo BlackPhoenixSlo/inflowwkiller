@@ -718,8 +718,8 @@ def of_chat_row(membership: dict, fan: dict | None, last_message: dict | None,
     #       fan message: genuinely blue, leave it.
     #   they DIFFER                          -> something newer than the newest
     #       unread exists (our reply): OF would have cleared it, so we do.
-    # Verified live: ava 900212311962460160 vs ...5751051792384 (our reply ->
-    # cleared); bonnie 900007747011272705 == itself (fan last -> stays 2).
+    # Verified live: on one account the two pointers DIFFERED (our reply was
+    # newest -> cleared); on another they were EQUAL (fan spoke last -> stays 2).
     # Both ids must be present — absent pointers mean "can't tell", and the safe
     # answer is to keep the unread rather than hide a waiting fan.
     _last_id = str(membership.get("lastMessageId") or "")
