@@ -1,0 +1,55 @@
+name: CI
+
+# The mirror is meant to be cloned and deployed by strangers, so the things a
+# stranger would try first are exactly what runs here: install the pinned deps,
+# run the suite, typecheck, and build the dashboard for production.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  relay:
+    name: relay (python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"   # matches the Dockerfile
+      - name: Install pinned deps
+        # Not needed by the tests themselves, which are dependency-free plain
+        # -assert scripts. It runs so a broken requirements.txt fails here and
+        # not on someone's VPS halfway through a deploy.
+        run: |
+          python -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          ./venv/bin/pip install -r requirements.txt
+      - name: service/tests
+        run: |
+          for t in service/tests/test_*.py; do
+            echo "▶ $t"
+            ./venv/bin/python "$t"
+          done
+
+  app:
+    name: dashboard (next)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:run
+      - run: pnpm typecheck
+      - run: pnpm build
