@@ -18,6 +18,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"   # matches the Dockerfile
+      - name: Install ffmpeg
+        # The Dockerfile installs it, and the relay needs it: media_prep
+        # .can_shrink() returns False without it, so an oversized video is
+        # skipped rather than compressed — which changes what the batch-cap
+        # tests observe. A runner without ffmpeg is not this project's runtime.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install pinned deps
         # Not needed by the tests themselves, which are dependency-free plain
         # -assert scripts. It runs so a broken requirements.txt fails here and
