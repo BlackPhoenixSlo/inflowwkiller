@@ -13,14 +13,16 @@
  *     attribution id strict-compared against a string. False for two
  *     independent reasons, so `byBot` could never fire on Fansly.
  *
- * These pin both against the real ids.
+ * These pin both against Fansly-shaped ids: synthetic, but the same digit
+ * length and the same float64 binade as the live ones, so Number() loses
+ * precision here exactly as it did in production.
  */
 import { describe, expect, it } from "vitest";
 
 import { lastOutboundOf, replyStateOf } from "@/components/MoneyRail";
 
 const ACCT = "700937824869654528";
-const MSG = "900605852249276416";        // real id; Number() rounds it to ...400
+const MSG = "900605852249276416";        // Number() rounds it to ...400
 const OF_ACCT = "123456789";
 const OF_MSG = 5123456789;
 

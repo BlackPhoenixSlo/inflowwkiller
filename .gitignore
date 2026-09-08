@@ -73,7 +73,7 @@ OF_AUTOMATIONV1/
 .claude/
 
 # graphify: the PUBLISHED graph is generated IN THIS repo (public corpus by
-# construction — user ruling 2026-08-28). Commit graph.json/graph.html/
+# construction — user ruling 2026-08-28). Commit graph.json/
 # GRAPH_REPORT.md; the cache and runtime stubs stay out, and laptop-generated
 # graphs (graphify-deep, private corpus) never come back.
 graphify-out/cache/

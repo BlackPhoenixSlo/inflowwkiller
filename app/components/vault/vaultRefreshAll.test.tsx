@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import type { FanId } from "@/lib/fanId";
 
 const AID = "700937824869654528";
-const FANSLY_ALBUM: FanId = "900605470987055104"; // the real "asdf" album
+const FANSLY_ALBUM: FanId = "900605470987055104"; // an album id, snowflake-shaped
 const OF_LIST: FanId = 29271410;
 
 /** Exactly what the component's refreshAll does. */

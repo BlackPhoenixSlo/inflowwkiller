@@ -2,7 +2,7 @@
 # Run the whole project test suite:
 #   - backend: every service/tests/test_*.py plain-assert script
 #   - frontend: vitest (app/) one-shot
-# Exit 0 only if everything passes. See library/TEST_PLAN.md.
+# Exit 0 only if everything passes.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
