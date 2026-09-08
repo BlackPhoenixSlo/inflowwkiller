@@ -69,36 +69,38 @@ def analyze(c: sqlite3.Connection, aid: str, nick: str) -> dict:
         (aid,)).fetchone() or [None])
     lo, hi = _price_bounds(ppv)
 
+    # SINGLES ONLY — the same scope ai_chatter._load_catalog puts on the shelf.
+    # Counting legacy script rows here once made this report say "✅ Ready" for
+    # an account whose entire priced inventory the engine refuses to load.
     items = c.execute(
-        "select script_id, description_for_ai, media_ids, price_cents, tip_unlock_cents, "
-        "is_free_teaser, enabled from catalog_items where account_id=?", (aid,)).fetchall()
-    scripts = c.execute(
-        "select status from catalog_scripts where account_id=?", (aid,)).fetchall()
-
-    singles = [it for it in items if it[0] is None]
-    script_items = [it for it in items if it[0] is not None]
+        "select description_for_ai, media_ids, price_cents, "
+        "is_free_teaser, enabled from catalog_items "
+        "where account_id=? and script_id is null", (aid,)).fetchall()
+    legacy_n = c.execute(
+        "select count(*) from catalog_items "
+        "where account_id=? and script_id is not null", (aid,)).fetchone()[0]
 
     def sellable(it) -> bool:
-        _sid, _desc, media, price, tip, free, enabled = it
+        _desc, media, price, free, enabled = it
         if not enabled:
             return False
         if not _media_ids(media):
             return False               # no media = not offerable
         if free:
             return True
-        return bool((price or 0) > 0 or (tip or 0) > 0)
+        # PPV is the only lane (2026-08-19): tip-only items are unofferable.
+        return bool((price or 0) > 0)
 
     def no_media(it):
-        return not _media_ids(it[2])
+        return not _media_ids(it[1])
 
     def no_desc(it):
-        return not (it[1] or "").strip()
+        return not (it[0] or "").strip()
 
     total = len(items)
     sellable_n = sum(1 for it in items if sellable(it))
     no_media_n = sum(1 for it in items if no_media(it))
     no_desc_n = sum(1 for it in items if no_desc(it))
-    enabled_scripts = sum(1 for s in scripts if s[0] == "enabled")
 
     gate = bool(cfg.get("qualification_gate_enabled"))
     smart = bool(cfg.get("smart_pricing_enabled"))
@@ -113,7 +115,11 @@ def analyze(c: sqlite3.Connection, aid: str, nick: str) -> dict:
     # OF floor/ceiling ($3/$200) when unset, so smart pricing always has an authority.
     # Left here as INFO only.
     if sellable_n == 0:
-        blockers.append(f"NO sellable content ({total} items exist, {no_media_n} have no media)")
+        msg = f"NO sellable content ({total} singles exist, {no_media_n} have no media)"
+        if legacy_n:
+            msg += (f"; {legacy_n} legacy script item(s) are ignored "
+                    "(ordered ladders retired 2026-08-19)")
+        blockers.append(msg)
     if no_media_n:
         blockers.append(f"{no_media_n} item(s) have no media attached (not offerable)")
     if no_desc_n:
@@ -122,8 +128,7 @@ def analyze(c: sqlite3.Connection, aid: str, nick: str) -> dict:
     return {
         "aid": aid, "nick": nick, "enabled": enabled, "gate": gate, "smart": smart,
         "price_min": lo, "price_max": hi,
-        "scripts_total": len(scripts), "scripts_enabled": enabled_scripts,
-        "items_total": total, "singles": len(singles), "script_items": len(script_items),
+        "items_total": total, "legacy_items": legacy_n,
         "sellable": sellable_n, "no_media": no_media_n, "no_desc": no_desc_n,
         "blockers": blockers,
     }
@@ -139,15 +144,14 @@ def main() -> None:
         return "—" if cents is None else f"${cents // 100}"
 
     lines = ["# AI Upseller — content-gap report", ""]
-    lines.append("| Model | Engine | Gate | Smart$ | PPV Min/Max | Scripts (on) | Sellable items | No-media | Ready? |")
-    lines.append("|---|---|---|---|---|---|---|---|---|")
+    lines.append("| Model | Engine | Gate | Smart$ | PPV Min/Max | Sellable items | No-media | Ready? |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for r in reports:
         ready = "✅" if not r["blockers"] else "❌"
         lines.append(
             f"| {r['nick']} | {'on' if r['enabled'] else 'OFF'} | "
             f"{'on' if r['gate'] else 'OFF'} | {'on' if r['smart'] else 'off'} | "
             f"{dol(r['price_min'])} / {dol(r['price_max'])} | "
-            f"{r['scripts_total']} ({r['scripts_enabled']}) | "
             f"{r['sellable']}/{r['items_total']} | {r['no_media']} | {ready} |")
 
     lines += ["", "## What each model needs before the seller works", ""]

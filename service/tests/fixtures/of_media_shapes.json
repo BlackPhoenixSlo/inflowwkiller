@@ -1,0 +1,87 @@
+{
+  "_comment": [
+    "Real OF media shapes, asserted by BOTH sides of the still-picking rule:",
+    "  python  service/tests/test_inbound_image_describe.py  -> of_shapes.still_url",
+    "  browser app/lib/ofMedia.test.ts                       -> lib/ofMedia.stillUrl",
+    "The two implementations cannot share code across the wire, so they share",
+    "this table instead. Add a case here and whichever side drifts goes red.",
+    "`still` is the expected picked url, or null for 'nothing readable'.",
+    "SIG is a stand-in for OF's signed query; it must not change the answer."
+  ],
+  "sig": "?Tag=2&u=0&Policy=abc~def&Signature=xyz",
+  "cases": [
+    {
+      "name": "photo — prefers the wide preview over the 300x300 square crop",
+      "media": {"type": "photo", "canView": true, "files": {
+        "thumb": {"url": "https://cdn/300x300_a.jpg"},
+        "preview": {"url": "https://cdn/960x1280_a.jpg"},
+        "full": {"url": "https://cdn/2316x3088_a.jpg"}}},
+      "still": "https://cdn/960x1280_a.jpg"
+    },
+    {
+      "name": "photo with only a thumb — last resort still beats nothing",
+      "media": {"type": "photo", "files": {"thumb": {"url": "https://cdn/300x300_b.jpg"}}},
+      "still": "https://cdn/300x300_b.jpg"
+    },
+    {
+      "name": "gif — OF stores it as an .mp4, so the still must come off the thumb",
+      "media": {"type": "gif", "canView": true, "files": {
+        "thumb": {"url": "https://cdn/150x150_frame_0.jpg"},
+        "full": {"url": "https://cdn/0i1n8it6_source.mp4"}}},
+      "still": "https://cdn/150x150_frame_0.jpg"
+    },
+    {
+      "name": "gif with ONLY the mp4 — no frame to read, no button",
+      "media": {"type": "gif", "files": {"full": {"url": "https://cdn/x_source.mp4"}}},
+      "still": null
+    },
+    {
+      "name": "viewable video — OF's own poster frame, no ffmpeg",
+      "media": {"type": "video", "canView": true, "duration": 8, "files": {
+        "thumb": {"url": "https://cdn/300x300_poster.jpg"},
+        "preview": {"url": "https://cdn/760x428_frame_0.jpg"},
+        "full": {"url": "https://cdn/clip_source.mp4"}}},
+      "still": "https://cdn/760x428_frame_0.jpg"
+    },
+    {
+      "name": "viewable video shipping a preview but NO thumb — still readable",
+      "media": {"type": "video", "canView": true, "files": {
+        "preview": {"url": "https://cdn/720x1280_frame_0.jpg"},
+        "full": {"url": "https://cdn/clip_source.mp4"}}},
+      "still": "https://cdn/720x1280_frame_0.jpg"
+    },
+    {
+      "name": "locked video — only the mp4 ships, so nothing is readable",
+      "media": {"type": "video", "canView": false, "files": {
+        "full": {"url": "https://cdn/locked_source.mp4"}}},
+      "still": null
+    },
+    {
+      "name": "voice note — audio is never an image, even with a thumb hung off it",
+      "media": {"type": "audio", "files": {
+        "thumb": {"url": "https://cdn/waveform.jpg"},
+        "full": {"url": "https://cdn/voice.mp3"}}},
+      "still": "https://cdn/waveform.jpg"
+    },
+    {
+      "name": "voice note with only the mp3",
+      "media": {"type": "audio", "files": {"full": {"url": "https://cdn/voice.mp3"}}},
+      "still": null
+    },
+    {
+      "name": "shape drift — the url sits straight on the media object",
+      "media": {"type": "photo", "url": "https://cdn/loose.jpg"},
+      "still": "https://cdn/loose.jpg"
+    },
+    {
+      "name": "no files at all — the button must not be offered",
+      "media": {"type": "photo"},
+      "still": null
+    },
+    {
+      "name": "untyped media with a real image — type is never the question",
+      "media": {"files": {"preview": {"url": "https://cdn/untyped.jpg"}}},
+      "still": "https://cdn/untyped.jpg"
+    }
+  ]
+}

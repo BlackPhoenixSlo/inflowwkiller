@@ -401,10 +401,10 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
               <span className="text-[11px] text-fg-dim"> · on by default</span>
               <span className="block max-md:hidden text-fg-dim text-xs">
                 A man who types <i>&quot;how much for the vid&quot;</i> is asking to
-                buy, and one who says <i>&quot;yes&quot;</i> after she offers him
+                buy, and one who says <i>&quot;yes&quot;</i> after the seller offers him
                 something has already agreed — neither is phrased as a question about
                 content, so neither used to reach the vault at all. The
-                <b> &quot;yes&quot; only counts when her own last message actually
+                <b> &quot;yes&quot; only counts when the seller&apos;s own last message actually
                 offered something</b>: a yes to <i>&quot;do u like dogs?&quot;</i>
                 sells nothing.
               </span>
@@ -414,7 +414,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
           <label className={cn("space-y-1 block pl-6",
             cfg.wide_ask_enabled !== false ? "" : "opacity-50 pointer-events-none")}>
             <div className="text-fg-dim text-xs">
-              …and when she only <i>teased</i> it, sell on his yes this often
+              …and when the seller only <i>teased</i> it, sell on his yes this often
               <span className="ml-1 opacity-70">(0 = never)</span>
             </div>
             <div className="flex items-center gap-2">
@@ -429,7 +429,7 @@ export default function UpsellerTab({ accountId }: { accountId: string | null })
               <span className="text-fg-dim text-sm">%</span>
             </div>
             <div className="max-md:hidden text-fg-dim text-xs">
-              Most of the time she doesn&apos;t ask, she <b>dangles</b> —
+              Most of the time the seller doesn&apos;t ask, they <b>dangle</b> —
               <i> &quot;the rest is better&quot;</i>, <i>&quot;u gotta earn that
               one&quot;</i>. That is a real selling moment and an ambiguous one: a
               &quot;yes&quot; there can mean <i>send it</i> or can just be him playing
