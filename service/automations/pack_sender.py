@@ -71,6 +71,9 @@ from db.engine import get_session
 from db.models import CATALOG_IS_SINGLE, CatalogItem, VaultItem, VaultSend
 
 from . import content_resolver, pack_pricing
+# The two outbound guards every OTHER lane already runs. This lane ran neither
+# until 2026-09-08; see the block in `_deliver` for why they belong at the wire.
+from ._common import apply_word_restriction, scan_offplatform
 # Re-exported on purpose: `audit_pack` / `audit_ask` / `mirror_warning` are part
 # of this module's surface (the operator UI and the pack tests reach them through
 # it), and the import line is where a reader learns the rules moved out.
@@ -857,6 +860,32 @@ async def _deliver(client, plan: PackPlan, *, voice_line: str | None,
     from .ai_chatter import _record_offer, _record_vault_sends
 
     account_id, fan_id = plan.account_id, plan.fan_id
+    # 🚨 GUARDS RUN ON THE VOICE LINE ALONE, BEFORE THE CLAUSE IS PREPENDED.
+    #
+    # `guard_offplatform` swaps the WHOLE message for a deflection — whole-message
+    # on purpose, because a surgical edit of a contact-swap leaves the intent. On a
+    # CONCATENATED caption that would swap the CLAIM away and send a PRICED message
+    # captioned with a deflection: he pays, and the only text on the box is "let's
+    # keep it here babe". So the line is scanned by itself and DROPPED on a hit —
+    # never swapped — which leaves the bare clause, the shape this lane already
+    # ships and the one the numbers like.
+    #
+    # Order is load-bearing and is stated at scan_offplatform: scan the RAW text
+    # BEFORE word restriction, because restriction rewrites `meet` → `meeet` and
+    # hides the leak from the patterns.
+    #
+    # Here rather than in `pack_claim` (a leaf — `re` + `dataclasses`, which
+    # `_hook_upsell` imports precisely to keep it one) and rather than in each
+    # caller: this is the single wire every pack path shares, and the hook's bridge
+    # reached it unscanned for exactly as long as that was left to the callers.
+    if voice_line:
+        _leaks = scan_offplatform(voice_line)
+        if _leaks:
+            log.warning("pack voice line DROPPED (off-platform: %s) account=%s "
+                        "fan=%s", ",".join(_leaks), account_id, fan_id)
+            voice_line = None
+        else:
+            voice_line = apply_word_restriction(voice_line)
     caption = compose_caption(plan.claim, voice_line)
     if dry_run:
         return {"status": "dry_run", "price_cents": plan.price_cents,

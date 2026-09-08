@@ -758,6 +758,23 @@ async def _nearest(account_id: str, fan_id: int, contract: Contract,
 
 _ANSWER_MAX_CHARS = 120        # her reply half of a caption, not a paragraph
 
+# ── The voice line's two forms (operator ruling, 2026-09-08) ──────────────────
+# One line at the bottom of the caption, two INSTRUCTIONS. Below the threshold it
+# answers his last message; above it, it replies to the thread.
+#
+# Why a row count is the right switch: on the live history window (rows 40,
+# hours 12, floor 6 — `ai_chatter._DEFAULTS`) a SPREAD-OUT thread yields few rows
+# and a TEASING one yields many. So the row count already IS the tease detector,
+# and no burst test, no timestamp walk and no second model call are needed. The
+# operator's words: "this is very good when the conversation is spread out, but
+# when we are teasing we need to delete this."
+#
+# 🚨 The line is never DROPPED by this rule — only re-instructed. The bare clause
+# stays the FAILURE fallback (a guard rejection, an LLM error, a capped account),
+# never a routine outcome.
+_ANSWER_THREAD_ROWS = 13       # MORE than this many rows => reply to the thread
+_ANSWER_THREAD_TAIL = 40       # rows read for the thread form; the window's cap
+
 
 # ── What CALL 6 is allowed to know about the fan ────────────────────
 #
@@ -850,7 +867,12 @@ async def _him_block(f: Fan | None, account_id: str, fan_id: int,
 async def _answer_line(account_id: str, fan_id: int, his_words: str,
                        voice: str, model: str, *, f: Fan | None = None,
                        speaker: str = "her") -> str:
-    """CALL 6 — ONE short line answering what he just said, in her voice.
+    """CALL 6 — ONE short line for the voice half of a caption, in her voice.
+
+    TWO FORMS, chosen on how many rows the thread has (`_ANSWER_THREAD_ROWS`):
+    at or below it she answers HIS LAST MESSAGE (the original behaviour, byte for
+    byte); above it she replies to THE CONVERSATION. See the constant block for
+    why a row count is the switch.
 
     The voice half of a caption on a send he did not ask for. The gather-close
     farewell ships a fixed parting line ("made u a lil something"), which reads
@@ -880,9 +902,19 @@ async def _answer_line(account_id: str, fan_id: int, his_words: str,
     hard rule they share is the one below.
     """
     him = await _him_block(f, account_id, fan_id, speaker)
+    # THE SWITCH. A thread long enough to be a live exchange gets the thread form.
+    # `_thread_lines` is this module's own reader and already returns newest-N
+    # oldest-first with PPV/tip markers and HTML stripped, so there is nothing to
+    # render here and no second table read to justify.
+    lines = await _thread_lines(str(account_id), int(fan_id),
+                               _ANSWER_THREAD_TAIL, speaker)
+    thread = len(lines) > _ANSWER_THREAD_ROWS
+    task = ("Reply to the CONVERSATION below — the last message is one beat in "
+            "it, not the whole of it. " if thread else
+            "Answer what he actually said — ")
     system = (
         "You write ONE short line for a creator replying to a fan's message "
-        "in a chat. Answer what he actually said — acknowledge it, and tease "
+        "in a chat. " + task + "acknowledge it, and tease "
         "forward. Rules: at most 18 words, no number, no price, no words "
         "like pic/photo/video/set, do not describe or promise any media, no "
         "question mark at the end, no name. Emoji are fine, at most one.\n"
@@ -890,10 +922,12 @@ async def _answer_line(account_id: str, fan_id: int, his_words: str,
         + (f"{him}\n{_HIM_STEER}\n" if him else "")
         + 'Reply as JSON: {"line": "..."}.'
     )
+    user = ("CONVERSATION:\n" + "\n".join(lines)) if thread \
+        else f"HIS MESSAGE:\n{his_words}"
     res = await llm_client.chat(
         model=model,
         messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": f"HIS MESSAGE:\n{his_words}"}],
+                  {"role": "user", "content": user}],
         purpose="gather_close_answer",
         account_id=str(account_id), fan_id=int(fan_id),
         response_format={"type": "json_object"}, temperature=0.7,

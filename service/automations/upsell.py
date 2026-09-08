@@ -408,6 +408,13 @@ _SPEND_REGRET_RE = re.compile(
     r"too (much|expensive) for me right now|"
     r"(waiting|wait) (for|til|till|until) pay ?day|"
     r"only (getting|get) paid (end|at the end|on)|"
+    # ── Corpus-derived (2026-09-08). See the matching block in _SOFT_BROKE_RE: `salary`
+    # was invisible to both brakes and two real prod lines walked into a priced send.
+    # Anchored on salary/wages/pay, never on a bare `credited`.
+    r"(waiting|wait) (for|til|till|until) (my |the )?(salary|wages)|"
+    r"(salary|wages|pay)('?s| is| has| have)?( been)?"
+    r"( not|n'?t| still not)? ?(credited|come ?in|arrived)( yet)?|"
+    r"(not|isn'?t|hasn'?t|haven'?t) (been )?credited|"
     r"money('?s| is) tight|not in the budget|"
     # He hates tipping ON HERE — not tipping culture in restaurants.
     r"(hate|dont like|don'?t like) tipping (on|in) (here|this|of|onlyfans))\b", re.I)
