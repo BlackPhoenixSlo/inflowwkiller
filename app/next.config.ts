@@ -25,7 +25,21 @@ const nextConfig: NextConfig = {
   // has already been visited once. Bumping to 60s keeps just-visited
   // routes instant; the SSE + per-query staleTime layer still controls
   // data freshness, this only governs the React tree cache.
+  // Upload bytes go browser -> Traefik -> THIS proxy -> relay, and Next caps a
+  // proxied request body at 10 MB by default: a 73 MB vault import was
+  // truncated mid-multipart, the relay dropped the half-written body, and the
+  // browser saw a socket hang up while the import card sat on "Starting…"
+  // forever. (The runtime warning names `middlewareClientMaxBodySize`; that key
+  // is deprecated in Next 16 — `proxyClientMaxBodySize` is the live one.)
+  //
+  // NOT raised to match VAULT_UPLOAD_MAX_MB (4000). The app container is capped
+  // at 1 GiB with no swap on the box, so a limit above that trades a truncation
+  // error for an OOM kill. 256 MB covers ordinary imports with headroom; a
+  // multi-GB file must not come through here at all — use a Drive link, which
+  // the relay fetches server-side, or route the upload path straight to the
+  // relay and skip this proxy.
   experimental: {
+    proxyClientMaxBodySize: "256mb",
     staleTimes: {
       dynamic: 60,
       static: 300,
