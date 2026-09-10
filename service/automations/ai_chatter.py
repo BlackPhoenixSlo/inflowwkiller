@@ -66,6 +66,8 @@ import random
 from collections import Counter
 from random import Random
 import re
+import unicodedata as _unicodedata
+from html import unescape as _unescape
 from datetime import datetime, timedelta
 from typing import Literal, NamedTuple
 
@@ -249,7 +251,7 @@ def skip_reason_blocks(reason: str | None, *, engage_old_fans: bool) -> bool:
     ⚠️ IT EXISTS BECAUSE THE BADGE HAND-ROLLED A SECOND COPY AND DROPPED A CLAUSE.
     `fans.py` filtered `_GRADUATION_SKIPS` but not the engage_old_fans lift, so every
     fan carrying `old_fan_pre_ai` rendered "🚫 Skipped (old_fan_pre_ai)" while the
-    engine was happily engaging him — 96 fans on Lucas2 alone. Worse than the false
+    engine was happily engaging him — 96 fans on blake alone. Worse than the false
     label: the badge returns on its FIRST hit, so that phantom skip also made the true
     state (Human Rhythm's "On a break") unreachable for exactly those fans. An operator
     debugging a silent thread was shown a wrong reason AND denied the right one.
@@ -1289,7 +1291,7 @@ class _Cand:
         "her_last_at", "pic_sent", "last_in_desc", "last_in_desc_at",
         "last_out_was_gif", "last_in_text", "first_in_at",
         "msg_ids", "msg_at", "reply_ctx", "in_run", "her_times",
-        "last_in_mid", "turn", "pic_back_at",
+        "last_in_mid", "turn", "pic_back_at", "last_bcast_idx",
         # ── decisions this sweep made ───────────────────────────────────
         "reply_start",
     )
@@ -1448,6 +1450,9 @@ class _Cand:
         # _quota_gate`). Handing it the list rather than a pre-cut count is what
         # keeps that rule in one place instead of two.
         self.her_times: list[datetime] = []
+        # Index into `messages` of the newest row `_gather` classified as a
+        # broadcast, or None. See `mark_broadcast`.
+        self.last_bcast_idx: int | None = None
 
     def add_message(self, direction: str, text: str, message_id: int,
                     created_at: "datetime | None" = None) -> None:
@@ -1462,6 +1467,13 @@ class _Cand:
         if direction == "in":
             self.last_in_mid = int(message_id)
 
+    def mark_broadcast(self) -> None:
+        """Remember WHERE the newest blast sits in `messages`. Only the index —
+        `_gather` decides what counts as a broadcast and this must not re-derive
+        it. Read by the window counter to answer the one question the duplicate
+        rate cannot: did we trim away the thing he was answering?"""
+        self.last_bcast_idx = len(self.messages) - 1
+
 
 # An untagged outbound sent verbatim to at least this many DIFFERENT fans is a
 # broadcast, not somebody talking to one man. Five is deliberately low: a person
@@ -1469,8 +1481,41 @@ class _Cand:
 # being wrong is only that the engine keeps chatting.
 _BROADCAST_MIN_FANS = 5
 
+_BCAST_TAG_RE = re.compile(r"<[^>]+>")
+_BCAST_WS_RE = re.compile(r"\s+")
 
-def _broadcast_bodies(rows) -> frozenset[str]:
+
+def _broadcast_key(body: str | None, memo: dict[str, str] | None = None) -> str:
+    """Body → the key `_broadcast_bodies` groups on. "" means "never group me".
+
+    Grouping on the RAW body split every blast in two: we store the caption with
+    plain `\n` and OF echoes the same caption back wrapped in `<br />`, so the
+    stub and the ingested row landed in different buckets and each could sit
+    under the 5-fan threshold on its own. Same normalization as
+    `attribution._norm_body` (tags → space, entities unescaped, whitespace
+    collapsed), and the same reason it is a local copy: `attribution` imports
+    from this package, so importing back closes a cycle.
+
+    `memo` is not an optimization detail — the account sweep runs every ~30s over
+    every message on the account and normalizes each body TWICE (once to count,
+    once to classify). Bodies repeat heavily, which is this function's whole
+    premise, so one dict per `_gather` turns that into one pass.
+    """
+    if not body:
+        return ""
+    if memo is not None:
+        hit = memo.get(body)
+        if hit is not None:
+            return hit
+    txt = _unescape(_BCAST_TAG_RE.sub(" ", body))
+    txt = _unicodedata.normalize("NFC", txt)
+    key = _BCAST_WS_RE.sub(" ", txt).strip()
+    if memo is not None:
+        memo[body] = key
+    return key
+
+
+def _broadcast_bodies(rows, memo: dict[str, str] | None = None) -> frozenset[str]:
     """Untagged outbound bodies this account sent to MANY fans — OF's own
     auto-welcome, and mass blasts fired from the OF app.
 
@@ -1493,7 +1538,9 @@ def _broadcast_bodies(rows) -> frozenset[str]:
     one pass over rows we have and needs no schema change.
 
     Empty bodies are skipped — a sticker send carries no text, and grouping them
-    would fold every gif on the account into one 'broadcast'.
+    would fold every gif on the account into one 'broadcast'. `_broadcast_key`
+    returns "" for those (and for a `<photo>`-only body, which strips to
+    nothing), which is the same refusal by a different route.
 
     SWEEP-ONLY, deliberately. `_gather` is also called fan-scoped (W7 inbound
     dispatch, the status endpoint, post_buy/aftercare); `rows` then holds ONE fan,
@@ -1508,11 +1555,27 @@ def _broadcast_bodies(rows) -> frozenset[str]:
     fans_per_body: dict[str, set[int]] = {}
     for row in rows:
         fan_id, direction, body, _created, automation_kind, mass_run_id = row[:6]
-        if direction != "out" or automation_kind is not None or mass_run_id is not None:
+        if direction != "out":
             continue
-        if not (body or "").strip():
+        # Count the untagged rows this exists to catch, AND our own mass rows.
+        # Not "every outbound": a 1:1 automation line (`yeah`, `hey`, `babe`) is
+        # sent verbatim to far more than five men over a week, and folding those
+        # in would mark ~350 genuine human/1:1 rows as broadcasts — a body that
+        # falsely gains broadcast status stops advancing `last_dir` and stops
+        # setting `last_human_out_at`, so the engine talks over a live chatter.
+        # That failure is irreversible; the one this guards is a missed mute.
+        #
+        # Mass rows DO count, and must: once `adopt_thread_placeholders` folds a
+        # stub into its real row, half a blast's recipients carry a mass_run_id
+        # and half are still untagged. Counting only the untagged half can drop a
+        # real blast under the 5-fan threshold mid-migration — the rows left
+        # untagged then lose the shield they had yesterday.
+        if mass_run_id is None and automation_kind is not None:
             continue
-        fans_per_body.setdefault(body, set()).add(int(fan_id))
+        key = _broadcast_key(body, memo)
+        if not key:
+            continue
+        fans_per_body.setdefault(key, set()).add(int(fan_id))
     return frozenset(b for b, fans in fans_per_body.items()
                      if len(fans) >= _BROADCAST_MIN_FANS)
 
@@ -1604,7 +1667,8 @@ async def _gather(account_id: str,
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
     bad_ts: list[int] = []   # fans that own a row with an unreadable created_at
-    broadcast_bodies = _broadcast_bodies(rows)
+    bcast_keys: dict[str, str] = {}     # raw body → key, shared with the loop
+    broadcast_bodies = _broadcast_bodies(rows, bcast_keys)
     for (fan_id, direction, body, created_at_raw, automation_kind, mass_run_id,
          image_desc, media_count, message_id) in rows:
         created_at = parse_ts(created_at_raw)
@@ -1637,8 +1701,22 @@ async def _gather(account_id: str,
         # from the same three columns. `mass_run_id` alone is NOT the question: a
         # blast fired from the OF app is untagged, and `broadcast_bodies` is the only
         # thing that catches it.
-        broadcast = (mass_run_id is not None
-                     or (automation_kind is None and body in broadcast_bodies))
+        # `direction == "out"` is load-bearing, not defensive. An INBOUND row
+        # carries no automation_kind and no mass_run_id, so the two clauses below
+        # are both live for it — and the day a fan types back the same two words a
+        # blast used ("hey babe", "you up"), HIS message was classified as OUR
+        # broadcast. It then failed `answers_him`, so it never moved `last_dir`
+        # and the engine read the thread as "we spoke last" and left him unanswered
+        # — the exact turn theft this predicate exists to stop, pointed the wrong
+        # way. Widening the counting set below (mass rows now count too) widened
+        # that exposure, which is what surfaced it.
+        broadcast = direction == "out" and (
+            mass_run_id is not None
+            or (automation_kind is None
+                and bool(broadcast_bodies)     # empty on every fan-scoped call
+                and _broadcast_key(body, bcast_keys) in broadcast_bodies))
+        if broadcast:
+            c.mark_broadcast()
         # …and is it a REACTION rather than an answer? `image_reply` / `tip_reward`
         # go out within seconds of HIS action, carry an automation_kind (so they are
         # never `broadcast`) and say nothing — see TURN_NEUTRAL_KINDS.
@@ -4329,7 +4407,7 @@ async def sleep_window(account_id: str, tz_offset_minutes: int | None,
 #: there are SIX, and `fans.py` — which an earlier version of this note named as
 #: a caller — contains none of them:
 #:      `tests/test_ai_chatter.py`  ×5   (`_sleep_window`, plain calls)
-#:      `_sim_dana_floor.py:28`     ×1   (`_load_cfg_row`, a plain call)
+#:      `_sim_Dana_floor.py:28`     ×1   (`_load_cfg_row`, a plain call)
 #: No line numbers here on purpose: the last set went stale by seven lines from a
 #: merge alone, and a stale citation is worse than a grep.
 #:
@@ -5367,7 +5445,7 @@ def _turn_kind(*, bot_accused: bool, pic_desc: str, content_ask: bool,
         # `CONTENT_ASK_RE` matches the bare substring "wanna see", with no reading of
         # who is offering what, so "You wanna see my cock?" already scored as
         # content_ask — a BUYING signal — and this branch would be dead code below it.
-        # Prod receipt (Dana 326419277, 2026-08-08 01:45:50): he offered, and the
+        # Prod receipt (Dana FAN_ID, 2026-08-08 01:45:50): he offered, and the
         # engine answered "u keep askn / dont u / tell me more about that highway life
         # first" with an $8 PPV stapled on. It thought HE was the one asking.
         #
@@ -5539,7 +5617,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     # nudge above steers at "his job, a hobby, something going on in his life" —
     # the three fields a kink-forward fan is least likely to have filled.
     #
-    # Prod receipt (Lucas2 7789837 / fan 106046461, 2026-08-09 04:29→04:52). He
+    # Prod receipt (blake ACCOUNT_ID_3 / fan FAN_ID, 2026-08-09 04:29→04:52). He
     # wrote four sentences naming exactly what he wanted; his `hobbies` and
     # `occupation` were both "" and his `fetishes` was fully populated. With every
     # target of the nudge empty, the model reached for the only other thing in its
@@ -5670,7 +5748,7 @@ def _build_messages(persona: str, f: Fan, c: _Cand, asked: set[str],
     elif kind == _TURN_RATE_PIC:
         # HE JUST SENT A PICTURE. Rating it is the whole point of the vision layer and
         # it was the one thing never wired: the description reached the prompt, nothing
-        # ever told her to USE it. Prod thread 581112404 is the receipt — he sent one,
+        # ever told her to USE it. Prod thread FAN_ID is the receipt — he sent one,
         # asked "Is it what you thought?", and got "mmm it's deffinetly something" while
         # a paragraph describing exactly what he sent sat in the same row of the DB.
         #
@@ -7061,6 +7139,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                                 # (`tail_for`'s labels)
     history_tiny = 0         # …the window collapsed to <= 2 rows. Should be ~0
                              # with a floor; if it is not, the floor is not working.
+    # THE incident class, which the duplicate rate cannot see. A fan answers a
+    # blast with two words ("please", "yes babe") and the window has already
+    # trimmed the blast away, so she reads a bare fragment with nothing it could
+    # be answering and calls him out for not answering HER. Folding the
+    # placeholder duplicate in buys ~25h of reach-back and moves this number —
+    # it does not zero it, because the real fix is pinning the blast into the
+    # window. Without a counter, shipping the attribution fix looks like a
+    # success (duplicates ~22% -> ~0) while this stays exactly as broken.
+    history_blind_reply = 0
     skipped_locked = 0
     skipped_cooldown = 0
     skipped_cadence = 0     # cadence: burst cap hit / post-purchase window lapsed
@@ -7474,7 +7561,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # A TIP is money, and this is the ONLY place it reaches rhythm (the
                     # decide() twin below merges it too). `_context_of` must read a man
                     # who just tipped as a live sell — otherwise she walks out seconds
-                    # after he pays. Measured on 2026-08-09 on account 2024813: $5 tip
+                    # after he pays. Measured on 2026-08-09 on account ACCOUNT_ID_2: $5 tip
                     # at 21:37:27, ingested 21:37:31, step-out at 21:37:43. Deliberately
                     # NOT merged into `.paid` itself — see `_human_money_signals`.
                     last_paid_at=_newest(
@@ -8246,7 +8333,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # answer to a bot accusation — but refusing it AFTER generation turns a
             # sticker-only reply into SILENCE, which answers "You a real person?" with
             # nothing at all. That is a worse answer than the gif was. Seen on a replay
-            # of thread 581112404: the model returned "STICKER: eyeroll", the guard
+            # of thread FAN_ID: the model returned "STICKER: eyeroll", the guard
             # dropped it, `dropped_empty: 1`, and she never spoke.
             #
             # Same reasoning for the picture he just sent: a gif is precisely the
@@ -8312,6 +8399,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # not, we want to hear it from a counter now, not from a
                     # quality complaint in three weeks.
                     history_tiny += 1
+                # …and the incident class: a two-word answer to a blast we
+                # trimmed. `last_bcast_idx` is an index into the FULL thread and
+                # the model sees only the last `tail` rows, so "trimmed" is
+                # exactly "it sits before the cut".
+                if (c.last_bcast_idx is not None
+                        and c.last_bcast_idx < len(c.messages) - tail
+                        and 0 < len((c.last_in_text or "").split()) <= 2):
+                    history_blind_reply += 1
                 history_bound[window_bound] += 1
                 log.info("ai_chatter history window account=%s fan=%s rows=%d "
                          "n=%d hours=%s floor=%d bound=%s",
@@ -9763,6 +9858,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # key, so "N was binding" never has to mean "the clock was unreadable".
         "history_clock_bound": history_bound["clock"],
         "history_tiny": history_tiny,
+        # Two-word reply to a blast the window trimmed — the incident class the
+        # placeholder fix narrows but does not close. Watch it across the
+        # deploy; it is the only forcing function for the pin.
+        "history_blind_reply": history_blind_reply,
         # ⚠️ Brings in `deliveries_failed` — a TIP-UNLOCK RETRY that could not
         # deliver (`_resolve_open_offers`), NOT the pack lane's
         # `pack_delivery_failed` twenty lines above. Two unrelated events, two

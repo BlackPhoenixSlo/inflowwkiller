@@ -19,16 +19,18 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from html import unescape
 from typing import Iterable
 
 import re
+import unicodedata
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
-from db.models import Chat, Message
+from db.models import Chat, Message, Transaction
 
 log = logging.getLogger("of-relay.attribution")
 
@@ -40,6 +42,57 @@ def _preview_text(body: str | None) -> str:
     if not body:
         return ""
     return re.sub(r"<[^>]+>", "", body).strip()[:120]
+
+
+# Pairing key for placeholder ↔ real-row matching. NOT cosmetic and NOT the same
+# question `_preview_text` answers: we store a caption with plain `\n`, OF echoes
+# the SAME caption back with `<br />` around it, so a byte-equality key never
+# matched a multi-line body and `adopt_thread_placeholders` returned 0 for every
+# one of them (161k live stubs, 4,113 of them pairable once normalized).
+#
+# Tags collapse to a SPACE, not to "": OF sometimes swaps the newline for `<br/>`
+# rather than wrapping it, and stripping to "" would glue `foo<br/>bar` into
+# `foobar` while our own copy normalizes to `foo bar`. A space is right for both
+# shapes because the whitespace collapse below folds the duplicate away.
+#
+# Deliberately LOCAL rather than imported from `automations/`:
+# `welcome_chatter_for_info` already imports this module, so reaching the other
+# way closes an import cycle. `reply_mass_funnel._norm_body` is the same shape for
+# the same reason but is NOT the same function — it casefolds and does not unescape
+# or NFC-normalize. Do not consolidate them without measuring: casefolding here
+# would let two sends differing only in case pair and delete one, and dropping the
+# unescape there would change opener matching. Same idea, different contracts.
+# `</?[A-Za-z]…>` and not `<[^>]+>`: a tag NAME starts with a letter, and the
+# loose form ate real prose — "i want u < 3 tonight > ok" collapsed to "i want
+# u ok". Worse, it did so ASYMMETRICALLY: our stored copy holds the raw `<`,
+# OF echoes it escaped as `&lt;`, so the two sides of the SAME send normalized
+# to different keys and the pair was missed.
+_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+_WS_RE = re.compile(r"\s+")
+
+
+def _norm_body(body: str | None) -> str:
+    """Body → pairing key, or "" for a body that must never pair.
+
+    "" is a REFUSAL, not a key: `<photo>` / `<video>` (and any media-only send)
+    strip to nothing, and folding all of them into one bucket would let an
+    unrelated stub adopt an unrelated row. Every caller must skip an empty key.
+
+    Tags are stripped BEFORE entities are unescaped, and that order is deliberate
+    even though it is not the convergent one. A caption of ours holding a literal
+    `i <3 u > all` loses that span while OF's escaped echo keeps it, so the pair is
+    MISSED — today's duplicate survives, which is the status quo. Unescaping first
+    would converge those two, but it also turns any escaped angle bracket in a
+    fan-visible caption into a strippable tag, and this order is the one measured
+    against all 4,113 pairable prod rows (0 ambiguous). A missed pair costs a
+    duplicate; a wrong pair stamps the wrong run on a real send and deletes the
+    evidence.
+    """
+    if not body:
+        return ""
+    txt = unescape(_TAG_RE.sub(" ", body))
+    txt = unicodedata.normalize("NFC", txt)
+    return _WS_RE.sub(" ", txt).strip()
 
 
 async def _advance_chat_preview(
@@ -647,8 +700,10 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
 
     PER THREAD, not per message, and that is the whole shape of it. OF gives us
     no id linking a placeholder to its real row, so the pairing key is
-    (account, fan) + exact body — which means the work is inherently about a
-    thread's whole placeholder set, not about the one row being upserted.
+    (account, fan) + NORMALIZED body (`_norm_body` — OF echoes our `\n` back as
+    `<br />`, and the byte-equality key this shipped with matched no multi-line
+    caption at all) — which means the work is inherently about a thread's whole
+    placeholder set, not about the one row being upserted.
     Measured on prod 2026-07-25, only 9.4% of placeholders (1,448 of 15,341) ever
     have a real twin at all, so a per-message hook would spend a lookup on every
     outbound row of every re-scrape to find nothing the overwhelming majority of
@@ -658,7 +713,20 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
 
     `price_cents` is adopted only when OF's row reports 0 and the placeholder
     holds a real price — OF omits the price on some scraped PPV rows, and that
-    zero would otherwise erase the sale's value.
+    zero would otherwise erase the sale's value. `is_paid`/`purchased_at` move
+    the same one-way: a stub that KNOWS about a purchase can promote a real row
+    OF scraped as unpaid, never the reverse.
+
+    Deleting a row means everything that POINTS at it moves first, in this same
+    session, or the delete silently destroys the reference:
+      • `transactions.message_id` — the ledger links a purchase straight to the
+        synthetic id (27 live rows, $552.80), and an orphan falls into the
+        revenue view's orphan branch. Repointed; an unresolvable collision on
+        `uq_tx_msg` REFUSES the adoption rather than dropping either side.
+      • `chats.last_message_id` — the inbox preview. Both ingest updaters
+        advance on numeric-id monotonicity, and a real OF id (~1.1e13) can never
+        exceed 5e15, so a chat left pointing at a deleted stub is frozen
+        FOREVER. Remapped to the real row.
 
     Best-effort: a failure leaves today's harmless duplicate, never a missing
     message, so it swallows and reports 0.
@@ -675,17 +743,67 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
         )).scalars().all()
         if not placeholders:
             return 0
-        bodies = {p.body for p in placeholders}
+
+        # Normalize ONCE into a dict, BEFORE any pairing. The cross-product below
+        # is O(P x R), so normalizing inside the comparison would run a regex per
+        # PAIR — prod's worst thread is 51 stubs x 1,901 outbound rows, ~97k of
+        # them, on the INBOX RENDER path (messages.py). Keyed up front it is one
+        # regex per ROW, O(P + R). The read below is what keeps R small.
+        ph_by_key: dict[str, list[Message]] = {}
+        for p in placeholders:
+            key = _norm_body(p.body)
+            if key:                      # "" is a refusal — see _norm_body
+                ph_by_key.setdefault(key, []).append(p)
+        if not ph_by_key:
+            return 0
+
+        # Read only the outbound rows that could WIN a pair: those within the
+        # bound of some KEYED placeholder. This is the fast exit the removed
+        # `body.in_()` filter used to provide, and it has to be tight, because
+        # this runs on the inbox poll (60-90s) for every outbound-last chat and
+        # 93.7% of stubs never pair — so whatever this costs, it costs forever.
+        #
+        # Per-stub ranges OR'd together, not one `[min-6h, max+6h]` span: a
+        # thread holding a July stub and a September one would otherwise read
+        # every outbound row in between, all of which are further than the bound
+        # from BOTH and can never win. Overlapping ranges are merged first so a
+        # burst of stubs seconds apart is one clause, not fifty.
+        #
+        # Keyed placeholders only. A media-only stub (`<photo>`, key "") is
+        # unpairable and never deleted, so it would widen this read on every
+        # poll for the life of the thread and buy nothing.
+        #
+        # Rows with an unusable created_at fall outside every range, and would
+        # have scored `inf` anyway (see `_seconds_apart`).
+        span = timedelta(seconds=_MAX_ADOPT_SECONDS)
+        stamps = sorted(p.created_at for group in ph_by_key.values()
+                        for p in group if p.created_at is not None)
+        ranges: list[list[datetime]] = []
+        for t in stamps:
+            lo, hi = t - span, t + span
+            if ranges and lo <= ranges[-1][1]:
+                ranges[-1][1] = max(ranges[-1][1], hi)
+            else:
+                ranges.append([lo, hi])
+        if not ranges:
+            return 0        # every keyed stub has an unusable clock — all `inf`
         reals = (await s.execute(
             select(Message).where(
                 Message.account_id == str(account_id),
                 Message.fan_id == int(fan_id),
                 Message.message_id < _MASS_PLACEHOLDER_BASE,
                 Message.direction == "out",
-                Message.body.in_(bodies),
+                or_(*[and_(Message.created_at >= lo, Message.created_at <= hi)
+                      for lo, hi in ranges]),
             )
         )).scalars().all()
-        if not reals:
+
+        real_by_key: dict[str, list[Message]] = {}
+        for r in reals:
+            key = _norm_body(r.body)
+            if key in ph_by_key:
+                real_by_key.setdefault(key, []).append(r)
+        if not real_by_key:
             return 0
 
         # Pair GLOBALLY nearest-first, not placeholder-by-placeholder. One caption
@@ -697,7 +815,9 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
         # independent of row order.
         pairs = sorted(
             ((_seconds_apart(r.created_at, ph.created_at), ph, r)
-             for ph in placeholders for r in reals if r.body == ph.body),
+             for key, rs in real_by_key.items()
+             for ph in ph_by_key[key]
+             for r in rs),
             key=lambda t: t[0],
         )
         adopted = 0
@@ -720,6 +840,35 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
                 break
             if real.message_id in claimed or ph.message_id in used:
                 continue
+            # `claimed`/`used` only last ONE invocation, and adoption runs on
+            # every ingest of the thread. A real row already stamped by a
+            # DIFFERENT run was adopted on an earlier pass; letting a second
+            # same-caption stub claim it now would overwrite nothing (the
+            # `or`-transfers below are no-ops) yet still DELETE that stub — the
+            # send it recorded would vanish. Leave the duplicate instead.
+            if real.mass_run_id is not None and (
+                    ph.mass_run_id is None
+                    or int(real.mass_run_id) != int(ph.mass_run_id)):
+                continue
+            # Move the ledger reference BEFORE the delete, or refuse the pair.
+            # A refusal retires BOTH sides, and each for its own reason. Pairs are
+            # sorted nearest-first, so everything either row still has coming is
+            # FARTHER away than the pair we just refused:
+            #   • the real row is contested — without the claim the very next stub
+            #     adopts the row we just declared unsafe and IT gets deleted, which
+            #     is the loss the refusal existed to prevent, one iteration later;
+            #   • the stub's ledger row is the thing that could not move, so
+            #     letting it fall through to the next-nearest real row folds it
+            #     into a DIFFERENT send: wrong run, wrong kind, its transaction
+            #     repointed at the wrong message, and the stub deleted.
+            # Both leave today's duplicate, which is the status quo and reversible.
+            if not await _repoint_transaction(
+                s, account_id=account_id, fan_id=fan_id,
+                old_id=int(ph.message_id), new_id=int(real.message_id),
+            ):
+                claimed.add(real.message_id)
+                used.add(ph.message_id)
+                continue
             claimed.add(real.message_id)
             used.add(ph.message_id)
             real.automation_kind = real.automation_kind or ph.automation_kind
@@ -728,6 +877,26 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
                                         or ph.sent_by_employee_id)
             if not (real.price_cents or 0) and (ph.price_cents or 0):
                 real.price_cents = int(ph.price_cents)
+            # One-way, like the price: a stub that saw the unlock promotes a row
+            # OF scraped as unpaid. Never the reverse — OF's `True` is truth.
+            if ph.is_paid and not real.is_paid:
+                real.is_paid = True
+            if real.purchased_at is None and ph.purchased_at is not None:
+                real.purchased_at = ph.purchased_at
+            # The inbox preview points at the id we are about to delete.
+            await s.execute(
+                update(Chat)
+                .where(
+                    Chat.account_id == str(account_id),
+                    Chat.fan_id == int(fan_id),
+                    Chat.last_message_id == int(ph.message_id),
+                )
+                .values(
+                    last_message_id=int(real.message_id),
+                    last_message_at=real.created_at,
+                    last_message_preview=_preview_text(real.body),
+                )
+            )
             await s.delete(ph)
             adopted += 1
         return adopted
@@ -745,6 +914,68 @@ def _seconds_apart(a: datetime | None, b: datetime | None) -> float:
     if a is None or b is None:
         return float("inf")
     return abs((a - b).total_seconds())
+
+
+_LOGGED_TX_COLLISIONS: set[tuple[str, int, int]] = set()
+_LOGGED_TX_COLLISIONS_MAX = 512
+
+
+async def _repoint_transaction(
+    s, *, account_id: str, fan_id: int, old_id: int, new_id: int,
+) -> bool:
+    """Move any ledger row referencing the placeholder onto the real row.
+    Returns False when the move cannot be made — the caller must then leave the
+    placeholder (and its duplicate) alone rather than delete a referenced row.
+
+    Why this is not optional: `transaction_ingest`'s PPV candidate query does not
+    exclude the 5e15 band, so a purchase can and does link straight to a
+    synthetic id (27 live rows, $552.80; 4 of them on rows the pairing fix now
+    deletes). Deleting underneath the reference drops those dollars into the
+    revenue view's orphan branch, where no later ingest can recover them —
+    nothing ever re-derives a message_id for an already-ingested ledger row.
+
+    The refusal case is `uq_tx_msg`, the partial-unique on
+    (account_id, fan_id, message_id): if the REAL row already carries its own
+    transaction, the purchase was recorded twice and there is no non-destructive
+    merge — repointing violates the constraint, and deleting either side loses an
+    amount. Keeping today's duplicate message is the cheaper wrong.
+    """
+    rows = (await s.execute(
+        select(Transaction).where(
+            Transaction.account_id == str(account_id),
+            Transaction.fan_id == int(fan_id),
+            Transaction.message_id == int(old_id),
+        )
+    )).scalars().all()
+    if not rows:
+        return True
+    taken = (await s.execute(
+        select(Transaction.id).where(
+            Transaction.account_id == str(account_id),
+            Transaction.fan_id == int(fan_id),
+            Transaction.message_id == int(new_id),
+        ).limit(1)
+    )).scalar_one_or_none()
+    # >1 row on the stub can only exist as legacy pre-constraint data; repointing
+    # them all would collide with each other on the way in.
+    if taken is not None or len(rows) > 1:
+        # Once per pair per process. A refused pair is retried on EVERY ingest of
+        # the thread and never resolves itself, so an unconditional warn is a
+        # permanent 60-90s heartbeat in the relay log for a condition nobody can
+        # act on twice. Bounded so a pathological account cannot grow it forever.
+        seen = (str(account_id), int(old_id), int(new_id))
+        if seen not in _LOGGED_TX_COLLISIONS:
+            if len(_LOGGED_TX_COLLISIONS) >= _LOGGED_TX_COLLISIONS_MAX:
+                _LOGGED_TX_COLLISIONS.clear()
+            _LOGGED_TX_COLLISIONS.add(seen)
+            log.warning(
+                "placeholder adopt refused — ledger collision (account=%s fan=%s "
+                "stub=%s real=%s stub_rows=%d real_taken=%s)",
+                account_id, fan_id, old_id, new_id, len(rows), taken,
+            )
+        return False
+    rows[0].message_id = int(new_id)
+    return True
 
 
 async def reconcile_mass_placeholder(
