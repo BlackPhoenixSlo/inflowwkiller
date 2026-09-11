@@ -1293,6 +1293,7 @@ class _Cand:
         "last_out_was_gif", "last_in_text", "first_in_at",
         "msg_ids", "msg_at", "reply_ctx", "in_run", "her_times",
         "last_in_mid", "turn", "pic_back_at", "last_bcast_idx", "splices",
+        "answered_after_in",
         # ── decisions this sweep made ───────────────────────────────────
         "reply_start",
     )
@@ -1454,6 +1455,22 @@ class _Cand:
         # Index into `messages` of the newest row `_gather` classified as a
         # broadcast, or None. See `mark_broadcast`.
         self.last_bcast_idx: int | None = None
+        # THE LAST LOOK'S QUESTION, ASKED WHERE IT IS FREE. `_thread_moved_on`
+        # re-asks "did anybody answer him" in SQL at the wire, after both LLM
+        # calls are paid for, and it drops the draft when the answer is yes — but
+        # it stamps nothing, so a fan the turn gate keeps admitting is drafted and
+        # discarded EVERY tick, for as long as he stays quiet. That ran for
+        # eighteen hours on two fans and cost a thousand calls before anyone
+        # noticed (plans/stale-drop-loop §0).
+        #
+        # These are the same rows that query would find, in the same order, out of
+        # the scan the sweep already did: `(automation_kind, is a named chatter)`
+        # for every outbound since his last message that is not part of a mass run.
+        # The gate applies `TURN_NEUTRAL_KINDS` itself, because only IT knows
+        # whether this fan is a turn handoff. Cleared on each inbound, so the list
+        # always means "since the last thing he said" — usually empty, rarely more
+        # than one.
+        self.answered_after_in: list[tuple[str | None, bool]] = []
         # (index into `messages`, mass_run id) for every list-audience blast
         # `_gather` MATERIALIZED on this thread — the rows that exist nowhere in the
         # DB (plans/blast-splice A.3). A list rather than a count, because the only
@@ -1491,6 +1508,66 @@ class _Cand:
 _BROADCAST_MIN_FANS = 5
 
 
+# ── Who sent this row: a person, or us? ──────────────────────────────────────
+# ONE definition, because this file already learned what two of them cost. Four
+# places ask "is this row a named human's 1:1 send" — the broadcast tally, the
+# broadcast classification, the splice's copy claim and the last look before the
+# wire — and for as long as the last look asked it DIFFERENTLY the engine drafted
+# a reply every tick and threw it away every tick, for one fan, for eighteen
+# hours, paying for both LLM calls each time (plans/stale-drop-loop §1).
+#
+# THE TRAP, and the reason `sent_by_employee_id IS NOT NULL` is not the answer:
+# every automation send is stamped with the system "Automation" employee, not
+# NULL — `attribution.write_outbound_attribution` falls back to it when no
+# chatter is in the request (attribution.py:394-417). So "has an employee id"
+# means "attributed", which is every outbound we send, and using it as "a human
+# answered him" re-admitted the very `image_reply` row the line above it had just
+# excluded. Tests never saw it: they build rows by hand and leave the column NULL.
+#
+# `automation_kind IS NULL` is the load-bearing half and stands alone if the
+# sentinel cannot be resolved: an automation send always carries its kind, and no
+# chatter path writes one (the deferred send writes it explicitly None). The
+# sentinel comparison is the belt for an untagged automation send — zero such
+# rows on prod in 30 days, and it is here so the next one cannot re-open this.
+def _is_named_chatter_send(automation_kind, mass_run_id, sent_by_employee_id,
+                           *, automation_emp_id: int | None) -> bool:
+    """A row we can POSITIVELY attribute to a named human talking to one fan."""
+    if mass_run_id is not None or automation_kind is not None:
+        return False
+    if sent_by_employee_id is None:
+        return False
+    if automation_emp_id is not None and int(sent_by_employee_id) == int(automation_emp_id):
+        return False
+    return True
+
+
+def _named_chatter_clause(automation_emp_id: int | None):
+    """`_is_named_chatter_send` as SQL, for the one caller that asks in the DB.
+
+    Two forms of one rule is exactly the shape §1 diagnoses, so they are written
+    together, read together, and `case_named_chatter_parity` runs the same rows
+    through both and fails if they ever disagree. Change one, change the other."""
+    clauses = [Message.mass_run_id.is_(None),
+               Message.automation_kind.is_(None),
+               Message.sent_by_employee_id.is_not(None)]
+    if automation_emp_id is not None:
+        clauses.append(Message.sent_by_employee_id != int(automation_emp_id))
+    return and_(*clauses)
+
+
+async def _automation_emp_id() -> int | None:
+    """The Automation sentinel, or None when the row does not exist.
+
+    ONLY `LookupError` is swallowed — that is the documented "migration has not
+    run" case (employees.py:733). A database error is not a missing row, and
+    nothing else on this path pretends otherwise."""
+    try:
+        from employees import get_automation_employee_id
+        return await get_automation_employee_id()
+    except LookupError:
+        return None
+
+
 def _broadcast_key(body: str | None, memo: dict[str, str] | None = None) -> str:
     """Body → the key `_broadcast_bodies` groups on. "" means "never group me".
 
@@ -1526,7 +1603,8 @@ def _broadcast_key(body: str | None, memo: dict[str, str] | None = None) -> str:
     return key
 
 
-def _broadcast_bodies(rows, memo: dict[str, str] | None = None) -> frozenset[str]:
+def _broadcast_bodies(rows, memo: dict[str, str] | None = None,
+                      *, automation_emp_id: int | None = None) -> frozenset[str]:
     """Untagged outbound bodies this account sent to MANY fans — OF's own
     auto-welcome, and mass blasts fired from the OF app.
 
@@ -1573,6 +1651,19 @@ def _broadcast_bodies(rows, memo: dict[str, str] | None = None) -> frozenset[str
     for row in rows:
         fan_id, direction, body, _created, automation_kind, mass_run_id = row[:6]
         if direction != "out":
+            continue
+        # A NAMED HUMAN'S 1:1 SEND IS NOT EVIDENCE OF A BLAST, and counting it as
+        # one is how a chatter's stock line became a broadcast three months after
+        # she typed it: `oh really babe?` sat on five threads — three plain, two
+        # `<p>`-wrapped — and the day the key stopped splitting on the tag the
+        # union crossed the threshold, her reply went transparent, and the fan she
+        # had answered became a candidate every 90s (plans/stale-drop-loop §1.2).
+        # Nothing about blast detection weakens: an OF-app blast is poll-ingested
+        # and carries no employee id, and a blast sent through us carries a
+        # mass_run_id, so both are still counted. Only a row we can POSITIVELY
+        # attribute to a person drops out.
+        if _is_named_chatter_send(automation_kind, mass_run_id, row[9],
+                                  automation_emp_id=automation_emp_id):
             continue
         # Count the untagged rows this exists to catch, AND our own mass rows.
         # Not "every outbound": a 1:1 automation line (`yeah`, `hey`, `babe`) is
@@ -1631,7 +1722,7 @@ class _BlastRun(NamedTuple):
 
 
 def _blast_row(fan_id: int, run: _BlastRun) -> tuple:
-    """The synthetic history row for `run` on `fan_id`'s thread — the nine columns
+    """The synthetic history row for `run` on `fan_id`'s thread — the ten columns
     `_gather`'s SELECT returns, in that order.
 
     ⚠️ It must stay EXACTLY what `attribution.write_mass_optimistic_rows` persists
@@ -1640,7 +1731,7 @@ def _blast_row(fan_id: int, run: _BlastRun) -> tuple:
     placeholder carries no media either), and the loop only reads that column under
     `hers`, which a broadcast never is."""
     return (fan_id, "out", run.body, run.sent_at_text, run.automation_kind,
-            run.id, None, 0, mass_placeholder_message_id(run.id))
+            run.id, None, 0, mass_placeholder_message_id(run.id), None)
 
 
 async def _recent_mass_runs(s, account_id: str, *, now: datetime,
@@ -1711,6 +1802,7 @@ async def _recent_mass_runs(s, account_id: str, *, now: datetime,
 
 def _splice_plan(
     rows, runs: list[_BlastRun], memo: dict[str, str],
+    *, automation_emp_id: int | None = None,
 ) -> tuple[dict[int, list[_BlastRun]], set[tuple[int, int]]]:
     """(what to splice per fan, which real rows ARE copies) — one pass over the rows
     `_gather` already loaded, no extra I/O.
@@ -1765,6 +1857,17 @@ def _splice_plan(
             present.add((int(fan_id), int(mass_run_id)))
             continue
         if automation_kind is not None:
+            continue
+        # …and not a PERSON'S row that happens to reuse the blast's words. The
+        # match below is (recipient, ±30 min, same key), which a chatter
+        # re-pasting the blast text into one chat satisfies exactly — and being
+        # claimed as a copy makes her line a `broadcast` at the classification
+        # site, so it stops taking the turn and the engine talks over her. Real
+        # copies are written by the poll with no employee id at all, so refusing
+        # attributed rows cannot orphan a run (it would otherwise also suppress
+        # that run's splice through `present`).
+        if _is_named_chatter_send(automation_kind, mass_run_id, row[9],
+                                  automation_emp_id=automation_emp_id):
             continue
         created = parse_ts(created_raw)
         if created is None:
@@ -1979,17 +2082,27 @@ async def _gather(account_id: str,
     # killed every reply for that account (see db/models.py for the full story).
     # Read as text, parse defensively, drop the bad row — never the account.
     bcast_keys: dict[str, str] = {}     # raw body → key, shared with the loop
+    # Resolved ONCE for the whole scan: three sites below ask whether a row is a
+    # named human's, and the answer needs to know which employee id is us. Cached
+    # in `employees` after the first success, so this is a lookup per sweep at
+    # worst and free after that; None when the row does not exist, which leaves
+    # the `automation_kind IS NULL` half of the test standing on its own.
+    automation_emp_id = await _automation_emp_id()
     async with get_session() as s:
         rows = (await s.execute(
             # The first six columns must stay where they are: `_broadcast_bodies`
             # and `_splice_plan` read `row[:6]` off these same rows (and
-            # `_blast_row` builds all nine in this order), so anything inserted
+            # `_blast_row` builds all ten in this order), so anything inserted
             # mid-list silently feeds them the wrong columns — new columns go on
-            # the END. It is an int — still no `raw_json` on this whole-account
-            # scan (see the docstring).
+            # the END. Positional readers past the prefix, all of which this rule
+            # protects: `_splice_plan` takes `row[8]` for the copy id and `row[9]`
+            # for the sender, `_with_splices` takes `row[0]` and `row[3]`. It is an
+            # int — still no `raw_json` on this whole-account scan (see the
+            # docstring).
             select(Message.fan_id, Message.direction, Message.body,
                    created_at_text(), Message.automation_kind, Message.mass_run_id,
-                   Message.image_desc, Message.media_count, Message.message_id)
+                   Message.image_desc, Message.media_count, Message.message_id,
+                   Message.sent_by_employee_id)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
@@ -1999,7 +2112,8 @@ async def _gather(account_id: str,
         # and a second connection would let a concurrent unsend land between them.
         runs = await _recent_mass_runs(
             s, account_id, now=datetime.utcnow(), stats=stats)
-        pending, copy_rows = _splice_plan(rows, runs, bcast_keys)
+        pending, copy_rows = _splice_plan(rows, runs, bcast_keys,
+                                          automation_emp_id=automation_emp_id)
         pending = await _tombstoned(s, account_id, pending, bcast_keys)
     if stats is not None:
         # The runs themselves, by id, for the one caller that logs WHICH blast a
@@ -2011,10 +2125,11 @@ async def _gather(account_id: str,
     # Computed on the REAL rows only. Feeding the synthetics in would put every
     # list blast's body over the 5-fan threshold by construction, and a body that
     # falsely gains broadcast status silences the engine on a live chatter.
-    broadcast_bodies = _broadcast_bodies(rows, bcast_keys)
+    broadcast_bodies = _broadcast_bodies(rows, bcast_keys,
+                                         automation_emp_id=automation_emp_id)
     for row, _spliced in _with_splices(rows, pending):
         (fan_id, direction, body, created_at_raw, automation_kind, mass_run_id,
-         image_desc, media_count, message_id) = row
+         image_desc, media_count, message_id, sent_by_employee_id) = row
         created_at = parse_ts(created_at_raw)
         if created_at is None and created_at_raw is not None:
             # Unreadable, not absent: the row can't be placed on the thread's
@@ -2064,10 +2179,24 @@ async def _gather(account_id: str,
         # genuine 1:1 send reusing the blast's words hours later is untouched.
         # On the SWEEP this is a widening and an intended one: a copy of a run
         # with fewer than five copies ingested so far is now a broadcast there too.
+        # …and the INFERENCE arm never overrules an attributed human. Fixing the
+        # tally alone was not enough: a stock line crosses five fans on the
+        # strength of OTHER threads (`oh really babe` sits on 33 of them, 19 typed
+        # by a named chatter), and every one of her rows then inherits broadcast
+        # status here, goes transparent, and the engine answers over the top of
+        # her. The `mass_run_id` arm is deliberately NOT guarded — a chatter who
+        # fires a real blast through us gets a real blast.
+        # `direction == "out"` first so an inbound row never pays for the call:
+        # this runs once per message on a whole-account scan (155k rows on the
+        # biggest account), and both readers below are outbound-only anyway.
+        named_chatter = direction == "out" and _is_named_chatter_send(
+            automation_kind, mass_run_id, sent_by_employee_id,
+            automation_emp_id=automation_emp_id)
         broadcast = direction == "out" and (
             mass_run_id is not None
-            or (fan_id, message_id) in copy_rows
+            or ((fan_id, message_id) in copy_rows and not named_chatter)
             or (automation_kind is None
+                and not named_chatter
                 and bool(broadcast_bodies)     # empty on every fan-scoped call
                 and _broadcast_key(body, bcast_keys) in broadcast_bodies))
         if broadcast:
@@ -2104,9 +2233,21 @@ async def _gather(account_id: str,
         if answers_him:
             c.last_dir = direction
             c.last_body = text
+        # …and separately, the WIRE's notion of an answer, recorded verbatim so the
+        # selection pass can ask the expensive question for nothing. Deliberately
+        # NOT `answers_him`: the whole point is that the two definitions can drift,
+        # and one that silently agreed would hide the drift instead of pricing it
+        # at zero. A mass row is excluded here exactly as `mass_run_id.is_(None)`
+        # excludes it there.
+        if direction == "out" and mass_run_id is None and (
+                automation_kind is not None or named_chatter):
+            c.answered_after_in.append((automation_kind, named_chatter))
         if direction == "in":
             c.fan_msg_n += 1
             c.last_in_at = created_at
+            # A new message of his re-opens the turn, so everything that came
+            # before it stops being an answer TO IT.
+            c.answered_after_in.clear()
             if created_at is not None:
                 c.in_run.append(created_at)
             c.last_in_text = _strip_html(body)
@@ -3457,8 +3598,12 @@ async def _thread_moved_on(account_id: str, fan_id: int,
 
     Worth asking because the loop's picture of the thread is stale by construction:
     `_gather` runs once at the top of the sweep, and between it and this line sit
-    two LLM calls, the humanizer and up to `INLINE_MAX_S` of typing hold. A replayed
-    draft has sat even longer.
+    two LLM calls and the humanizer. A replayed draft has sat far longer. What sits
+    AFTER this line, not before it, is the pacing: the rhythm hold (up to
+    `INLINE_MAX_S`) and the typing indicator are awaited in `hold_with_typing` on
+    the way to the wire, so a chatter who answers during those two minutes is not
+    caught by anything. That window is open today and named in
+    plans/stale-drop-loop §8; this call is not what closes it.
 
     Returns "" when the turn is still ours, else the reason — a string so the caller
     can count the two apart, because they mean different things about the system.
@@ -3475,6 +3620,15 @@ async def _thread_moved_on(account_id: str, fan_id: int,
     is why the exclusion is not a parameter: the first caller to forget it (the draft
     replay) would have re-opened the leak, and no caller can ever want the other
     behaviour.
+
+    That exclusion was ALSO, for months, a dead letter: the sender arm below said
+    `sent_by_employee_id IS NOT NULL`, every automation send carries the Automation
+    sentinel, and so the reaction walked back in one line after being refused. It
+    was invisible in tests, which hand-build rows and leave that column NULL, and
+    it cost 527 LLM calls on one fan before a log line was read. Two spellings of
+    one rule is the shape; `_is_named_chatter_send` is the answer, and the cheap
+    half of this same question now runs in the selection pass (`answered_after_in`)
+    so a future disagreement is counted rather than billed.
 
     `ignore_welcome` is the TURN HANDOFF's exemption, and ONLY that (§C3). On that
     job a send_welcome bubble is guaranteed to be newer than his inbound — that is
@@ -3509,15 +3663,27 @@ async def _thread_moved_on(account_id: str, fan_id: int,
         # every tick — a permanent gag, not a missed turn.
         #
         # So this stands down only for a send we can POSITIVELY identify as 1:1:
-        # another automation (`automation_kind`) or a named chatter
-        # (`sent_by_employee_id`), and never one carrying a `mass_run_id`. An
-        # untagged send stays ambiguous and is left to the account-wide turn gate
-        # on the next sweep, which is exactly today's behaviour.
+        # another automation (`automation_kind`) or a named chatter, and never one
+        # carrying a `mass_run_id`. An untagged send stays ambiguous and is left to
+        # the account-wide turn gate on the next sweep, which is exactly today's
+        # behaviour.
+        #
+        # "A NAMED CHATTER" IS NOT "HAS AN EMPLOYEE ID" — that is what this arm
+        # said until 2026-09-11, and every automation send carries the system
+        # Automation employee (attribution.py:394-417), so it read as "anybody
+        # answered" and handed back the exact `image_reply` row the line above had
+        # just refused. The reply was then dropped after both LLM calls, nothing
+        # was stamped, the turn gate re-admitted him on the next tick, and one fan
+        # cost 527 calls in eighteen hours. `_named_chatter_clause` is the same
+        # rule the gather sites use, so the two cannot drift apart again silently.
         not_an_answer = (TURN_NEUTRAL_KINDS
                          | ({"welcome"} if ignore_welcome else frozenset()))
         automation_answered = and_(
             Message.automation_kind.is_not(None),
             Message.automation_kind.not_in(sorted(not_an_answer)))
+        # Resolved HERE rather than at the top: the two early exits above take most
+        # calls, and a fan who wrote again never needs to know who we are.
+        automation_emp_id = await _automation_emp_id()
         answered = (await s.execute(
             select(Message.message_id).where(
                 Message.account_id == str(account_id),
@@ -3527,7 +3693,7 @@ async def _thread_moved_on(account_id: str, fan_id: int,
                 Message.created_at > inbound_at,
                 Message.mass_run_id.is_(None),
                 or_(automation_answered,
-                    Message.sent_by_employee_id.is_not(None)),
+                    _named_chatter_clause(automation_emp_id)),
             ).limit(1)
         )).first()
     return "already_answered" if answered is not None else ""
@@ -6948,6 +7114,25 @@ async def _select_candidates(inp: _SelectionInputs) -> "tuple[list[_Cand], Count
         elif c.last_dir != "in":
             sel["skipped_not_turn"] += 1
             continue
+        # THE LAST LOOK, ASKED HERE WHERE IT COSTS NOTHING. `_thread_moved_on`
+        # asks this again at the wire and is still the authority — it sees rows
+        # that land while we draft, which this snapshot cannot. What it must not
+        # go on doing is DISCOVERING a pre-existing answer after two LLM calls and
+        # dropping the reply with nothing written down, because the turn gate
+        # above then re-admits the same fan 90 seconds later and buys the same
+        # draft again, forever (plans/stale-drop-loop §0: 1034 calls, two fans,
+        # eighteen hours). Reading the same rows here makes that free.
+        #
+        # It cannot change WHAT IS SENT, only what is paid for: every row it reads
+        # is one the wire reads too, so a fan skipped here is a fan the wire would
+        # have dropped. `forced` gets no exemption for the same reason — the wire
+        # does not grant one, and agreeing with the wire is the entire point.
+        _not_an_answer = (TURN_NEUTRAL_KINDS
+                          | ({"welcome"} if fan_id in turn_handoff_ids else frozenset()))
+        if any(named or (kind is not None and kind not in _not_an_answer)
+               for kind, named in c.answered_after_in):
+            sel["skipped_answered_elsewhere"] += 1
+            continue
         f = fans.get(fan_id)
         if f is not None and f.automation_paused_until and f.automation_paused_until > now:
             sel["skipped_listed"] += 1
@@ -7019,7 +7204,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # of its own welcome bubbles finished landing ON TOP of the fan's reply: that
     # bubble took the turn, so the `last_dir != "in"` gate below would skip him as
     # `not_turn` — and so would `_thread_moved_on`'s last look, which counts ANY
-    # automation-kind outbound newer than the inbound as `already_answered`.
+    # automation-kind outbound newer than the inbound as `already_answered`, and
+    # so would the free pre-check that now asks the same thing in the selection
+    # pass. All three read this key; the welcome exemption is spelled once per
+    # site because each has its own `not_an_answer` set, and §5 proves they agree.
     # Neither is opened by `force_ids` (both sit outside every forced exemption —
     # verified), which is why this needs its own key. Absent ⇒ an empty set ⇒
     # every line it touches is dead code and this engine is byte-identical.
@@ -10294,6 +10482,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # against `skip_list` before calling it blacklist growth.
         "skipped_listed": sel["skipped_listed"],
         "skipped_not_turn": sel["skipped_not_turn"],  # we (or nobody) spoke last
+        # THE DISAGREEMENT COUNTER. Somebody else answered him — another
+        # automation or a named chatter — and we found out before spending the
+        # LLM instead of after. On a healthy account this is 0: the turn gate
+        # above should already have skipped those fans as `not_turn`. Anything
+        # else means the two ways this file decides "he was answered" have drifted
+        # apart again, and the number is what makes that visible instead of
+        # expensive.
+        "skipped_answered_elsewhere": sel["skipped_answered_elsewhere"],
         "turn_handoffs": sel["turn_handoffs"],  # …admitted anyway: a welcome bubble ate his reply
         "skipped_spam": sel["skipped_spam"],  # promo-spam: creator_we_follow + $0 + no exchange + blasted
         "skipped_muted_creator": sel["skipped_muted_creator"],  # muted creator we follow — HARD skip (durable)

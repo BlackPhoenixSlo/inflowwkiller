@@ -218,7 +218,7 @@ async def send_dropping_bad_media(
     Why this is not merely nice-to-have: a sender only advances its durable state
     on a RETURNED send, so a single permanently-bad vault id re-fires the same
     undeliverable message every tick, forever, burning an LLM call each time.
-    Account 572370157 sat at 39-eligible / 0-sent for days on one bad night-slot
+    Account ACCOUNT_ID sat at 39-eligible / 0-sent for days on one bad night-slot
     image, and the run stats showed only "errors: 6" — nothing named the cause.
     The text is the point of these messages; the picture is a garnish, so ship
     the text.
@@ -383,6 +383,15 @@ OPERATOR_STOP_REASONS = frozenset(
 # `ai_chatter._thread_moved_on` counts it as `already_answered` (the METERED half
 # — she generates, then the reply is dropped on the wire, every tick, until he
 # speaks again). A fix to one alone converts a free bug into a paid one.
+#
+# Which is exactly what happened, for months, unnoticed: the gather half honoured
+# this set and the wire half then re-admitted the same row through a second
+# clause reading `sent_by_employee_id IS NOT NULL` — true of every automation
+# send, since they all carry the Automation sentinel. One fan drafted and
+# discarded a reply every 90 seconds for eighteen hours. Fixed 2026-09-11 in
+# `ai_chatter._is_named_chatter_send`; the lesson is the one above, stated
+# harder — when this set grows, grep for every place that decides "somebody
+# answered him" and count them, because there are more than two.
 #
 # Deliberately NOT in here: `make_right`, `autoreply`, `send_welcome`,
 # `ai_chatter`, `ai_upseller`. Those answer IN WORDS — sending over them
@@ -1081,7 +1090,7 @@ def detect_bot_accusation(text: str | None) -> bool:
 # silence — it was worse. `CONTENT_ASK_RE` matches the bare substring "wanna see", with
 # no reading of WHO offers WHAT, so "You wanna see my cock?" scored as a BUYING signal
 # and the engine answered a man reaching for his phone with a sales pitch. Receipt,
-# Dana fan 326419277 on 2026-08-08 01:45:50:
+# Dana fan FAN_ID on 2026-08-08 01:45:50:
 #     him  "You wanna see my cock?"
 #     her  "u keep askn" / "dont u" / "tell me more about that highway life first"  + $8 PPV
 # She thinks HE is the one asking. He offered three times over three days and was
@@ -1134,7 +1143,7 @@ _PIC_OFFER_NOT_HIS_RE = re.compile(
 # A PROMO always has a call to BUY, and a blast addresses a crowd rather than him —
 # that, not anatomy, is what separates a peer creator pitching her page from a fan
 # reaching for his phone. Anatomy cannot do this job: the male-creator accounts
-# (Lucas1/Lucas2/buznizjohn) have female fans whose offers of themselves are just as
+# (blake/blake/buznizjohn) have female fans whose offers of themselves are just as
 # real, so a female-anatomy blocklist would silence exactly the fans it should serve.
 # `load_promo_spam_ids` is the durable guard and it runs first, but it is deliberately
 # conservative — "a chatty creator-bot that types plain text is not caught" — so this
@@ -1447,7 +1456,7 @@ NONNATIVE_MISSPELLINGS = {
     "theirs": "thers",
     "subscription": "subscribtion",
     "telegram": "tegelgram",
-    # Harvested from MiraPaid's own sent messages (2026-07-25): every misspelling
+    # Harvested from the graded vault's own sent messages (2026-07-25): every misspelling
     # below is one she repeats verbatim across separate conversations, which is
     # exactly the fingerprint this layer wants — not a one-off thumb slip.
     #   'beautifull' ×3  "Its so beautifull , expensive but beautifull"
@@ -1486,7 +1495,7 @@ def _match_case(src: str, repl: str) -> str:
 
 # A space before '?' — "Do you like it ?" — is the loudest habit in the creator's
 # own sent messages, and one the bot has never once produced: measured 2026-07-25
-# over MiraPaid's outbound, 187 of her 728 question-carrying messages have it
+# over the graded vault's outbound, 187 of her 728 question-carrying messages have it
 # against 0 of 3,336 bot sends. Unlike the misspelling dict this is NOT applied
 # every time — she does it on about a QUARTER of her questions, and always-on
 # would read as a broken keyboard rather than a habit. So it rolls per '?' run
@@ -1824,7 +1833,7 @@ def _humanize_typos_impl(parts: list[str], rng, *, protect=(),
 
     # collect eligible words across all bubbles, pick one. Scan WHOLE
     # whitespace-tokens (not bare alpha runs) so a word embedded in a handle /
-    # link / price ("@ava_xo", "onlyfans.com/ava", "$25") is never touched —
+    # link / price ("@lexi_xo", "onlyfans.com/ava", "$25") is never touched —
     # the token's core must be purely alphabetic after stripping edge punctuation.
     cands = []  # (bubble_idx, core_start, core_end, word)
     for bi, p in enumerate(parts):
