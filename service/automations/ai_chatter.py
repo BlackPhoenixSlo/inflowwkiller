@@ -66,8 +66,6 @@ import random
 from collections import Counter
 from random import Random
 import re
-import unicodedata as _unicodedata
-from html import unescape as _unescape
 from datetime import datetime, timedelta
 from typing import Literal, NamedTuple
 
@@ -77,14 +75,17 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax  # _make_client / lease / cooldown seams
 import llm_client                  # call .chat at runtime so tests can patch it
 import ownership                   # the one home for owned-media semantics
-from attribution import write_outbound_attribution
+from attribution import (
+    _BLAST_COPY_SLACK, _norm_body, mass_placeholder_message_id,
+    write_outbound_attribution,
+)
 from automation_registry import LEGACY_KINDS, register
 from db.engine import get_session
 from db.models import (
     CATALOG_IS_SINGLE, AccountAiConfig, Blacklist, CatalogItem,
-    ContentOffer, Fan, FanProfile, LadderQuote, LadderState, Message, PendingOffer,
-    QuotaAudit, RhythmState, ScheduledJob, SkipList, Transaction, VaultSend,
-    created_at_text, parse_ts,
+    ContentOffer, Fan, FanProfile, LadderQuote, LadderState, MassRun, Message,
+    PendingOffer, QuotaAudit, RhythmState, ScheduledJob, SkipList, Transaction,
+    VaultSend, created_at_text, parse_ts,
 )
 from llm_client import LLMCapExceeded
 from . import _daylog  # what SHE did today — the creator-side twin of recent_events
@@ -1291,7 +1292,7 @@ class _Cand:
         "her_last_at", "pic_sent", "last_in_desc", "last_in_desc_at",
         "last_out_was_gif", "last_in_text", "first_in_at",
         "msg_ids", "msg_at", "reply_ctx", "in_run", "her_times",
-        "last_in_mid", "turn", "pic_back_at", "last_bcast_idx",
+        "last_in_mid", "turn", "pic_back_at", "last_bcast_idx", "splices",
         # ── decisions this sweep made ───────────────────────────────────
         "reply_start",
     )
@@ -1453,6 +1454,14 @@ class _Cand:
         # Index into `messages` of the newest row `_gather` classified as a
         # broadcast, or None. See `mark_broadcast`.
         self.last_bcast_idx: int | None = None
+        # (index into `messages`, mass_run id) for every list-audience blast
+        # `_gather` MATERIALIZED on this thread — the rows that exist nowhere in the
+        # DB (plans/blast-splice A.3). A list rather than a count, because the only
+        # question worth asking of it is "did the model actually SEE one", and the
+        # history window trims from the front: the answer needs the INDEX, and
+        # naming the run is what makes the log line reproducible against
+        # `mass_runs`. Empty on the overwhelming majority of fans.
+        self.splices: list[tuple[int, int]] = []
 
     def add_message(self, direction: str, text: str, message_id: int,
                     created_at: "datetime | None" = None) -> None:
@@ -1481,9 +1490,6 @@ class _Cand:
 # being wrong is only that the engine keeps chatting.
 _BROADCAST_MIN_FANS = 5
 
-_BCAST_TAG_RE = re.compile(r"<[^>]+>")
-_BCAST_WS_RE = re.compile(r"\s+")
-
 
 def _broadcast_key(body: str | None, memo: dict[str, str] | None = None) -> str:
     """Body → the key `_broadcast_bodies` groups on. "" means "never group me".
@@ -1491,10 +1497,17 @@ def _broadcast_key(body: str | None, memo: dict[str, str] | None = None) -> str:
     Grouping on the RAW body split every blast in two: we store the caption with
     plain `\n` and OF echoes the same caption back wrapped in `<br />`, so the
     stub and the ingested row landed in different buckets and each could sit
-    under the 5-fan threshold on its own. Same normalization as
-    `attribution._norm_body` (tags → space, entities unescaped, whitespace
-    collapsed), and the same reason it is a local copy: `attribution` imports
-    from this package, so importing back closes a cycle.
+    under the 5-fan threshold on its own. So this IS `attribution._norm_body` —
+    the memo is the only thing added.
+
+    It used to be a local COPY of that normalizer, and the copy had drifted: its
+    tag regex was `<[^>]+>` where `_norm_body`'s is `</?[A-Za-z][^>]*>`. The loose
+    form ate real prose ("i want u < 3 tonight > ok" collapsed to "i want u ok")
+    and — worse — did so ASYMMETRICALLY, since our stored copy holds the raw `<`
+    and OF echoes it escaped, so the two sides of ONE send keyed differently. Two
+    normalizers for one question is how the splice and the unsend end up
+    disagreeing about which row is a copy of which blast; there is one now.
+    (`attribution` imports `messages`, not this package, so the import is free.)
 
     `memo` is not an optimization detail — the account sweep runs every ~30s over
     every message on the account and normalizes each body TWICE (once to count,
@@ -1507,9 +1520,7 @@ def _broadcast_key(body: str | None, memo: dict[str, str] | None = None) -> str:
         hit = memo.get(body)
         if hit is not None:
             return hit
-    txt = _unescape(_BCAST_TAG_RE.sub(" ", body))
-    txt = _unicodedata.normalize("NFC", txt)
-    key = _BCAST_WS_RE.sub(" ", txt).strip()
+    key = _norm_body(body)
     if memo is not None:
         memo[body] = key
     return key
@@ -1551,7 +1562,13 @@ def _broadcast_bodies(rows, memo: dict[str, str] | None = None) -> frozenset[str
     The gap is bounded and cheap to live with: a blast sent through US carries a
     mass_run_id and is caught on EVERY path, so the ~4/day turn-theft this guards is
     fully covered fan-scoped too. Only an untagged OF-APP blast is missed there, and
-    the 30s full-account sweep picks that fan up on the next tick."""
+    the 30s full-account sweep picks that fan up on the next tick.
+
+    …and since plans/blast-splice A.4 the OTHER untagged case — a POLL-WRITTEN copy
+    of one of OUR OWN list blasts — does not depend on this at all, on either path:
+    `_splice_plan` below identifies those rows exactly (recipient + timestamp + key,
+    against a recorded `mass_runs` row) and hands them to the loop as `copy_rows`.
+    A copy is recognised there whether five of them have been ingested or one."""
     fans_per_body: dict[str, set[int]] = {}
     for row in rows:
         fan_id, direction, body, _created, automation_kind, mass_run_id = row[:6]
@@ -1580,10 +1597,310 @@ def _broadcast_bodies(rows, memo: dict[str, str] | None = None) -> frozenset[str
                      if len(fans) >= _BROADCAST_MIN_FANS)
 
 
+# ── The list-audience blast, materialized at read time (plans/blast-splice) ──
+#
+# THE INCIDENT. A `{fans, following}` blast went out ("just say please"); a fan
+# answered it 85 seconds later with one word; the engine read a thread whose last
+# line was his "please" with nothing above it and told him that was not an answer.
+# The blast was nowhere it could look: a list audience writes NO per-fan `messages`
+# row (OF echoes no ids, `write_mass_optimistic_rows` covers explicit `userIds`
+# only), the WS pump drops every outbound frame, and the inbox poll only writes each
+# chat's `lastMessage` — all 22 copies of that blast landed 43 minutes after the
+# send, and across 52 tight blast events the FIFTH copy lands p50 81 minutes late.
+#
+# What DOES exist a second after the send is the `mass_runs` row, and since A.1 it
+# carries the body, OF's own send stamp and — read off OF's rosters, never inferred
+# — the recipient set. So the row the send path could not write is built here, in
+# memory, per recipient thread that lacks the copy. It is byte-for-byte the tuple
+# `write_mass_optimistic_rows` writes for an explicit audience, so nothing
+# downstream meets a new kind of row: the loop classifies it `broadcast` (no turn
+# taken, no human clock moved), the window counts it, the quote renderer treats it
+# as off-screen. No DB write of any kind.
+_BLAST_LOOKBACK = timedelta(hours=48)
+
+
+class _BlastRun(NamedTuple):
+    """One spliceable broadcast: what it said, when, and who got it."""
+    id: int
+    key: str                      # `_broadcast_key(body)` — "" runs never get here
+    body: str
+    sent_at: datetime
+    sent_at_text: str             # what the row's `created_at` column would hold
+    automation_kind: str | None
+    recipients: frozenset[int]
+
+
+def _blast_row(fan_id: int, run: _BlastRun) -> tuple:
+    """The synthetic history row for `run` on `fan_id`'s thread — the nine columns
+    `_gather`'s SELECT returns, in that order.
+
+    ⚠️ It must stay EXACTLY what `attribution.write_mass_optimistic_rows` persists
+    for an explicit audience, or the two audiences start meaning different things to
+    the same loop. `media_count` is 0 for the same reason it is 0 there (the
+    placeholder carries no media either), and the loop only reads that column under
+    `hers`, which a broadcast never is."""
+    return (fan_id, "out", run.body, run.sent_at_text, run.automation_kind,
+            run.id, None, 0, mass_placeholder_message_id(run.id))
+
+
+async def _recent_mass_runs(s, account_id: str, *, now: datetime,
+                            stats: dict | None = None) -> list[_BlastRun]:
+    """This account's spliceable broadcasts from the last `_BLAST_LOOKBACK`.
+
+    Five conditions, and each one is a refusal with its own reason:
+      • `status='ok'` + `queue_id IS NOT NULL` — it actually went out,
+      • `body IS NOT NULL` — a legacy row, or a scheduled send that has not fired,
+        has no line to splice,
+      • `recipients_json IS NOT NULL` — the audience could not be read off OF, so
+        we do NOT guess (`audiences.resolve_recipients_blocking` fails closed).
+        These are counted into `blast_splice_unknown_audience`: an operator must be
+        able to see a broken roster crawl as a NUMBER rather than as silence,
+      • `unsent_at IS NULL` — OF stopped serving it (the 4h mass unsend), so it is
+        no longer on the thread and must not be put back,
+      • inside the lookback window.
+    A run whose body normalizes to "" (media-only) is dropped here too: there is no
+    line to splice and no key to recognise its copies by.
+
+    One indexed SELECT per `_gather` (`ix_mass_runs_account_sent`); ~700 rows a week
+    fleet-wide in the whole table.
+
+    NO TIME GATE relative to his message, deliberately. Precision comes from the
+    recorded roster, not from timing, so a blast that landed AFTER his newest inbound
+    is the same rule with the row placed last — and there are 79 such replies a week.
+    """
+    rows = (await s.execute(
+        select(MassRun.id, MassRun.body, MassRun.sent_at, MassRun.automation_kind,
+               MassRun.recipients_json)
+        .where(
+            MassRun.account_id == str(account_id),
+            MassRun.status == "ok",
+            MassRun.queue_id.is_not(None),
+            MassRun.body.is_not(None),
+            MassRun.unsent_at.is_(None),
+            MassRun.sent_at.is_not(None),
+            MassRun.sent_at >= now - _BLAST_LOOKBACK,
+        )
+    )).all()
+    out: list[_BlastRun] = []
+    unknown = 0
+    for run_id, body, sent_at, kind, recipients_json in rows:
+        key = _broadcast_key(body)
+        if not key:
+            continue                      # media-only blast — nothing to splice
+        if recipients_json is None:
+            unknown += 1
+            continue
+        try:
+            ids = json.loads(recipients_json)
+        except (ValueError, TypeError):
+            unknown += 1
+            continue
+        if not isinstance(ids, list):
+            unknown += 1
+            continue
+        out.append(_BlastRun(
+            id=int(run_id), key=key, body=body, sent_at=sent_at,
+            sent_at_text=sent_at.isoformat(sep=" "), automation_kind=kind,
+            recipients=frozenset(int(i) for i in ids),
+        ))
+    if stats is not None and unknown:
+        stats["blast_splice_unknown_audience"] = (
+            stats.get("blast_splice_unknown_audience", 0) + unknown)
+    return out
+
+
+def _splice_plan(
+    rows, runs: list[_BlastRun], memo: dict[str, str],
+) -> tuple[dict[int, list[_BlastRun]], set[tuple[int, int]]]:
+    """(what to splice per fan, which real rows ARE copies) — one pass over the rows
+    `_gather` already loaded, no extra I/O.
+
+    PRESENCE, so a thread never renders the blast twice. An outbound row is this
+    run's copy when either:
+      • `mass_run_id == run.id` — the placeholder we wrote, or a row adoption has
+        already stamped, or
+      • it is UNTAGGED (`mass_run_id IS NULL` **and** `automation_kind IS NULL`),
+        landed within `_BLAST_COPY_SLACK` of the send, and normalizes to the run's
+        key. Both NULLs are required: the poll and the scrape tag neither, while a
+        1:1 engine row is always tagged — without the `automation_kind` test an
+        `ai_chatter` reply that happened to quote the blast's text would be read as
+        the blast itself and the man would lose the line he was answering.
+    ONE ROW CLAIMS ONE RUN: a row inside slack of several same-key runs (two
+    identical blasts twenty minutes apart, so one copy sits in both windows)
+    satisfies the NEAREST in time only, and the others stay pending — the same
+    direction placeholder adoption takes.
+
+    The timestamp test runs BEFORE the key so only untagged outbound rows that
+    landed near a blast ever pay for a normalization.
+
+    `copy_rows` is the second half of the job and A.4's whole point: those rows are
+    exactly the poll copies that STEAL THE TURN on the fan-scoped path, where
+    `_broadcast_bodies` is empty by construction. Naming them by (fan, message id)
+    rather than by body means a chatter's genuine 1:1 send that happens to reuse the
+    blast's words three hours later is NOT reclassified."""
+    if not runs:
+        return {}, set()
+    slack_s = _BLAST_COPY_SLACK.total_seconds()
+    # Which runs each gathered fan is a recipient of. THE cost bound of this whole
+    # feature: (fans gathered) × (runs in 48h) frozenset lookups — 833 × 20 ≈ 17k on
+    # the biggest account, single-digit milliseconds, measured.
+    pending: dict[int, list[_BlastRun]] = {}
+    for fan_id in {int(r[0]) for r in rows}:
+        due = [run for run in runs if fan_id in run.recipients]
+        if due:
+            pending[fan_id] = due
+    if not pending:
+        return {}, set()
+
+    present: set[tuple[int, int]] = set()      # (fan_id, run_id) already on-thread
+    copy_rows: set[tuple[int, int]] = set()    # (fan_id, message_id) of the copies
+    for row in rows:
+        fan_id, direction, body, created_raw, automation_kind, mass_run_id = row[:6]
+        if direction != "out":
+            continue
+        due = pending.get(int(fan_id))
+        if not due:
+            continue
+        if mass_run_id is not None:
+            present.add((int(fan_id), int(mass_run_id)))
+            continue
+        if automation_kind is not None:
+            continue
+        created = parse_ts(created_raw)
+        if created is None:
+            continue
+        near = [run for run in due
+                if abs((created - run.sent_at).total_seconds()) <= slack_s]
+        if not near:
+            continue
+        key = _broadcast_key(body, memo)
+        if not key:
+            continue
+        same = [run for run in near if run.key == key]
+        if not same:
+            continue
+        hit = min(same, key=lambda run: abs((created - run.sent_at).total_seconds()))
+        present.add((int(fan_id), hit.id))
+        copy_rows.add((int(fan_id), int(row[8])))
+
+    if present:
+        pending = {fid: [run for run in due if (fid, run.id) not in present]
+                   for fid, due in pending.items()}
+    return {fid: due for fid, due in pending.items() if due}, copy_rows
+
+
+async def _tombstoned(s, account_id: str, pending: dict[int, list[_BlastRun]],
+                      memo: dict[str, str]) -> dict[int, list[_BlastRun]]:
+    """Drop the runs whose copy a chatter UNSENT in one chat. Returns `pending`
+    minus those; `pending` unchanged when nothing matches.
+
+    `_gather`'s SELECT excludes unsent rows (`is_unsent.is_(False)`) — it is reading
+    a conversation, and a retracted bubble is not part of one. But absence and
+    retraction are then indistinguishable, so a copy a chatter deliberately pulled
+    from ONE fan's chat would be RESURRECTED by the splice, which is the one outcome
+    worse than not splicing at all.
+
+    One bounded query, only when something is actually pending, matched by the same
+    two rules as the presence pre-pass. The queue-wide cancel is a different question
+    and is answered a level up, by `unsent_at` on the run itself."""
+    if not pending:
+        return pending
+    oldest = min(run.sent_at for due in pending.values() for run in due)
+    slack_s = _BLAST_COPY_SLACK.total_seconds()
+    rows = (await s.execute(
+        select(Message.fan_id, Message.body, created_at_text(),
+               Message.automation_kind, Message.mass_run_id)
+        .where(
+            Message.account_id == str(account_id),
+            Message.direction == "out",
+            Message.is_unsent.is_(True),
+            Message.fan_id.in_(list(pending)),
+            Message.created_at >= oldest - _BLAST_COPY_SLACK,
+        )
+    )).all()
+    if not rows:
+        return pending
+    gone: set[tuple[int, int]] = set()
+    for fan_id, body, created_raw, automation_kind, mass_run_id in rows:
+        due = pending.get(int(fan_id))
+        if not due:
+            continue
+        if mass_run_id is not None:
+            gone.add((int(fan_id), int(mass_run_id)))
+            continue
+        if automation_kind is not None:
+            continue
+        created = parse_ts(created_raw)
+        if created is None:
+            continue
+        near = [run for run in due
+                if abs((created - run.sent_at).total_seconds()) <= slack_s]
+        if not near:
+            continue
+        key = _broadcast_key(body, memo)
+        if not key:
+            continue
+        same = [run for run in near if run.key == key]
+        if same:
+            hit = min(same,
+                      key=lambda run: abs((created - run.sent_at).total_seconds()))
+            gone.add((int(fan_id), hit.id))
+    if not gone:
+        return pending
+    return {fid: kept for fid, due in pending.items()
+            if (kept := [run for run in due if (fid, run.id) not in gone])}
+
+
+def _with_splices(rows, pending: dict[int, list[_BlastRun]]):
+    """The gathered rows with each fan's pending blasts folded in, as
+    `(row, synthetic)`. Yields `synthetic=True` only for the rows built here, so the
+    loop can count them without inspecting message ids.
+
+    WHERE THE ROW GOES: a fan's pending runs (oldest first) are emitted before the
+    first real row of his whose parsed `created_at` is STRICTLY greater than
+    `sent_at`. Strictly, so that at an equal stamp the synthetic lands AFTER the real
+    row — which is exactly where `ORDER BY created_at, message_id` puts a persisted
+    5e15 placeholder next to a ~1.1e13 OF id, and the whole point of this row is to
+    be indistinguishable from that one.
+
+    Rows whose `created_at` is NULL or unparsable pass through and never anchor a
+    splice: their position on the timeline is already meaningless (the loop keeps the
+    NULLs and drops the unparsable ones), so letting one decide placement would make
+    the result depend on a cell nobody can read. The SELECT's lexical order and the
+    parsed chronology can differ when stamps mix encodings; placement is defined on
+    the parsed value and is deterministic either way.
+
+    Remainders FLUSH at the fan boundary and after the last row — a blast newer than
+    everything on his thread is the common case (he had not written since), and
+    dropping it there would silently lose the most recent event."""
+    if not pending:
+        for row in rows:
+            yield row, False
+        return
+    cur_fan: int | None = None
+    queue: list[_BlastRun] = []
+    for row in rows:
+        fan_id = int(row[0])
+        if fan_id != cur_fan:
+            for run in queue:
+                yield _blast_row(cur_fan, run), True
+            cur_fan = fan_id
+            queue = sorted(pending.get(fan_id, ()), key=lambda run: run.sent_at)
+        if queue:
+            created = parse_ts(row[3])
+            if created is not None:
+                while queue and created > queue[0].sent_at:
+                    yield _blast_row(fan_id, queue.pop(0)), True
+        yield row, False
+    for run in queue:
+        yield _blast_row(cur_fan, run), True
+
+
 async def _gather(account_id: str,
                   fan_ids: set[int] | None = None,
                   *, session_gap_min: int = 0,
-                  day_window: timedelta | None = None) -> dict[int, _Cand]:
+                  day_window: timedelta | None = None,
+                  stats: dict | None = None) -> dict[int, _Cand]:
     """One pass over the account's messages → per-fan history PLUS the two
     timestamps the gates need: when the fan last spoke (SLA age) and when a
     HUMAN last sent (manual outbound = automation_kind IS NULL and not part of
@@ -1592,6 +1909,14 @@ async def _gather(account_id: str,
     When `fan_ids` is given (W7 fan-scoped dispatch), the scan is restricted to
     those fans IN SQL so reacting to one inbound DM never reads the whole
     account's message history. None/empty → the full-account sweep.
+
+    It also SPLICES IN the list-audience blasts the send path could not write a row
+    for (see `_BLAST_LOOKBACK` above): every recipient thread in the gathered set
+    that lacks the copy gets the blast in memory, in its chronological place, sweep
+    and fan-scoped call alike. `stats` is an optional out-dict for the counters that
+    belong to the run rather than to a fan — today only
+    `blast_splice_unknown_audience`; every other caller leaves it None and loses
+    nothing.
 
     It also times every reply of HERS, and from that one measurement derives all three
     reply counters in a single post-pass — they differ only in the window they apply:
@@ -1653,24 +1978,43 @@ async def _gather(account_id: str,
     # created_at was '' made SQLAlchemy raise while materialising the rows, which
     # killed every reply for that account (see db/models.py for the full story).
     # Read as text, parse defensively, drop the bad row — never the account.
+    bcast_keys: dict[str, str] = {}     # raw body → key, shared with the loop
     async with get_session() as s:
         rows = (await s.execute(
             # The first six columns must stay where they are: `_broadcast_bodies`
-            # reads `row[:6]` off these same rows, so anything inserted mid-list
-            # silently feeds it the wrong columns — new columns go on the END. It is
-            # an int — still no `raw_json` on this whole-account scan (see the
-            # docstring).
+            # and `_splice_plan` read `row[:6]` off these same rows (and
+            # `_blast_row` builds all nine in this order), so anything inserted
+            # mid-list silently feeds them the wrong columns — new columns go on
+            # the END. It is an int — still no `raw_json` on this whole-account
+            # scan (see the docstring).
             select(Message.fan_id, Message.direction, Message.body,
                    created_at_text(), Message.automation_kind, Message.mass_run_id,
                    Message.image_desc, Message.media_count, Message.message_id)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
         )).all()
+        # ── The blasts these threads are answering (plans/blast-splice A.3) ──
+        # Same session as the scan: the run lookup, the presence pre-pass and the
+        # tombstone check are one question ("what is missing from this history")
+        # and a second connection would let a concurrent unsend land between them.
+        runs = await _recent_mass_runs(
+            s, account_id, now=datetime.utcnow(), stats=stats)
+        pending, copy_rows = _splice_plan(rows, runs, bcast_keys)
+        pending = await _tombstoned(s, account_id, pending, bcast_keys)
+    if stats is not None:
+        # The runs themselves, by id, for the one caller that logs WHICH blast a
+        # reply was rendered against. `c.splices` carries the ids; the text,
+        # stamp and automation behind an id live here rather than being copied
+        # onto every candidate that happens to share the run.
+        stats["blast_runs"] = {run.id: run for run in runs}
     bad_ts: list[int] = []   # fans that own a row with an unreadable created_at
-    bcast_keys: dict[str, str] = {}     # raw body → key, shared with the loop
+    # Computed on the REAL rows only. Feeding the synthetics in would put every
+    # list blast's body over the 5-fan threshold by construction, and a body that
+    # falsely gains broadcast status silences the engine on a live chatter.
     broadcast_bodies = _broadcast_bodies(rows, bcast_keys)
-    for (fan_id, direction, body, created_at_raw, automation_kind, mass_run_id,
-         image_desc, media_count, message_id) in rows:
+    for row, _spliced in _with_splices(rows, pending):
+        (fan_id, direction, body, created_at_raw, automation_kind, mass_run_id,
+         image_desc, media_count, message_id) = row
         created_at = parse_ts(created_at_raw)
         if created_at is None and created_at_raw is not None:
             # Unreadable, not absent: the row can't be placed on the thread's
@@ -1710,13 +2054,28 @@ async def _gather(account_id: str,
         # — the exact turn theft this predicate exists to stop, pointed the wrong
         # way. Widening the counting set below (mass rows now count too) widened
         # that exposure, which is what surfaced it.
+        # `copy_rows` is the row-precise half, and it is what finally covers the
+        # FAN-SCOPED path: a poll-written copy of our own list blast that lands
+        # after his message used to steal the turn there (~4/day), because
+        # `broadcast_bodies` is empty by construction on a one-fan scan and the
+        # row carries no mass_run_id. `_splice_plan` knows those rows by
+        # (recipient, timestamp, key) against a recorded run, so they are named
+        # here individually rather than inferred from their text — a chatter's
+        # genuine 1:1 send reusing the blast's words hours later is untouched.
+        # On the SWEEP this is a widening and an intended one: a copy of a run
+        # with fewer than five copies ingested so far is now a broadcast there too.
         broadcast = direction == "out" and (
             mass_run_id is not None
+            or (fan_id, message_id) in copy_rows
             or (automation_kind is None
                 and bool(broadcast_bodies)     # empty on every fan-scoped call
                 and _broadcast_key(body, bcast_keys) in broadcast_bodies))
         if broadcast:
             c.mark_broadcast()
+        if _spliced:
+            # WHERE the blast landed in this thread, and which run it was — read by
+            # the window site to say whether the model actually SAW it.
+            c.splices.append((len(c.messages) - 1, int(mass_run_id)))
         # …and is it a REACTION rather than an answer? `image_reply` / `tip_reward`
         # go out within seconds of HIS action, carry an automation_kind (so they are
         # never `broadcast`) and say nothing — see TURN_NEUTRAL_KINDS.
@@ -6883,9 +7242,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     old_fan_ids: set[int] = ({fid for fid, r in skip_reasons.items()
                               if r == _OLD_FAN_SKIP} if engage_old else set())
     mid_funnel_fans = await _load_mid_funnel_fans(account_id)
+    # The out-dict for the numbers that belong to the RUN rather than to a fan —
+    # today the blast splice's run-level facts (see `_gather`).
+    gather_stats: dict = {}
     by_fan = await _gather(account_id, only_fan_ids or None,
                            session_gap_min=session_gap_min,
-                           day_window=QUOTA_WINDOW if quota_on else None)
+                           day_window=QUOTA_WINDOW if quota_on else None,
+                           stats=gather_stats)
+    _blast_by_id: dict[int, _BlastRun] = gather_stats.get("blast_runs") or {}
 
     # ── Include-only audience: intersect HERE, before every ownership/spend
     # snapshot. `seller_owned_fans`' `always` set is built FROM by_fan, so a
@@ -7148,6 +7512,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # window. Without a counter, shipping the attribution fix looks like a
     # success (duplicates ~22% -> ~0) while this stays exactly as broken.
     history_blind_reply = 0
+    # ── The list-audience blast splice (plans/blast-splice A.7). Three numbers,
+    # because "it worked" and "it reached the model" and "it could not be known"
+    # are three different states and only the middle one is the point.
+    blast_spliced = 0            # Σ materialized blast rows across the replies made
+    blast_splice_rendered = 0    # …sends whose history TAIL actually held one
     skipped_locked = 0
     skipped_cooldown = 0
     skipped_cadence = 0     # cadence: burst cap hit / post-purchase window lapsed
@@ -8412,6 +8781,30 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                          "n=%d hours=%s floor=%d bound=%s",
                          account_id, fan_id, _delivered, window.max_rows,
                          window.max_age, window.floor, window_bound)
+
+            # ── Did the model actually SEE the blast we spliced in? ────────
+            # The counter above says a broadcast was trimmed; this says a
+            # MATERIALIZED one survived. The tail is the last `tail` rows, so an
+            # index at or past `len - tail` is on screen. Computed whether or not
+            # the window feature is on, because the splice is not part of it.
+            blast_spliced += len(c.splices)
+            _rendered = [(i, rid) for i, rid in c.splices
+                         if i >= len(c.messages) - tail]
+            if _rendered:
+                blast_splice_rendered += 1
+                _run_id = _rendered[-1][1]
+                _run = _blast_by_id.get(_run_id)
+                # His newest inbound MINUS the send. Negative when the blast
+                # landed AFTER his message — a real and common shape (79 such
+                # replies a week fleet-wide), not an error, so it is signed.
+                _delay = (int((c.last_in_at - _run.sent_at).total_seconds())
+                          if _run is not None and c.last_in_at is not None
+                          else 0)
+                log.info("ai_chatter[%s] blast splice rendered fan=%s run=%s "
+                         "kind=%s sent_at=%s delay_s=%d",
+                         account_id, fan_id, _run_id,
+                         _run.automation_kind if _run else None,
+                         _run.sent_at if _run else None, _delay)
 
             bio_was_asked = fan_state(f, _BIO_ASKED_KEY).get("asked") is True
             # Reads the EFFECTIVE window, not the module constant. It used to read
@@ -9861,7 +10254,24 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Two-word reply to a blast the window trimmed — the incident class the
         # placeholder fix narrows but does not close. Watch it across the
         # deploy; it is the only forcing function for the pin.
+        #
+        # ⚠️ THE SPLICE CAN ONLY MAKE THIS RISE, and that is not a regression. A
+        # reply to a LIST blast had no `last_bcast_idx` at all before — the blast
+        # was not on the thread in any form — so it could never be counted here.
+        # Now it is on the thread, and when the window trims it away the case is
+        # counted. Every increment is the pin case (plans/blast-splice §8), which
+        # is exactly what this counter was put here to force.
         "history_blind_reply": history_blind_reply,
+        # ── The list-audience blast splice. `blast_spliced` says the rows were
+        # built; `blast_splice_rendered` says the model actually saw one, which
+        # is the only one of the three that means the incident is fixed;
+        # `blast_splice_unknown_audience` says a run in the window had no
+        # recorded recipient set — a broken roster crawl, visible as a NUMBER
+        # instead of as silence (it is safe: such a run is simply never spliced).
+        "blast_spliced": blast_spliced,
+        "blast_splice_rendered": blast_splice_rendered,
+        "blast_splice_unknown_audience": int(
+            gather_stats.get("blast_splice_unknown_audience", 0)),
         # ⚠️ Brings in `deliveries_failed` — a TIP-UNLOCK RETRY that could not
         # deliver (`_resolve_open_offers`), NOT the pack lane's
         # `pack_delivery_failed` twenty lines above. Two unrelated events, two

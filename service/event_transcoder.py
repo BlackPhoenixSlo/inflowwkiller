@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from datetime import datetime
 from typing import Any
 
@@ -51,6 +52,27 @@ from jsonsafe import dump_capped
 # per window suffices — the 60/90s frontend polls are the refetch cadence.
 _OUT_BUST_DEBOUNCE_S = 20.0
 _last_out_bust: dict[str, float] = {}
+
+# ── "Did this account just blast?" — the broadcast queue ring ──────────
+# OF pushes `chat_queue_update` / `chat_queue_finish` frames about a second after
+# ANY broadcast leaves the account, ours or one the creator composed in the OF
+# app. That makes them the only real-time signal for a HUMAN blast, and the
+# inbound-after-a-blast scrape (webhook_dispatch) reads them next to `mass_runs`
+# so a blast we fired ourselves survives a relay restart while a human one in the
+# restart minute is an accepted loss.
+#
+# In-process, no DB write: this answers a question with a 60-minute horizon and a
+# `mass_runs` row is already the durable record of everything WE send. Keyed on
+# RECEIPT time rather than the frame's own `date` — a replayed or clock-skewed
+# frame must not look fresh. Replace-by-queue-id (the finish frame arrives after
+# several updates), drop on cancel, 32 queues per account is far past a day's
+# worth on the heaviest account.
+_QUEUE_RING_MAX = 32
+# A queue of fewer than five recipients is a small hand-send, not a blast — the
+# same floor `ai_chatter._BROADCAST_MIN_FANS` uses for the same reason. Only the
+# FINISH frame's `total` is trustworthy: the first update carries -1.
+_QUEUE_MIN_RECIPIENTS = 5
+_queue_finishes: dict[str, "deque[tuple[int, float]]"] = {}
 
 log = logging.getLogger("of-relay.transcode")
 
@@ -127,6 +149,14 @@ async def transcode(event: dict) -> None:
             await _transcode_ppv_unlock(account_id, event_type, payload)
         elif event_type == "toasts":
             await _transcode_toast(account_id, payload)
+        elif event_type in ("chat_queue_finish", "chat_queue_update"):
+            # A broadcast just left this account. No canonical row (the frame
+            # carries no body and no recipients) — it goes in the in-process ring
+            # above, which is all the 60-minute "did she just blast" question
+            # needs. Handled here rather than falling through: the payload has no
+            # user blob for `_touch_fan_from_event` and the shape is known, so the
+            # discovery log has nothing left to learn from it.
+            _record_queue_frame(account_id, event_type, payload)
         else:
             # Online/typing/stories/etc. don't get full transcodes yet,
             # but they often carry up-to-date avatar + display name. Touch
@@ -136,6 +166,65 @@ async def transcode(event: dict) -> None:
             _log_unknown(event_type, payload)
     except Exception:
         log.exception("transcode failed (account=%s type=%s)", account_id, event_type)
+
+
+def _record_queue_frame(account_id: Any, event_type: str, payload: Any) -> None:
+    """Fold one `chat_queue_*` frame into the account's ring. Never raises.
+
+    The envelope, as `event_inbox` stores it::
+
+        {"chat_queue_finish": {"id": 46605849959, "date": "...", "isReady": true,
+         "isDone": true, "total": 23, "pending": 0, "canUnsend": true,
+         "unsendSeconds": 1000000, "hasError": false, "isCanceled": false, ...}}
+
+    Only the FINISH frame records — the first update carries `total: -1` and the
+    ones between carry a falling `pending`, so `total` is only trustworthy at the
+    end. A frame that says `isCanceled` records nothing and REMOVES any entry for
+    the same queue: a blast the creator pulled back is not a blast anyone can be
+    replying to."""
+    if not isinstance(payload, dict) or account_id is None:
+        return
+    try:
+        queue_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        return
+    aid = str(account_id)
+    ring = _queue_finishes.get(aid)
+    if payload.get("isCanceled"):
+        if ring is not None:
+            _queue_finishes[aid] = deque(
+                (q, at) for q, at in ring if q != queue_id)
+        return
+    if event_type != "chat_queue_finish":
+        return
+    try:
+        total = int(payload.get("total"))
+    except (TypeError, ValueError):
+        return
+    if total < _QUEUE_MIN_RECIPIENTS:
+        return
+    if ring is None:
+        ring = _queue_finishes[aid] = deque(maxlen=_QUEUE_RING_MAX)
+    # Replace-by-id: OF can re-send a finish frame, and two entries for one queue
+    # would push a real second blast out of a 32-deep ring for no gain.
+    if any(q == queue_id for q, _at in ring):
+        kept = deque((e for e in ring if e[0] != queue_id), maxlen=_QUEUE_RING_MAX)
+        kept.append((queue_id, time.monotonic()))
+        _queue_finishes[aid] = kept
+        return
+    ring.append((queue_id, time.monotonic()))
+
+
+def blasted_within(account_id: Any, *, seconds: float) -> bool:
+    """Did a broadcast of ≥5 recipients finish on this account in the last
+    `seconds`? Reads the ring above — in-process, so a restart answers False until
+    the next blast, which the `mass_runs` half of the caller's check covers for
+    everything WE send."""
+    ring = _queue_finishes.get(str(account_id))
+    if not ring:
+        return False
+    floor = time.monotonic() - float(seconds)
+    return any(at >= floor for _q, at in ring)
 
 
 async def _transcode_toast(account_id: Any, payload: Any) -> None:
@@ -272,12 +361,19 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
         # drops off owe-reply, previews moved). This echo is the ONLY signal
         # for sends made outside our send endpoint (OF web, another device,
         # a different automation instance) — bust both readers of the window
-        # so the next list/badge fetch re-reads OF. Debounced per account: a
-        # mass blast echoes one outbound frame per recipient, and busting on
-        # every one keeps the caches permanently cold for the blast's whole
-        # duration (each 60/90s poll then pays a full live OF re-read). One
-        # bust per window is enough — polls are the refetch cadence anyway,
-        # so extra busts between polls buy nothing.
+        # so the next list/badge fetch re-reads OF. Debounced per account so a
+        # burst of outbound echoes cannot keep the caches permanently cold (each
+        # 60/90s poll would then pay a full live OF re-read). One bust per window
+        # is enough — polls are the refetch cadence anyway, so extra busts
+        # between polls buy nothing.
+        #
+        # ⚠️ The debounce's ORIGINAL rationale was "a mass blast echoes one
+        # outbound frame per recipient". It does not: 48 hours of `event_inbox`
+        # across the two heaviest accounts hold ZERO outbound `api2_chat_message`
+        # frames, blast or otherwise. What OF actually pushes for a broadcast is
+        # the `chat_queue_*` pair, recorded above. The debounce stands on its own
+        # for the multi-device case; the blast claim was never true, and it is
+        # why a list blast has no per-fan row anywhere (plans/blast-splice §0.2).
         aid_out = str(account_id)
         now_mono = time.monotonic()
         if now_mono - _last_out_bust.get(aid_out, 0.0) >= _OUT_BUST_DEBOUNCE_S:

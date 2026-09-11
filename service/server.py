@@ -4891,6 +4891,7 @@ async def _open_mass_run(
     user_lists: list,
     included_users: list[int],
     excluded_users: list[int],
+    excluded_user_lists: list | None = None,
     funnel_id: int | None = None,
 ) -> tuple[str, int | None, int | None]:
     """Resolve account + X-Employee-Id and mint a `mass_runs` row so every
@@ -4911,6 +4912,11 @@ async def _open_mass_run(
         "user_lists": user_lists,
         "included_users": included_users,
         "excluded_users": excluded_users,
+        # The audience actually SENT is wider than the three keys above: OF has
+        # no per-user exclusion field for a list audience, so the excluded ids
+        # ride in the Auto_Exclude list attached here. Forensics only — who
+        # RECEIVED the blast is recorded on `recipients_json` at close.
+        "excluded_user_lists": list(excluded_user_lists or []),
     })
     mass_run_id: int | None = None
     try:
@@ -4942,6 +4948,8 @@ async def _close_mass_run(
     price: float,
     result: Any,
     recipient_ids: list[int] | None = None,
+    audience: dict | None = None,
+    scheduled: bool = False,
 ) -> None:
     """After OF returns, persist a `messages` row per recipient of the
     broadcast. Two sources, handled in order:
@@ -4958,9 +4966,19 @@ async def _close_mass_run(
          outbound events, so without this the row would otherwise never land.
 
     List-based audiences (`userLists`) aren't expanded here, so their members
-    aren't in `recipient_ids`; they still rely on the (future) WS-pump
-    reconciler keyed on `mass_run_id`. The `mass_runs` row is already minted
-    as that reconciler's anchor."""
+    aren't in `recipient_ids` and NO per-fan row is written for them. What they
+    get instead is step 4: the run itself records the body, OF's send stamp and —
+    from `audience`, by paging OF's own rosters — the recipient set, so
+    `ai_chatter._gather` can materialize that row at READ time for the fans who
+    reply (plans/blast-splice; this is the "future WS-pump reconciler" the
+    previous version of this docstring was waiting for, arrived by another route:
+    the pump never echoes outbound blasts at all).
+
+    `audience` is the request body's own audience block (`user_lists`,
+    `excluded_users`, `excluded_user_lists`, `filters`, `online_only`); omit it
+    and the recipient set is simply not recorded. `scheduled=True` says OF has
+    NOT sent this yet — the run gets no body and no stamp, because there is
+    nothing on anyone's thread to splice."""
     if mass_run_id is None:
         return
     from attribution import (
@@ -5051,8 +5069,45 @@ async def _close_mass_run(
                 mr.completed_at = datetime.utcnow()
                 if queue_id is not None:
                     mr.queue_id = int(queue_id)
+                if not scheduled:
+                    # The splice record — mirror send_mass_message's close step.
+                    # A SCHEDULED send leaves both NULL: it has not gone out, so
+                    # there is no line on anyone's thread yet and a `sent_at` in
+                    # the future would put one there.
+                    mr.body = text or ""
+                    mr.sent_at = created_at
     except Exception:
         log.exception("mass run close failed (account=%s run=%s)", account_id, mass_run_id)
+
+    # ── 4) …and WHO OF sent it to, off OF's rosters (plans/blast-splice A.2).
+    # BACKGROUNDED: the crawl is up to ~17 pages on the largest account and a
+    # human is watching this response. It fails closed on its own (None →
+    # `recipients_json` stays NULL → the run is never spliced), so there is
+    # nothing for the request to wait on and nothing it could do about a failure.
+    if audience is not None and not scheduled:
+        async def _record_recipients() -> None:
+            try:
+                from attribution import stamp_mass_recipients
+                from audiences import resolve_recipients_blocking
+                # `_load_client(account_id)`, never `_get_client()`: this runs
+                # detached from the request, so the middleware contextvar the
+                # bare form reads is gone and it would fall back to the ACTIVE
+                # account — another creator's roster, on the wrong run.
+                recorded = await asyncio.to_thread(
+                    resolve_recipients_blocking, _load_client(account_id),
+                    user_lists=audience.get("user_lists") or [],
+                    included_users=recipient_ids or [],
+                    excluded_users=audience.get("excluded_users") or [],
+                    excluded_user_lists=audience.get("excluded_user_lists") or [],
+                    filters=audience.get("filters"),
+                    online_only=bool(audience.get("online_only")),
+                )
+                await stamp_mass_recipients(mass_run_id, recorded)
+            except Exception:
+                log.warning("mass recipient record failed (account=%s run=%s) — "
+                            "the blast is sent, it just will not be spliced",
+                            account_id, mass_run_id, exc_info=True)
+        _spawn_bg(_record_recipients(), f"mass-recipients-{mass_run_id}")
 
 
 @app.post("/api/of/v2/chats/messages")
@@ -5101,6 +5156,13 @@ async def of_send_mass(
         price=body.price,
         result=result,
         recipient_ids=body.included_users,
+        audience={"user_lists": body.user_lists,
+                  "excluded_users": body.excluded_users},
+        # This legacy route closes a SCHEDULED send immediately (it passes
+        # scheduled_date straight through and calls us either way), so the flag
+        # has to come off the body — otherwise a send OF has not made yet would
+        # be stamped as sent and spliced into threads it never reached.
+        scheduled=bool(body.scheduled_date),
     )
     if mass_run_id is not None and isinstance(result, dict):
         result.setdefault("_mass_run_id", mass_run_id)
@@ -7258,6 +7320,7 @@ async def of_send_or_schedule_mass(
         user_lists=body.user_lists,
         included_users=body.user_ids,
         excluded_users=body.excluded_users,
+        excluded_user_lists=body.excluded_user_lists,
         funnel_id=body.funnel_id,
     )
     client = _get_client()
@@ -7327,6 +7390,17 @@ async def of_send_or_schedule_mass(
             price=body.price,
             result=result,
             recipient_ids=body.user_ids,
+            audience={"user_lists": body.user_lists,
+                      "excluded_users": body.excluded_users,
+                      "excluded_user_lists": body.excluded_user_lists,
+                      "filters": body.filters,
+                      "online_only": body.online_only},
+            # This branch is the IMMEDIATE one (the scheduled branch above never
+            # calls us at all — see §8 of plans/blast-splice, that run stays
+            # 'running' forever and is its own bug), so this is always False.
+            # Passed explicitly anyway: the day the scheduled branch learns to
+            # close itself, the flag is already where it belongs.
+            scheduled=False,
         )
         # Auto-unsend timer: schedule a one-shot `unsend_messages` job for the
         # forever-window mass unsend (DELETE /messages/queue/{id}) at send_time

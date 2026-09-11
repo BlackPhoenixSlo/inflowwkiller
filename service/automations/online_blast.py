@@ -51,6 +51,7 @@ from audiences import (
     resolve_window_hours,
 )
 from automation_registry import register
+from event_transcoder import _parse_iso   # OF's createdAt → naive UTC
 from ._common import bool_knob, load_hard_skip_ids
 from . import mass_nudge   # reuse slot composition + the default pools
 from . import welcome_compose  # _model_hour / _model_weekday / _slot_key
@@ -202,6 +203,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     from attribution import record_broadcast_mass_run
     await record_broadcast_mass_run(
         account_id=account_id, queue_id=queue_id, automation_kind="online_blast",
+        # The text + OF's own send stamp, so the run says WHAT went out and WHEN.
+        # `recipients` stays None on purpose: "everyone online right now" is a
+        # moment, not a roster — the snapshot we re-fetch above for the contact
+        # guard is deliberately over-broad (a fan who churned between our read and
+        # OF's resolution is stamped anyway), and over-broad is safe on a cooldown
+        # but wrong for a splice. So this blast is never spliced into a history.
+        body=text,
+        sent_at=(_parse_iso(result.get("createdAt"))
+                 if isinstance(result, dict) else None) or datetime.utcnow(),
+        recipients=None,
     )
 
     # Optional auto-unsend: enqueue the A12 unsend job for the broadcast.

@@ -334,9 +334,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Attribute this broadcast to mass_nudge in the Mass Messages tab (no
     # per-fan messages rows are written, so this is the only attribution link).
     from attribution import record_broadcast_mass_run
+    from event_transcoder import _parse_iso
     await record_broadcast_mass_run(
         account_id=account_id, queue_id=queue_id,
         automation_kind="mass_nudge", recipient_count=len(recipients),
+        # The splice record (plans/blast-splice A.2). This lane is the easy case:
+        # the audience is an EXPLICIT id list we resolved ourselves, so there is
+        # no roster to crawl and no inference to get wrong — pass it verbatim.
+        body=text,
+        sent_at=(_parse_iso(result.get("createdAt"))
+                 if isinstance(result, dict) else None) or datetime.utcnow(),
+        recipients=recipients,
     )
 
     # Optional auto-unsend: enqueue the A12 unsend job for the broadcast.

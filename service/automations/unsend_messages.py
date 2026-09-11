@@ -67,7 +67,10 @@ import automation_executor as ax  # shared _make_client seam (tests patch ax._ma
 from automation_registry import register
 from db.engine import get_session
 from db.models import Action, MassBroadcastCache, MassRun, Message, Post
-from messages import mark_mass_runs_unsent, mark_unsent  # the mirror-write half
+from messages import (  # the mirror-write half
+    _queue_body_and_stamp, mark_mass_runs_unsent, mark_queue_copies_unsent,
+    mark_unsent,
+)
 
 UNSENT_REASON = "automation:unsend_messages"  # stamped on every row we flip
 
@@ -447,15 +450,70 @@ async def _refresh_mass_cache(account_id: str, client) -> bool:
 
 
 async def _flip_mass_unsent(account_id: str, mass_run_id: int | None) -> int:
-    """Mark a mass run's BROADCAST rows unsent once OF cancels the queue.
-    Without a `mass_run_id` we can't map the OF queue id back to our rows, so we
-    flip nothing locally (the OF unsend still happened). Returns rows flipped.
-    The funnel-step / purchased-row guards live in `messages.mark_mass_runs_unsent`,
-    shared with the relay's manual "unsend from everyone" route."""
+    """Mark a mass run's TAGGED broadcast rows unsent once OF cancels the queue.
+    Without a `mass_run_id` there is nothing here to flip (the OF unsend still
+    happened). Returns rows flipped. The funnel-step / purchased-row guards live in
+    `messages.mark_mass_runs_unsent`, shared with the relay's manual "unsend from
+    everyone" route.
+
+    This only ever covered the rows WE wrote with a `mass_run_id` — i.e. explicit
+    (`userIds`) audiences. A list-audience blast writes none at all, so its copies
+    arrive untagged on the poll and this returned 0 for them forever; that is what
+    `_flip_queue_copies` below is for."""
     if mass_run_id is None:
         return 0
     return await mark_mass_runs_unsent(account_id, [int(mass_run_id)],
                                        reason=UNSENT_REASON)
+
+
+async def _flip_queue_copies(account_id: str, queue_id: int | None) -> int:
+    """The UNTAGGED half: flip the poll/scrape-written copies of a canceled
+    broadcast and stamp `mass_runs.unsent_at`. Returns copies flipped.
+
+    Resolves the queue's body + send stamp from `mass_runs` (our own send) or
+    `mass_broadcast_cache` (a blast composed in the OF app) and hands both to
+    `messages.mark_queue_copies_unsent`, which owns the matching rules. Neither
+    source is required — with neither, only the exact `raw_json.queueId` branch
+    can match, which is the honest answer for a queue we know nothing about."""
+    if queue_id is None:
+        return 0
+    body, sent_at = await _queue_body_and_stamp(account_id, int(queue_id))
+    copies, _stamped = await mark_queue_copies_unsent(
+        account_id, int(queue_id), body=body, sent_at=sent_at,
+        reason=UNSENT_REASON)
+    return copies
+
+
+async def _reapply_recent_unsends(account_id: str) -> int:
+    """Re-flip the copies of every run canceled in the last 24h. Returns rows
+    flipped (0 in the overwhelming case — this is a repair, not a sweep).
+
+    THE RACE IT REPAIRS: a scrape response captured BEFORE the cancel is written
+    afterwards, and the upsert carries OF's `isUnsent` as it was at capture time
+    (`automation_executor._scrape_one_chat`) — so it can revert a flip, or land a
+    fresh copy of an already-canceled blast minutes after the sweep walked past.
+    The window is seconds wide and there is no lock that could close it without
+    serialising the scrape against the unsend, so we simply do it again on the
+    next hourly tick. Idempotent by construction: a row already `is_unsent = 1`
+    is not a candidate, and `mass_runs.unsent_at` is only stamped once."""
+    since = datetime.utcnow() - timedelta(hours=24)
+    async with get_session() as s:
+        queues = (await s.execute(
+            select(MassRun.queue_id).where(
+                MassRun.account_id == str(account_id),
+                MassRun.queue_id.is_not(None),
+                MassRun.unsent_at.is_not(None),
+                MassRun.unsent_at >= since,
+            ).distinct()
+        )).scalars().all()
+    flipped = 0
+    for qid in queues:
+        try:
+            flipped += await _flip_queue_copies(account_id, int(qid))
+        except Exception:
+            log.warning("unsend re-apply failed account=%s queue=%s",
+                        account_id, qid, exc_info=True)
+    return flipped
 
 
 async def _flip_cache_canceled(account_id: str, queue_id: int) -> int:
@@ -538,6 +596,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     targets = _norm_targets(payload.get("targets"))
     client = None              # built once, lazily, and reused by refresh + unsend
     mass_refresh_failed = False
+    # Does this run touch BROADCASTS at all? True for an explicit queue target (the
+    # composer's auto-unsend timer) and re-derived from the policy below when the
+    # run is a sweep. It gates the copy re-apply, which is the one thing here that
+    # costs work on a tick with nothing to do.
+    wants_mass = any(t.get("kind") == "mass" for t in targets)
     if not targets:
         policy = payload.get("policy") or {}
         # The per-chat sweep and the MASS free-text sweep are independent. A rule
@@ -590,8 +653,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "rows_flipped": 0,
         }
 
+    # ── RE-APPLY, and it runs even on a tick with nothing new to unsend ──
+    # The seconds-wide race between a cancel and an in-flight scrape response can
+    # leave a copy back at is_unsent=0 — or land a brand-new one — after the sweep
+    # that canceled the queue walked past it. A queue is a target exactly ONCE
+    # (the cache row goes is_canceled after), so folding this into the per-target
+    # loop would mean it never actually re-applied: the repair tick is by
+    # definition the one with no targets. Cheap (a handful of runs) and idempotent.
+    copies_flipped = 0
+    if wants_mass:
+        copies_flipped += await _reapply_recent_unsends(account_id)
+
     if not targets:
         return {"targets": 0, "unsent": 0, "failed": 0, "rows_flipped": 0,
+                "copies_flipped": copies_flipped,
                 "mass_refresh_failed": mass_refresh_failed}
 
     # Reuse the client the mass refresh already built; only construct one here when
@@ -607,6 +682,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if t["kind"] == "mass":
                 await asyncio.to_thread(client.cancel_scheduled, t["queue_id"])
                 flipped = await _flip_mass_unsent(account_id, t.get("mass_run_id"))
+                # …and the untagged copies, counted SEPARATELY: `rows_flipped`
+                # keeps its meaning (tagged mirror rows + the cache row), so a
+                # dashboard reading it across the deploy is not lied to.
+                copies_flipped += await _flip_queue_copies(
+                    account_id, t.get("queue_id"))
                 if t.get("from_cache"):
                     flipped += await _flip_cache_canceled(account_id, t["queue_id"])
                 # #R4: the first mass is gone → stop enrolling NEW funnel repliers
@@ -667,5 +747,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "unsent": unsent,
         "failed": failed,
         "rows_flipped": rows_flipped,
+        # Untagged poll/scrape copies of a canceled broadcast — the rows a
+        # list-audience blast leaves behind, which `rows_flipped` can never see.
+        "copies_flipped": copies_flipped,
         "mass_refresh_failed": mass_refresh_failed,
     }

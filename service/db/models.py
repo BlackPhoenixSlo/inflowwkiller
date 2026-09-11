@@ -1441,7 +1441,7 @@ class AccountAiConfig(Base):
     #
     # Why this exists as fields and not more prose: `persona` averaged 202-882
     # chars across live accounts while the style scaffolding around it ran ~5,000,
-    # and the gaps were exactly what fans probe. NovaFree's persona said "Born and
+    # and the gaps were exactly what fans probe. the graded vault's persona said "Born and
     # raised in Argentina" with NO city — so when a fan asked where she grew up the
     # model improvised, and a 966-turn thread walked Argentina → Chile → Córdoba
     # before the fan said "ya no creo nada". A named empty slot is what the enrich
@@ -1603,7 +1603,7 @@ class AccountAiConfig(Base):
     # True = the operator ticked "Always tag videos" on a COLLAB account: every
     # send attaching a vault VIDEO then carries the co-performer tag even when
     # the describe verdict reads it as solo — video describes are cut from
-    # stills and miss the POV partner, which is how Lucas1/Lucas2 clips shipped
+    # stills and miss the POV partner, which is how blake/blake clips shipped
     # untagged. The describe-verdict decision itself is never weakened by this.
     cotag_tag_videos: Mapped[bool | None] = mapped_column(Boolean)
     # The handle to tag, stored without the '@' (media_cotag folds it the way OF
@@ -1697,6 +1697,31 @@ class MassRun(Base):
     # Nullable/additive: init_db self-heals it via ALTER TABLE (no migration).
     discovery_closed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # ── THE BLAST ITSELF, recorded at close (plans/blast-splice A.1) ────
+    # A list-audience send (`userLists: ["fans","following"]`) writes NO per-fan
+    # `messages` row — OF echoes no ids and the WS pump drops outbound frames — so
+    # the line a fan is answering existed NOWHERE we could read it until his own
+    # copy arrived on the inbox poll, p50 81 min after the send. The engine read a
+    # two-word reply ("please") with nothing above it and called him out for not
+    # answering her. These four columns are what the reply path reads instead.
+    #
+    # All four are NULLABLE and all four are load-bearing as a set: a run is
+    # spliceable only with `body` AND `sent_at` AND `recipients_json`, so a legacy
+    # row, a scheduled send that has not gone out, or an audience we could not
+    # resolve is simply never spliced. init_db self-heals them via ALTER TABLE.
+    body: Mapped[str | None] = mapped_column(Text)               # the text as sent
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)   # OF createdAt, else close time
+    # Set when the queue is canceled (the 4h mass unsend, or "unsend from
+    # everyone") — the run stops being spliceable the moment OF stops serving it.
+    unsent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # JSON list[int]: who OF actually sent it to, RECORDED from OF's own rosters at
+    # send time, never inferred from `audience_filter`. Measured on prod: 4 of the
+    # 27 chat fans on one blast account are consistent non-recipients (expired
+    # subscribers) with no local tell at all, so "everyone not excluded" would have
+    # spliced 15% of repliers a blast they never received. NULL = we could not know
+    # → never spliced (see audiences.resolve_recipients_blocking, which fails closed).
+    recipients_json: Mapped[str | None] = mapped_column(Text)
+
     __table_args__ = (
         # Mass Messages tab joins the cache to a run by (account_id, queue_id).
         Index(
@@ -1706,6 +1731,9 @@ class MassRun(Base):
             sqlite_where=text("queue_id IS NOT NULL"),
             postgresql_where=text("queue_id IS NOT NULL"),
         ),
+        # …and ai_chatter's `_recent_mass_runs` seeks "this account's runs in the
+        # last 48h" on every _gather — the sweep AND every fan-scoped W7 dispatch.
+        Index("ix_mass_runs_account_sent", "account_id", "sent_at"),
     )
 
 

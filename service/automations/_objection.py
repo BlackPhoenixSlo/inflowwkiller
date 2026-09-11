@@ -184,8 +184,15 @@ async def decide(account_id: str, fan_id: int, fan: Fan | None, c: ObjectionCand
         # carries the `[he sent: …]` vision tag, and asking a model "is he
         # complaining" over prose OUR OWN describer wrote is the documented way to
         # get an invented grievance.
+        # `last_in_mid`, NOT `msg_ids[-1]`: the key dedupes "have we already judged
+        # THIS COMPLAINT", and the complaint is HIS message — which is what the
+        # judge's own docstring says it keys on. The newest ROW is a different
+        # thing, and the day something of ours lands after his (a blast spliced
+        # into the history, a placeholder, a reaction) the key became that row, so
+        # the same inbound could be re-judged the moment the row changed or aged
+        # out. One inbound, one verdict, however the thread moves around it.
         verdict = await _judge(account_id, fan_id, fan, c.last_in_text,
-                               message_id=(c.msg_ids[-1] if c.msg_ids else None),
+                               message_id=c.last_in_mid,
                                last_paid_at=last_paid_at, cfg=cfg, model=model,
                                now=now, dry_run=dry_run)
     except llm_client.LLMCapExceeded:

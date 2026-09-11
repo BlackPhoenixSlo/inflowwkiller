@@ -529,6 +529,128 @@ def _page_all(fetch):
     return _page_all_checked(fetch)[0]
 
 
+_ROSTER_PAGE = 50            # OF caps subscriber pages low; offset math is len-based
+
+
+def _ids_from_pages(fetch) -> tuple[set[int], bool]:
+    """(user ids, hit_backstop) for any paged OF user list. Blocking.
+
+    The same two lines `audience_include._crawl_list_ids_blocking` and
+    `audience_sync._scan_roster_blocking` each carry for their own endpoint —
+    kept local rather than imported because both of those live ABOVE this module
+    in the import order (audience_include imports audiences, never the reverse)."""
+    rows, truncated = _page_all_checked(fetch)
+    ids: set[int] = set()
+    for u in rows:
+        uid = u.get("id")
+        if uid is None:
+            continue
+        try:
+            ids.add(int(uid))
+        except (TypeError, ValueError):
+            continue
+    return ids, truncated
+
+
+def resolve_recipients_blocking(
+    client,
+    *,
+    user_lists: Iterable | None = None,
+    included_users: Iterable[int] | None = None,
+    excluded_users: Iterable[int] | None = None,
+    excluded_user_lists: Iterable | None = None,
+    filters: dict | None = None,
+    online_only: bool = False,
+) -> list[int] | None:
+    """WHO OF WILL ACTUALLY SEND THIS BLAST TO — read off OF's own rosters at send
+    time — or `None` when that cannot be known. Blocking; call via
+    `asyncio.to_thread`. Recorded on `mass_runs.recipients_json` so the chat engine
+    can splice the blast into a replier's history within a second of the send.
+
+    WHY IT IS READ AND NOT INFERRED. A `userLists` send writes no per-fan rows, so
+    the obvious cheap answer is "everyone in our `fans` table minus
+    `excluded_users`". Measured on prod (plans/blast-splice §0.3) that answer is
+    wrong for 4 of the 27 chat fans on the incident account — expired subscribers
+    OF silently skips, with nothing local that says so: `fans.subscription_status`
+    is NULL on all 866 fans of the two blast accounts and `fans.source` is
+    upgrade-only. Splicing a man a blast he never received puts words in his mouth
+    in HER prompt, which is worse than splicing nothing at all.
+
+    FAILS CLOSED, always, and every branch below is a refusal rather than a
+    best-effort answer:
+      • `filters` / `online_only` — "online right now" is a moment, not a roster;
+        by the time we could page it the set has moved,
+      • a `user_lists` entry that is neither `fans`/`following` nor a numeric OF
+        list id — we do not know what OF resolved it to,
+      • ANY crawl that reports truncation (`_page_all_checked`'s flag) or raises —
+        a short read would silently drop everyone past the ceiling and mark them
+        non-recipients.
+    A refusal returns None, the caller leaves `recipients_json` NULL, and the run is
+    simply never spliced (ai_chatter counts it as `blast_splice_unknown_audience`).
+    NEVER a partial set: a half-recorded audience is indistinguishable from a
+    complete one at read time.
+
+    The remaining over-approximation is a fan on the roster whom OF still skipped
+    (blocked, restricted, un-DMable) — the same permanent stragglers
+    `_sync_exclude_list_blocking` above already tolerates, and the reason §7's live
+    check compares `len(recipients)` against the `chat_queue_finish.total` frame
+    rather than demanding equality."""
+    if filters or online_only:
+        # Not a failure — a deliberate refusal, and the common one (Mass Online).
+        log.info("resolve_recipients: online/filtered audience is not a roster "
+                 "— leaving the run unrecorded")
+        return None
+    try:
+        ids: set[int] = {int(x) for x in (included_users or []) if x is not None}
+        for raw in (user_lists or []):
+            name = str(raw).strip().lower()
+            if name == "fans":
+                got, truncated = _ids_from_pages(
+                    lambda off: client.subscribers(
+                        type="active", limit=_ROSTER_PAGE, offset=off))
+            elif name == "following":
+                got, truncated = _ids_from_pages(
+                    lambda off: client.following(
+                        type="active", limit=_ROSTER_PAGE, offset=off))
+            elif name.isdigit():
+                # A custom OF list id passed straight through to `userLists`.
+                got, truncated = _ids_from_pages(
+                    lambda off, _lid=int(name): client.list_users_in(
+                        _lid, limit=_LIST_PAGE, offset=off))
+            else:
+                log.warning("resolve_recipients: unknown user_list %r — audience "
+                            "not recorded", raw)
+                return None
+            if truncated:
+                log.warning("resolve_recipients: %r crawl hit the paging backstop "
+                            "— audience not recorded", raw)
+                return None
+            ids |= got
+
+        # Every exclusion WE sent, crawled rather than assumed — `excluded_user_lists`
+        # holds the AUTOFENCE list and Auto_Exclude (which is where the per-fan
+        # `excluded_users` of a list audience actually land: OF's queue body has no
+        # per-user exclusion field, see `ensure_exclude_list`).
+        excl: set[int] = {int(x) for x in (excluded_users or []) if x is not None}
+        for lid in (excluded_user_lists or []):
+            got, truncated = _ids_from_pages(
+                lambda off, _lid=lid: client.list_users_in(
+                    _lid, limit=_LIST_PAGE, offset=off))
+            if truncated:
+                log.warning("resolve_recipients: exclude list %r crawl hit the "
+                            "paging backstop — audience not recorded", lid)
+                return None
+            excl |= got
+
+        return sorted(ids - excl)
+    except Exception:
+        # The send already succeeded by the time we are called. A roster we could
+        # not read costs a splice and nothing else, so it is a WARNING and a None.
+        log.warning("resolve_recipients failed — audience not recorded",
+                    exc_info=True)
+        return None
+
+
 def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
     """Reconcile the account's Auto_Exclude OF custom list to exactly `ids`.
     Blocking (sync OF client) — call via asyncio.to_thread. Returns list id."""

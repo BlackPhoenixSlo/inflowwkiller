@@ -39,7 +39,7 @@ from typing import Any, AsyncIterator, Sequence
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, and_, func, or_, select, tuple_, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1583,6 +1583,112 @@ async def mark_mass_runs_unsent(
     return res.rowcount or 0
 
 
+async def mark_queue_copies_unsent(
+    account_id: str,
+    queue_id: int,
+    *,
+    body: str | None,
+    sent_at: datetime | None,
+    reason: str = "manual:queue",
+) -> tuple[int, int]:
+    """Flip the UNTAGGED copies of a canceled broadcast, and stamp the run.
+    Returns `(copies_flipped, runs_stamped)`.
+
+    `mark_mass_runs_unsent` above only reaches rows that carry a `mass_run_id`,
+    and a LIST-audience blast writes none: the per-fan rows we hold for it came
+    in later on the inbox poll (`lastMessage`) or a scrape, and neither tags the
+    row. So after the 4h mass unsend the copies were gone on OF and still
+    `is_unsent = 0` here — every untagged outbound row since 09-04 was — and the
+    chat pane's DB seed repainted a retired blast on every open, forever. That is
+    the operator's "in the UI those mass messages are not deleted".
+
+    TWO WAYS to recognise a copy, because neither covers the other:
+      • `raw_json.queueId == queue_id` — EXACT, at any age. The scrape stores OF's
+        frame, and 2,563 outbound rows carry `isFromQueue: true` with the id. Read
+        structurally (int or numeric string), never by substring: `LIKE '%queueId%'`
+        is a cheap SQL PREFILTER for this branch, not the test.
+      • the normalized body matches, inside ±`_BLAST_COPY_SLACK` of `sent_at` — for
+        the poll-written rows, which carry no `raw_json` at all. `_norm_body` is
+        the same key `adopt_thread_placeholders` pairs on, so OF's `<br />` echo of
+        our `\\n` matches; an empty key (a media-only blast) matches nothing.
+    Unknown `sent_at` or `body` narrows the window to 7 days and leaves only the id
+    branch live — a cache-sourced sweep often has neither.
+
+    `mass_run_id IS NULL` keeps this off the rows `mark_mass_runs_unsent` owns (one
+    row, one owner), and `funnel_step`/`purchased_at IS NULL` are its guards for its
+    reasons: a funnel follow-up stays live on OF when the queue is canceled, and a
+    buyer keeps his paid copy forever.
+
+    ONE SESSION, ONE COMMIT with the `MassRun.unsent_at` stamp: the stamp is what
+    stops ai_chatter splicing a blast OF no longer serves, so a crash between the
+    two writes must not leave the copies hidden and the run still spliceable (or
+    the reverse)."""
+    # local: attribution imports this module back (see adopt_thread_placeholders).
+    from attribution import _BLAST_COPY_SLACK, _norm_body
+    slack = _BLAST_COPY_SLACK
+    now = datetime.utcnow()
+    where = [
+        Message.account_id == str(account_id),
+        Message.direction == "out",
+        Message.mass_run_id.is_(None),
+        Message.funnel_step.is_(None),
+        Message.purchased_at.is_(None),
+        Message.is_unsent.is_(False),
+    ]
+    if sent_at is not None:
+        where.append(Message.created_at >= sent_at - slack)
+        # …but the id branch reaches PAST the window (the copy OF delivered 40
+        # minutes late), so the upper bound is an OR, not an AND.
+        where.append(or_(
+            Message.created_at <= sent_at + slack,
+            Message.raw_json.like("%queueId%"),
+        ))
+    else:
+        where.append(Message.created_at >= now - timedelta(days=7))
+        where.append(Message.raw_json.like("%queueId%"))
+
+    key = _norm_body(body) if body else ""
+    flipped = 0
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(Message.fan_id, Message.message_id, Message.body,
+                   Message.created_at, Message.raw_json).where(*where)
+        )).all()
+        hits: list[tuple[int, int]] = []
+        for fan_id, message_id, row_body, created_at, raw_json in rows:
+            if _queue_id_of(raw_json) == int(queue_id):
+                hits.append((int(fan_id), int(message_id)))
+                continue
+            # The body branch is only honest INSIDE the window — the same text
+            # three hours later is a chatter typing, not OF delivering.
+            if not key or sent_at is None or created_at is None:
+                continue
+            if abs((created_at - sent_at).total_seconds()) > slack.total_seconds():
+                continue
+            if _norm_body(row_body) == key:
+                hits.append((int(fan_id), int(message_id)))
+        if hits:
+            res = await s.execute(
+                update(Message)
+                .where(
+                    Message.account_id == str(account_id),
+                    tuple_(Message.fan_id, Message.message_id).in_(hits),
+                )
+                .values(is_unsent=True, unsent_reason=reason, unsent_at=now)
+            )
+            flipped = res.rowcount or 0
+        stamped = (await s.execute(
+            update(MassRun)
+            .where(
+                MassRun.account_id == str(account_id),
+                MassRun.queue_id == int(queue_id),
+                MassRun.unsent_at.is_(None),
+            )
+            .values(unsent_at=now)
+        )).rowcount or 0
+    return flipped, stamped
+
+
 async def mark_queue_unsent(
     account_id: str,
     queue_id: int,
@@ -1593,8 +1699,14 @@ async def mark_queue_unsent(
     so the whole broadcast flips in ONE statement: a per-run loop could stop
     half-applied and leave some recipients' bubbles seeding. 0 when the queue
     was never ours — a scheduled message canceled before it ever sent has no
-    mirror rows to flip."""
-    return await mark_mass_runs_unsent(
+    mirror rows to flip.
+
+    Also flips the UNTAGGED copies (`mark_queue_copies_unsent`), which for a
+    list-audience blast are ALL of them — the tagged half only exists when the
+    send had explicit recipients. Counted into the same number: the caller asked
+    "how many bubbles did this retire", and where the row came from is not its
+    question."""
+    run = await mark_mass_runs_unsent(
         account_id,
         select(MassRun.id).where(
             MassRun.account_id == str(account_id),
@@ -1602,3 +1714,55 @@ async def mark_queue_unsent(
         ),
         reason=reason,
     )
+    body, sent_at = await _queue_body_and_stamp(account_id, int(queue_id))
+    copies, _stamped = await mark_queue_copies_unsent(
+        account_id, int(queue_id), body=body, sent_at=sent_at, reason=reason)
+    return run + copies
+
+
+def _queue_id_of(raw_json: str | None) -> int | None:
+    """OF's `queueId` off a stored message frame, or None. Structural: a row
+    whose JSON is malformed, or whose queueId is neither an int nor a numeric
+    string, is NOT a match — a substring test would pair a blast with any row
+    that merely mentions the word."""
+    if not raw_json:
+        return None
+    try:
+        obj = json.loads(raw_json)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    qid = obj.get("queueId")
+    if isinstance(qid, bool) or qid is None:
+        return None
+    try:
+        return int(qid)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _queue_body_and_stamp(
+    account_id: str, queue_id: int,
+) -> tuple[str | None, datetime | None]:
+    """What a queue SAID and WHEN it went out — `mass_runs` first (our own send,
+    exact), then `mass_broadcast_cache` (OF's own broadcast history, which is how
+    we learn about a blast composed in the OF app). Either half may be None; the
+    copy matcher degrades accordingly."""
+    async with get_session() as s:
+        row = (await s.execute(
+            select(MassRun.body, MassRun.sent_at).where(
+                MassRun.account_id == str(account_id),
+                MassRun.queue_id == int(queue_id),
+                MassRun.sent_at.is_not(None),
+            ).order_by(MassRun.id.desc())
+        )).first()
+        if row is not None and (row[0] or row[1]):
+            return row[0], row[1]
+        cached = (await s.execute(
+            select(MassBroadcastCache.body_text, MassBroadcastCache.sent_at).where(
+                MassBroadcastCache.account_id == str(account_id),
+                MassBroadcastCache.queue_id == int(queue_id),
+            )
+        )).first()
+    return (cached[0], cached[1]) if cached is not None else (None, None)

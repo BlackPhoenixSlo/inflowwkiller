@@ -522,11 +522,46 @@ export function mergeTopPage(
  *  same-timestamp real rows), while optimistic sends (id ≤ 0) and mass
  *  placeholders (5e15 band) keep their tail position. For the common no-gap
  *  case the sort is a no-op reorder-wise. Returns `prev` unchanged for an
- *  empty page. */
+ *  empty page.
+ *
+ *  DROPS A CACHED REAL ROW THE PAGE COVERS BUT DOES NOT CONTAIN — the rule
+ *  mergeTopPage has run on the head page since it was written ("deleted/unsent
+ *  on OF → drop"), applied to older pages too. Without it an unsent mass
+ *  message is immortal below the head page: the local seed paints it, the
+ *  4h-old blast is far older than the 30-row head page, so the one merge that
+ *  could retire it never sees it and it re-paints on every open, forever.
+ *  Strictly inside the fetched `[min, max]` id range, so a cached row from a
+ *  gap this page did not reach is untouched.
+ *
+ *  ⚠️ THE ASSUMPTION IS UNPROVEN FOR OLDER PAGES, and it is written down here
+ *  rather than hidden: "OF returned this range without the row" means deleted
+ *  ONLY if OF pages an id range exhaustively. The head page has bet on that for
+ *  a long time; this extends the same bet one page down. It is the SECONDARY
+ *  repair — the primary is the mirror flip (`messages.mark_queue_copies_unsent`),
+ *  which keeps the row out of the seed in the first place. */
 export function mergeOlderPage(prev: OFMessage[], older: OFMessage[]): OFMessage[] {
   if (older.length === 0) return prev;
   const fresh = new Map(older.map((m) => [String(m.id), m]));
-  const upgraded = prev.map((m) => fresh.get(String(m.id)) ?? m);
+  let minFetchedId = Infinity;
+  let maxFetchedId = -Infinity;
+  for (const m of older) {
+    const id = Number(m.id);
+    // Synthetic bands can never bound an OF id range: a 5e15 placeholder or a
+    // 6e15 ledger tip in the page would stretch `max` over the whole thread and
+    // make every cached row above it look deleted.
+    if (!Number.isFinite(id) || id <= 0 || id >= MASS_PLACEHOLDER_MIN) continue;
+    if (id < minFetchedId) minFetchedId = id;
+    if (id > maxFetchedId) maxFetchedId = id;
+  }
+  const upgraded: OFMessage[] = [];
+  for (const m of prev) {
+    const hit = fresh.get(String(m.id));
+    if (hit) { upgraded.push(hit); continue; }
+    const id = Number(m.id);
+    if (id > 0 && id < MASS_PLACEHOLDER_MIN
+        && id >= minFetchedId && id <= maxFetchedId) continue;  // gone on OF
+    upgraded.push(m);
+  }
   const have = new Set(prev.map((m) => String(m.id)));
   const added = older.filter((m) => !have.has(String(m.id)));
   return orderThread([...upgraded, ...added]);

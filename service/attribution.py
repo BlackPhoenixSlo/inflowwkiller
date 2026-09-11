@@ -212,6 +212,20 @@ _MASS_PLACEHOLDER_CEIL = 6_000_000_000_000_000
 # same-caption send weeks later and stamping it with the wrong run.
 _MAX_ADOPT_SECONDS = 6 * 3600.0
 
+# How far from a run's `sent_at` an UNTAGGED outbound row may sit and still be a
+# COPY of that broadcast rather than somebody typing. The one home for the
+# question, shared by ai_chatter's presence pre-pass (so it never splices a blast
+# a fan already has) and by `messages.mark_queue_copies_unsent` (so the mirror
+# retires the same rows OF just pulled). Two different answers would mean the
+# engine splices what the unsend just hid, or hides what it just spliced.
+#
+# Thirty minutes and not thirty seconds: OF delivers a 23-recipient queue in ~3s,
+# but the poll writes each chat's `lastMessage` with OF's OWN delivery stamp and a
+# 745-recipient queue is not instantaneous. The false positive — a chatter retyping
+# the blast's text 1:1 inside the window — costs one hidden row in the local seed
+# (OF still shows it) and one suppressed splice; accepted knowingly.
+_BLAST_COPY_SLACK = timedelta(minutes=30)
+
 
 def _slug_sender(display_name: str) -> str:
     """`"Kingsley 1"` → `"kingsley1"`. Lowercase + strip whitespace so the tag
@@ -548,9 +562,15 @@ async def write_mass_optimistic_rows(
     `write_outbound_attribution` and drops the placeholder via
     `reconcile_mass_placeholder`.
 
-    Only EXPLICIT recipients (`userIds`) are knowable here; list-based
-    audiences (`userLists`) aren't expanded at send time and are left to the
-    WS-pump reconciler (TODO in server._close_mass_run).
+    Only EXPLICIT recipients (`userIds`) are knowable here, and a list audience
+    (`userLists`) is deliberately NOT expanded into rows: 833 recipients × 7
+    blasts a day is a quarter of a million synthetic rows a month for a thread
+    the fan may never open. What a list audience gets instead is the SAME row,
+    materialized at READ time — `mass_runs` now carries the body, the send stamp
+    and the recorded recipient set, and `ai_chatter._gather` builds exactly this
+    tuple in memory for each recipient thread that lacks the copy
+    (plans/blast-splice A.3). Change the shape here and change it there.
+    The durable row still arrives from OF, via the scrape.
 
     Best-effort: never raises (the OF send already succeeded). Idempotent via
     `on_conflict_do_nothing` on the composite PK.
@@ -632,12 +652,46 @@ async def write_mass_optimistic_rows(
     return len(rows)
 
 
+async def stamp_mass_recipients(mass_run_id: int | None, ids) -> int | None:
+    """Record WHO OF sent a broadcast to on its `mass_runs` row. Returns how many
+    ids were written, or None when nothing was.
+
+    `ids` is whatever `audiences.resolve_recipients_blocking` returned:
+    `None` (the audience could not be known) leaves `recipients_json` NULL, which
+    is the one value the read side treats as "never splice this run". An empty
+    LIST is different and is written as `[]` — "we know, and it reached nobody".
+
+    Best-effort like every other writer in this module: the OF send already
+    happened, so a failure here costs the splice and nothing else."""
+    if mass_run_id is None or ids is None:
+        return None
+    try:
+        clean = sorted({int(x) for x in ids if x is not None})
+    except (TypeError, ValueError):
+        log.warning("stamp_mass_recipients: unusable id list for run=%s", mass_run_id)
+        return None
+    try:
+        from db.models import MassRun  # local import: avoids a models import cycle
+        async with get_session() as s:
+            mr = await s.get(MassRun, int(mass_run_id))
+            if mr is None:
+                return None
+            mr.recipients_json = json.dumps(clean)
+        return len(clean)
+    except Exception:
+        log.warning("stamp_mass_recipients failed (run=%s)", mass_run_id, exc_info=True)
+        return None
+
+
 async def record_broadcast_mass_run(
     *,
     account_id: str,
     queue_id: int | None,
     automation_kind: str,
     recipient_count: int = 0,
+    body: str | None = None,
+    sent_at: datetime | None = None,
+    recipients: Iterable[int] | None = None,
 ) -> int | None:
     """Insert a `mass_runs` row that exists purely to ATTRIBUTE a broadcast to
     its automation in the Mass Messages tab.
@@ -651,6 +705,14 @@ async def record_broadcast_mass_run(
     Stamped with the Automation sentinel employee + status='ok' (the OF send
     already succeeded by the time we're called). Best-effort: never raises;
     returns the new run id, or None if the write failed / no queue_id.
+
+    `body` / `sent_at` / `recipients` are the splice record (plans/blast-splice
+    A.2) — the same three facts `send_mass_message` stamps at its close. They are
+    kwargs and not required because the two callers know different amounts:
+    `mass_nudge` sends to an EXPLICIT id list and passes it verbatim (no roster
+    crawl needed), while `online_blast`'s audience is "whoever OF thinks is online
+    right now", which is a moment rather than a roster — it passes
+    `recipients=None` and its runs are never spliced.
     """
     if queue_id is None:
         return None
@@ -671,6 +733,15 @@ async def record_broadcast_mass_run(
                 recipient_count=int(recipient_count),
                 status="ok",
                 completed_at=datetime.utcnow(),
+                body=body,
+                sent_at=sent_at,
+                # NULL when the caller passed None — "we do not know who got it",
+                # which is exactly what keeps the run out of the splice.
+                recipients_json=(
+                    None if recipients is None
+                    else json.dumps(sorted({int(x) for x in recipients
+                                            if x is not None}))
+                ),
             )
             s.add(mr)
             await s.flush()

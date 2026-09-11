@@ -33,6 +33,7 @@ import asyncio
 import json
 import os
 import random
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -191,6 +192,25 @@ _DEDUP_WINDOW_S = 5
 # But a cooldown further out than this (the 30-min welcome/followup rest) is too
 # long to park a chat reply on — let the periodic sweep catch that rare case.
 _MAX_DEFER_S = 300
+
+# ── The inbound-after-a-blast scrape (plans/blast-splice Part C) ───────
+# A list-audience blast writes NO per-fan row, so the man who answers it has our
+# own line missing from his thread — ours AND his newest history, because on
+# these accounts no `scrape_chats` cadence rule runs and the inbox poll only ever
+# writes each chat's `lastMessage`. One bounded one-fan scrape on the first
+# inbound after a blast lands the real copy (with its media and OF's `queueId`)
+# inside the 4h window we ourselves leave open before the mass unsend erases it.
+# ~34 calls/day fleet-wide, measured against 238 blind inbounds a week.
+_BLAST_SCRAPE_WINDOW = timedelta(minutes=60)
+_BLAST_SCRAPE_DEDUP_S = 600
+# The dedup is an IN-PROCESS CLAIM, not a pending-job scan, and the difference is
+# the whole point: `_has_imminent_pending_job` sees `status='pending'` only, so a
+# job that is RUNNING or already FINISHED stops nothing and a chatty fan would buy
+# a scrape per message. Checked and set with NO await in between, so two inbound
+# handlers on one loop serialise on it. A restart costs at most one extra scrape
+# per fan, which is the cheap direction.
+_blast_scrape_claims: dict[tuple[str, int], float] = {}
+_BLAST_SCRAPE_CLAIM_MAX = 4096
 
 
 def _global_kill_switch() -> bool:
@@ -478,6 +498,70 @@ async def _has_imminent_pending_job(
     return await _imminent_pending_job(account_id, kind, fan_id, within_s) is not None
 
 
+async def _blasted_recently(account_id: str) -> bool:
+    """Did this account broadcast in the last `_BLAST_SCRAPE_WINDOW`?
+
+    Two sources, and each covers the other's blind spot: `mass_runs.sent_at` (our
+    own sends — durable, survives a restart, indexed by
+    `ix_mass_runs_account_sent`) and the transcoder's in-process `chat_queue_finish`
+    ring (a blast the creator composed in the OF APP, which leaves us no row at
+    all). The ring is checked first because it costs nothing."""
+    from event_transcoder import blasted_within
+    if blasted_within(account_id, seconds=_BLAST_SCRAPE_WINDOW.total_seconds()):
+        return True
+    async with get_session() as s:
+        hit = (await s.execute(
+            select(MassRun.id).where(
+                MassRun.account_id == str(account_id),
+                MassRun.sent_at.is_not(None),
+                MassRun.sent_at >= datetime.utcnow() - _BLAST_SCRAPE_WINDOW,
+            ).limit(1)
+        )).first()
+    return hit is not None
+
+
+async def _scrape_after_blast(account_id: str, fan_id: int) -> None:
+    """First inbound from a fan after a blast → one bounded `scrape_chats` job for
+    HIM, now. Never raises: this is an inbox repair, and the chat dispatch it sits
+    in front of must not care whether it worked.
+
+    Deliberately ABOVE `_load_config` / `_classify_kind` in the caller: the inbox
+    benefits whether or not any automation would reply to this man — a terminal
+    -stage fan a human owns needs his history MORE, not less. Same reasoning as the
+    customs mark in `on_inbound_tip`.
+
+    What the scrape brings back is the newest rows since his last scrape — his
+    inbound, our replies, and the blast copy with its real id, media and
+    `raw_json.queueId`. The promise is THE COPY, not "the gap closes": a fan with
+    more than 100 rows since a days-old cursor keeps his middle gap, because
+    `_fetch_recent_end` stops at 100 and the cursor then jumps to the newest id.
+    The blast, sent under an hour ago, is always inside that newest 100."""
+    try:
+        if not await _blasted_recently(account_id):
+            return
+        # ⚠️ NO AWAIT BETWEEN THE CHECK AND THE SET. That is what makes two
+        # concurrent inbound handlers produce one job instead of two.
+        key = (str(account_id), int(fan_id))
+        now_mono = time.monotonic()
+        claimed = _blast_scrape_claims.get(key)
+        if claimed is not None and now_mono - claimed < _BLAST_SCRAPE_DEDUP_S:
+            return
+        _blast_scrape_claims[key] = now_mono
+        if len(_blast_scrape_claims) > _BLAST_SCRAPE_CLAIM_MAX:
+            stale = now_mono - _BLAST_SCRAPE_DEDUP_S
+            for k in [k for k, at in _blast_scrape_claims.items() if at < stale]:
+                _blast_scrape_claims.pop(k, None)
+        await ax.enqueue_job(
+            account_id, "scrape_chats",
+            payload={"fan_ids": [int(fan_id)], "source": "blast_reply"},
+            run_at=datetime.utcnow())
+        ax.wake_supervisor()
+        log.info("blast_reply_scrape account=%s fan=%s", account_id, fan_id)
+    except Exception:
+        log.warning("blast_reply_scrape_failed account=%s fan=%s",
+                    account_id, fan_id, exc_info=True)
+
+
 async def on_inbound_message(account_id: str, fan_id: int, message_id: int, *,
                              extra_payload: dict | None = None,
                              not_before: datetime | None = None) -> None:
@@ -501,6 +585,10 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int, *,
     try:
         if _global_kill_switch():
             return
+        # ── The blast this man may be answering (plans/blast-splice C.1) ──
+        # FIRST, and above every return below: the copy belongs in the inbox
+        # whether or not an automation would reply to him. Own try/except inside.
+        await _scrape_after_blast(account_id, fan_id)
         cfg = await _load_config(account_id)
         if cfg is None:
             return

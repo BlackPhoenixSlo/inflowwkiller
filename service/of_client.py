@@ -917,6 +917,29 @@ class OFClient:
             params["filter[tips]"] = int(min_tips)
         return self.get_json(f"{API_BASE}/subscriptions/subscribers", params=params)
 
+    def following(self, *, type: str = "active", limit: int = 10, offset: int = 0,
+                  format: str | None = "infinite") -> dict:
+        """GET /api2/v2/subscriptions/subscribes — the accounts I subscribe TO.
+
+        The other half of a `userLists: ["fans","following"]` broadcast: `fans` is
+        `subscribers` above (my active subs), `following` is this (the creators I
+        follow). `audiences.resolve_recipients_blocking` pages both to record who
+        OF evaluated for a blast, so the engine can splice the blast into a
+        replier's history without guessing at the audience.
+
+        A 200 is captured in `library/of_api_reference/
+        GET_api2_v2_subscriptions_subscribes.md` with the `{list: [...]}` envelope;
+        the PARAMS are only known from OF's web client (type/limit/offset +
+        `format=infinite` for the `hasMore` flag `_page_all_checked` trusts), which
+        is why this is shaped like `subscribers` rather than measured. Callers must
+        tolerate a bare list as well as the envelope — `_page_all_checked` does —
+        and a crawl that comes back wrong fails CLOSED at the caller (no recipient
+        record → no splice), never into the send path."""
+        params: dict[str, Any] = {"type": type, "limit": limit, "offset": offset}
+        if format:
+            params["format"] = format
+        return self.get_json(f"{API_BASE}/subscriptions/subscribes", params=params)
+
     def iter_online_subscribers(self, *, type: str = "active", page_size: int = 20,
                                 max_fans: int = 1000) -> list[dict]:
         """Convenience: page through ALL currently-online subscribers and return

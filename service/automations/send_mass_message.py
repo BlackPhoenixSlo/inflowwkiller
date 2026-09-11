@@ -61,6 +61,7 @@ from sqlalchemy import select
 
 from attribution import (
     reconcile_mass_placeholder,
+    stamp_mass_recipients,
     write_mass_optimistic_rows,
     write_outbound_attribution,
 )
@@ -312,6 +313,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             return {"status": "skipped", "reason": "audience_empty",
                     **audience_stats}
 
+    # Did the AUTOFENCE list get attached to this send? Recorded on the run's
+    # audience_filter for forensics — nothing reads it at gather time (the
+    # recipient set is recorded outright, see step 6) but "was this blast fenced"
+    # is the first question asked of any audience surprise, and the fence list id
+    # alone does not answer it.
+    fence_attached = False
     async with broadcast_lock(account_id):
         if audience_pol.mode != "off" and is_list_audience:
             try:
@@ -327,6 +334,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             for _lid in fence_ids:
                 if _lid not in excluded_user_lists:
                     excluded_user_lists = [*excluded_user_lists, _lid]
+                    fence_attached = True
         if excl_set and is_list_audience:
             try:
                 auto_lid = await ensure_exclude_list(
@@ -348,6 +356,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "excluded_users": sorted(excl_set),
             "list_ids": list_ids,
             "ref": str(attr_ref) if attr_ref else None,
+            # The audience we actually SEND is wider than the four keys above:
+            # OF has no per-user exclusion field for a list audience, so every
+            # `excluded_users` id rides in an OF list instead. Recorded for
+            # forensics only — the recipient set is read from OF's rosters and
+            # stamped on `recipients_json` at close (plans/blast-splice A.2).
+            "excluded_user_lists": list(excluded_user_lists),
+            "fence": fence_attached,
         })
         async with get_session() as s:
             mr = MassRun(
@@ -451,6 +466,37 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             mr.completed_at = datetime.utcnow()
             if queue_id is not None:
                 mr.queue_id = int(queue_id)
+            # THE SPLICE RECORD (plans/blast-splice A.1). The text and OF's own
+            # send stamp, on the run, the second OF returns — an hour before the
+            # median per-fan copy exists anywhere we can read it.
+            mr.body = text
+            mr.sent_at = created_at
+
+    # ── 6) …and WHO OF sent it to, read off OF's rosters (A.2) ───────────
+    # This is the one thing `audience_filter` cannot tell us: 4 of 27 chat fans on
+    # the incident account are consistent non-recipients (expired subs) with no
+    # local tell, so an inferred audience would splice 15% of repliers a blast
+    # they never got. Same crawl `audience_sync` runs hourly (≤17 pages on the
+    # largest account), off-thread, and it FAILS CLOSED — None leaves
+    # `recipients_json` NULL and the run is simply never spliced. Its own
+    # try/except on top of that: the broadcast has already gone out and nothing
+    # about recording it may fail the run.
+    try:
+        from audiences import resolve_recipients_blocking
+        recorded = await asyncio.to_thread(
+            resolve_recipients_blocking, client,
+            user_lists=list(user_lists),
+            included_users=recipients,
+            excluded_users=sorted(excl_set),
+            excluded_user_lists=list(excluded_user_lists),
+            filters=filters,
+            online_only=online_only,
+        )
+        await stamp_mass_recipients(mass_run_id, recorded)
+    except Exception:
+        log.warning("send_mass_message: recipient record failed account=%s run=%s "
+                    "— the blast is sent, it just will not be spliced",
+                    account_id, mass_run_id, exc_info=True)
 
     # NOTE: a pure list/online broadcast leaves NO per-fan rows here (OF echoes
     # no ids), so its silent (non-replying) recipients aren't individually
@@ -461,6 +507,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # derived (not an OF-list mirror) so it can't resolve a list audience to
     # stamp; online_blast, which has a real online snapshot, stamps NudgeState
     # itself. Off-platform exact recipients arrive via the scrape reconciler.
+    # What the RECIPIENT SET is, though, is now recorded on the run above — read
+    # from OF, not inferred — so ai_chatter can materialize the row this send
+    # could not write (plans/blast-splice A.3).
     log.info(
         "send_mass_message account=%s run=%s mass_run=%s recipients=%d echoed=%d optimistic=%d",
         account_id, run_id, mass_run_id, len(recipients), len(echoed_fans), optimistic,

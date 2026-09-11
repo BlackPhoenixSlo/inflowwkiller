@@ -221,6 +221,49 @@ describe("mergeOlderPage", () => {
       .toEqual(["1", "50", "100", "5000000000000042", "-1"]);
   });
 
+  // plans/blast-splice B.3 — an unsent mass message is immortal below the head
+  // page without this: the local seed paints it, a 4h-old blast is far older than
+  // the 30-row head page, so the one merge that could retire it never sees it.
+  it("drops a cached real row the page covers but does not contain", () => {
+    const prev = [msg(10), msg(20), msg(30)];
+    // The fetched page spans [10, 30] and does NOT contain 20 → gone on OF.
+    expect(ids(mergeOlderPage(prev, [msg(10), msg(30)])))
+      .toEqual(["10", "30"]);
+  });
+
+  it("keeps cached rows OUTSIDE the fetched id range, drops only the one inside", () => {
+    // 5 is below the page's floor and 99 above its ceiling — neither absence is
+    // evidence of anything, and dropping them would delete a gap the cursor has
+    // not walked yet. 20 sits inside [10, 30] and the page does not have it.
+    const prev = [msg(5), msg(20), msg(99)];
+    expect(ids(mergeOlderPage(prev, [msg(10), msg(30)])))
+      .toEqual(["5", "10", "30", "99"]);
+  });
+
+  it("leaves placeholders, tips and optimistic rows alone inside the range", () => {
+    // None of these can ever come back from an OF page, so their absence from
+    // one says nothing. A tip's 6e15 id sorts by created_at, hence the stamp.
+    const prev = [
+      msg(10),
+      msg(5_000_000_000_000_042),
+      msg(6_000_000_000_000_042, { isTip: true, createdAt: "2026-06-04T12:00:01.000Z" }),
+      msg(-1, { _tempId: -1, _pending: true }),
+      msg(30),
+    ];
+    expect(ids(mergeOlderPage(prev, [msg(10), msg(30)])))
+      .toEqual(["10", "30", "6000000000000042", "5000000000000042", "-1"]);
+  });
+
+  it("a synthetic row IN THE PAGE cannot stretch the range over the thread", () => {
+    // THE PINNED OUTLIER, written down because the rule rests on it: if a 5e15
+    // placeholder counted toward `max`, every cached real row above the page
+    // would look deleted and the whole thread above it would vanish.
+    const prev = [msg(10), msg(20), msg(4_000_000_000_000)];
+    const page = [msg(10), msg(5_000_000_000_000_042)];
+    expect(ids(mergeOlderPage(prev, page)))
+      .toEqual(["10", "20", "4000000000000", "5000000000000042"]);
+  });
+
   it("a tip row slots by created_at among the loaded history, not the tail", () => {
     // A tip dated between msg(1) and msg(100) belongs in the middle — its 6e15
     // id must not exile it to the bottom (the bug that hid sales on scroll).
