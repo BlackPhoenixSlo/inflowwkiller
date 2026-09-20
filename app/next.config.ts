@@ -112,6 +112,19 @@ const nextConfig: NextConfig = {
       { source: "/infloww/:path*", destination: `${RELAY_URL}/infloww/:path*` },
       // Drift detection.
       { source: "/admin/rev/:path*", destination: `${RELAY_URL}/admin/rev/:path*` },
+      // The Concurrency panel, served by the relay and UNAUTHENTICATED there
+      // (`service/lane_config_api.py`, on `server.py`'s no-auth allowlist).
+      // Until 2026-09-20 this rewrite was deliberately absent so the panel
+      // was reachable only on the relay's loopback port; the operator then
+      // decided it must open for anyone who pastes https://<host>/lanes-panel
+      // with no login, no token and no secret key, and reaffirmed that after
+      // being told one of its routes restarts the relay. What still bounds
+      // it: the restart budget (two per hour, on disk), the JSON-body CSRF
+      // guard, and the fact that every ceiling applies at restart only.
+      // Do not add a rewrite for any other relay page without checking what
+      // gates it on the relay side.
+      { source: "/lanes-panel",        destination: `${RELAY_URL}/lanes-panel` },
+      { source: "/lanes-panel/:path*", destination: `${RELAY_URL}/lanes-panel/:path*` },
       // Public tracking-link redirect (Growth → Tracking Links). A fan hits
       // /t/<slug>; the relay records the click and 302s to the target. Must be
       // a top-level rewrite — it's outside the /admin/* prefix.

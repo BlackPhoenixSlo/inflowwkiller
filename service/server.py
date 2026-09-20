@@ -292,12 +292,14 @@ app.include_router(_promotions_router)
 # refused without a JSON body so a cross-origin page cannot fire it
 # preflight-free. See `lane_config_api.restart_relay`.
 #
-# ⚠️ ALL THREE NOW LIVE UNDER `/lanes-panel`, WHICH IS PART OF THE GUARD, NOT
-# COSMETIC. `app/next.config.ts` rewrites `/admin/:path*` to this relay
-# wholesale and traefik puts that app on the public host, so an `/admin/` path
-# on this list is reachable from the open internet with no cookie. `/lanes-panel`
-# is in no rewrite. Moving these back under `/admin/` would re-publish a kill
-# switch — see the block comment in `lane_config_api`.
+# ⚠️ ALL THREE LIVE UNDER `/lanes-panel`, and since 2026-09-20 that prefix IS
+# rewritten to this relay by `app/next.config.ts`, so these three paths are
+# reachable from the open internet with no cookie — by the operator's explicit,
+# repeated decision ("anyone that pastes https://fastt.lol/lanes-panel gets the
+# panel, no login, no token, no key"). The bounds that remain are on the
+# handlers, not the gates: the on-disk restart budget, the JSON-body CSRF
+# guard, restart-only application. Adding any OTHER path to this set is a
+# separate decision; see the block comment in `lane_config_api`.
 _UNAUTHENTICATED_PATHS = frozenset({
     lane_config_api.PATH,
     lane_config_api.PAGE_PATH,

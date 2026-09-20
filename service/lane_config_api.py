@@ -66,11 +66,15 @@ PAGE_PATH = "/lanes-panel"
 # with no cookie — which for a route that ENDS THE PROCESS is a remote kill
 # switch, published with an achievable cadence rather than protected by one.
 #
-# `/lanes-panel` is in no rewrite, so the page has only ever been reachable on
-# the relay port. Filing the API under the page's own path gives it exactly the
-# reachability of the page whose "no password" ruling it inherits — which is the
-# ruling the operator actually made. It also drops both routes out of
-# `server.py`'s `startswith("/admin/")` pre-filter entirely.
+# `/lanes-panel` was in no rewrite, so the page was reachable only on the relay
+# port. On 2026-09-20 the operator asked for the opposite and reaffirmed it
+# three times: `app/next.config.ts` now rewrites `/lanes-panel` and
+# `/lanes-panel/*` to the relay, so anyone who pastes the public URL gets the
+# panel with no login, no token and no key. The prefix therefore no longer
+# limits reach; what it still does is keep these routes out of `server.py`'s
+# `startswith("/admin/")` tenant pre-filter (they name no account). What bounds
+# the exposure is on the handlers: the restart budget, the JSON-body CSRF
+# guard, and restart-only application of every ceiling.
 #
 # Do not move these back under `/admin/` to "match the other admin routes".
 PATH = "/lanes-panel/config"
@@ -89,10 +93,10 @@ RESTART_PATH = "/lanes-panel/restart"
 # `tsc` stays green. Review found it; this is the repair.
 #
 # 🚨 THIS ONE IS **NOT** ON `server.py`'s no-auth allowlist, and must never be
-# added to it. It is publicly reachable via the rewrite, so it is gated like
-# every other `/admin/` route — which is correct for the consumer it serves, a
-# card that only renders for someone already signed in. The ungated door is
-# `PATH`, which no rewrite covers.
+# added to it. It is gated like every other `/admin/` route — which is correct
+# for the consumer it serves, a card that only renders for someone already
+# signed in. The ungated door is `PATH`, which since 2026-09-20 is ALSO
+# public through its own rewrite, by the operator's decision (above).
 #
 # There is deliberately NO `/admin/` twin of `RESTART_PATH`. A resource that
 # ends the process gets one door, and it is the one the open internet cannot
