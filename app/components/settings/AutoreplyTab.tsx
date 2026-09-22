@@ -280,7 +280,7 @@ function NumField({
         />
         {suffix && <span className="text-xs text-fg-dim">{suffix}</span>}
       </div>
-      {hint && <div className="text-[11px] text-fg-dim/70">{hint}</div>}
+      {hint && <div className="text-[11px] text-fg-dim/70 max-w-56">{hint}</div>}
     </label>
   );
 }
@@ -380,6 +380,10 @@ export default function AutoreplyTab({ accountId }: { accountId: string | null }
             <NumField label="Step in after (min)" hint="give the team this long first"
               value={form.silence_min_minutes ?? 24} min={1} max={1440}
               onChange={(n) => set({ silence_min_minutes: n })} suffix="min" />
+            <NumField label="…to (min)"
+              hint="each fan draws his own wait in this range; same as the first (or 0) = no spread; needs the rule ticking every minute"
+              value={form.step_in_max_minutes ?? 0} min={0} max={10080}
+              onChange={(n) => set({ step_in_max_minutes: n })} suffix="min" />
             <NumField label="…but not after (min)" hint="past this it's too stale"
               value={form.silence_max_minutes ?? 1115} min={2} max={10080}
               onChange={(n) => set({ silence_max_minutes: n })} suffix="min" />

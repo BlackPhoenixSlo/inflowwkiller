@@ -33,6 +33,7 @@ router = APIRouter()
 _INT_KNOBS = {
     "silence_min_minutes": (1, 1440),
     "silence_max_minutes": (2, 10080),
+    "step_in_max_minutes": (0, 10080),   # top of the step-in range; 0 = off
     "max_nudges": (0, 10),
     "min_gap_minutes": (1, 1440),
     "max_lifetime_spend_cents": (0, 10_000_000),
@@ -71,6 +72,11 @@ def _validate(cfg: dict) -> dict:
             and out.get("silence_min_minutes") is not None
             and out["silence_max_minutes"] <= out["silence_min_minutes"]):
         raise HTTPException(422, "silence_max_minutes must be > silence_min_minutes")
+    # The step-in range reads "from silence_min to step_in_max": an inverted
+    # range is rejected; 0 is the off value and equal means no spread.
+    if (out.get("step_in_max_minutes") and out.get("silence_min_minutes") is not None
+            and out["step_in_max_minutes"] < out["silence_min_minutes"]):
+        raise HTTPException(422, "step_in_max_minutes must be >= silence_min_minutes")
     return out
 
 

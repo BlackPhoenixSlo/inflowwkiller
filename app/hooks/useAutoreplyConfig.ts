@@ -20,6 +20,9 @@ const BG_CTX: RelayContext = { priority: "background" };
 export interface AutoreplyConfig {
   enabled?: boolean;
   silence_min_minutes?: number;
+  /** Top of the step-in range. Each waiting fan draws his own threshold in
+   *  [silence_min, step_in_max]; 0 / absent / == silence_min = no spread. */
+  step_in_max_minutes?: number;
   silence_max_minutes?: number;
   max_nudges?: number;
   min_gap_minutes?: number;

@@ -16,7 +16,10 @@ How it stays out of the other senders' way (timing, not trigger):
 Eligibility (ALL must hold; every knob is per-account in autoreply_config_json):
   1. enabled + not in quiet hours
   2. the FAN spoke last (an unanswered inbound) and the wait (now − his last
-     inbound) is in [silence_min, silence_max] — the team didn't reply in time
+     inbound) is in [silence_min, silence_max] — the team didn't reply in time.
+     With an optional step-in RANGE (step_in_max_minutes > silence_min) the
+     floor is instead drawn per (fan, message) in [silence_min, step_in_max],
+     deterministically, so the reply lag stops looking like a fixed timer.
   3. info-complete (≥75% bio bar — a fan we actually know)
   4. lifetime spend < max_lifetime_spend_cents  AND  spend in the last
      recent_spend_days < max_recent_spend_cents   (low spenders only)
@@ -100,6 +103,7 @@ def _defaults() -> dict:
         "enabled": False,
         "silence_min_minutes": 24,   # give the team this long before stepping in
         "silence_max_minutes": 1115,  # ~18.5h — past this the thread is too stale
+        "step_in_max_minutes": 0,    # top of the step-in range; 0 = step in at exactly silence_min
         "max_nudges": 1,
         "min_gap_minutes": 5,        # ≥ this between replies to the same fan
         "max_lifetime_spend_cents": 2_000_000,  # < $20,000 lifetime (whales are the
@@ -118,6 +122,23 @@ def _defaults() -> dict:
     # NOTE: the vault-sell permission is deliberately NOT here. It lives in
     # `ai_chatter_config_json` as `autoreply_sell_on_ask`, next to the shelf flags,
     # the offer caps and the qualification gate it depends on — see `run()`.
+
+
+def _step_in_minutes(cfg: dict, fan_id: int, inbound_at: datetime) -> int:
+    """Minutes he must have been waiting before Auto Convo steps in. With a
+    step-in RANGE set (step_in_max > silence_min), a per-(fan, message) draw
+    in [silence_min, step_in_max] — capped one minute under silence_max so
+    the top of the band is still a reachable window — and DETERMINISTIC
+    (seeded by fan + his message's second), so every tick sees the same
+    number and it re-rolls only when he writes again. step_in_max absent /
+    0 / <= silence_min ⇒ exactly silence_min, no rng drawn."""
+    lo = int(cfg["silence_min_minutes"])
+    hi = min(int(cfg.get("step_in_max_minutes") or 0),
+             int(cfg["silence_max_minutes"]) - 1)
+    if hi <= lo:
+        return lo
+    key = inbound_at.replace(microsecond=0).isoformat()
+    return random.Random(f"autoreply:{int(fan_id)}:{key}").randint(lo, hi)
 
 
 async def _load_config(account_id: str) -> dict | None:
@@ -322,7 +343,6 @@ async def _candidates(account_id: str, cfg: dict, now: datetime) -> list[tuple[F
     welcome_chatter_for_info/ai_chatter answer their fans within seconds, so by silence_min those
     aren't waiting; Auto Convo only catches fans no one covered in time. Also gated
     on info-complete + low spend + established + not blacklisted/human-handled."""
-    sil_min = int(cfg["silence_min_minutes"])
     sil_max = int(cfg["silence_max_minutes"])
     horizon = now - timedelta(minutes=sil_max)   # ignore chats quiet longer than max
     first_chat_cut = now - timedelta(days=int(cfg["min_days_since_first_chat"]))
@@ -344,13 +364,14 @@ async def _candidates(account_id: str, cfg: dict, now: datetime) -> list[tuple[F
         if fid not in last:
             last[fid] = (direction, ts)
     # Fans where the FAN spoke last (an unanswered inbound) and the wait is in
-    # [min, max] — i.e. the team hasn't replied fast enough.
+    # [step-in, max] — i.e. the team hasn't replied fast enough. The step-in
+    # floor is `silence_min`, or this fan's own draw when a range is set.
     waiting: dict[int, datetime] = {}
     for fid, (direction, ts) in last.items():
         if direction != "in" or ts is None or fid in bl:
             continue
         wait_min = (now - ts).total_seconds() / 60.0
-        if sil_min <= wait_min <= sil_max:
+        if _step_in_minutes(cfg, fid, ts) <= wait_min <= sil_max:
             waiting[fid] = ts
     if not waiting:
         return []
@@ -516,6 +537,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         account_id, [int(f.fan_id) for (f, _) in cands], kind="autoreply",
         stats=audience_stats))
     cands = [(f, t) for (f, t) in cands if int(f.fan_id) in _kept][:limit]
+    # Nobody waiting → done. Same shape as the disabled / quiet-hours returns,
+    # and what makes a 60 s cadence cheap: an empty tick is one messages query
+    # plus the audience filter, not ~20 loads and `sell_lane.for_run`.
+    if not cands:
+        return {"enabled": True, "candidates": 0, "sent": 0, **audience_stats}
 
     # autoreply gates on automation_paused_until, not skip_list — so load the
     # HARD skips (muted_creator / manual "restrict this fan") explicitly and skip
