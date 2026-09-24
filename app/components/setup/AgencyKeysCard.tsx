@@ -40,25 +40,65 @@ export default function AgencyKeysCard() {
         </p>
       </div>
 
-      {shared.length > 0 && (
+      {shared.some((a) => a.contested.length > 0) && (
         <div className="rounded-md border border-err/40 bg-err/5 p-3 space-y-1">
           <p className="text-sm font-medium text-err">
-            AI is stopped on {shared.length}{" "}
-            {shared.length === 1 ? "model" : "models"} — two owners
+            AI is stopped on{" "}
+            {shared.filter((a) => a.contested.length > 0).length === 1
+              ? "a provider of 1 model"
+              : `a provider of ${shared.filter((a) => a.contested.length > 0).length} models`}{" "}
+            — two owners, two keys
           </p>
           <p className="text-[11px] text-fg-dim">
-            Two accounts are linked to each of these, so nothing says whose key
-            pays and the relay refuses rather than bill the wrong one. Remove one
-            owner in Admin → Manage (revoke), or have one of them transfer it to
-            the other. Adding a <em>third</em> owner won&apos;t help.
+            Two accounts are linked to each of these and BOTH have a key for the
+            provider, so nothing says whose key pays and the relay refuses rather
+            than bill the wrong one. Clear the key on the owner who should not
+            pay, remove one owner in Admin → Manage (revoke), or have one of them
+            transfer it to the other.
           </p>
           <ul className="text-[11px] text-fg-dim">
-            {shared.map((a) => (
-              <li key={a.account_id}>
-                <span className="font-medium">{a.nickname}</span> — shared by{" "}
-                {a.owners.join(", ")}
-              </li>
-            ))}
+            {shared
+              .filter((a) => a.contested.length > 0)
+              .map((a) => (
+                <li key={a.account_id}>
+                  <span className="font-medium">{a.nickname}</span> — shared by{" "}
+                  {a.owners.join(", ")}; both keyed for{" "}
+                  {a.contested.map((p) => LABELS[p] ?? p).join(", ")}
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
+
+      {shared.some((a) => a.contested.length === 0) && (
+        <div className="rounded-md border border-border bg-bg-elev-1 p-3 space-y-1">
+          <p className="text-sm font-medium">
+            {shared.filter((a) => a.contested.length === 0).length === 1
+              ? "1 model has"
+              : `${shared.filter((a) => a.contested.length === 0).length} models have`}{" "}
+            two owners — AI keeps running
+          </p>
+          <p className="text-[11px] text-fg-dim">
+            Each provider bills whichever owner has a key for it. A provider
+            neither owner has set is silent until one of you adds it.
+          </p>
+          <ul className="text-[11px] text-fg-dim">
+            {shared
+              .filter((a) => a.contested.length === 0)
+              .map((a) => (
+                <li key={a.account_id}>
+                  <span className="font-medium">{a.nickname}</span> — shared by{" "}
+                  {a.owners.join(", ")}
+                  {Object.keys(a.pays).length > 0 && (
+                    <>
+                      ; bills{" "}
+                      {Object.entries(a.pays)
+                        .map(([p, who]) => `${LABELS[p] ?? p} → ${who}`)
+                        .join(", ")}
+                    </>
+                  )}
+                </li>
+              ))}
           </ul>
         </div>
       )}

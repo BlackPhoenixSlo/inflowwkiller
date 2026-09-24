@@ -27,13 +27,17 @@ export interface TenantKeyStatus {
 
 export type TenantKeysStatus = Record<string, TenantKeyStatus>;
 
-/** An account two owners are linked to. Nothing says whose key pays, so the
- *  relay refuses rather than bill the wrong one — that account's AI is stopped
- *  until a link is removed. */
+/** An account two owners are linked to. Per provider, the ONE owner holding a
+ *  key pays (`pays`). A provider BOTH hold a key for is `contested`: the relay
+ *  refuses rather than guess whose money it is, and AI on that provider stays
+ *  stopped until a link is removed. A provider in neither list is one nobody
+ *  has set — either owner's key fixes it. */
 export interface SharedAccount {
   account_id: string;
   nickname: string;
   owners: string[];
+  pays: Record<string, string>;
+  contested: string[];
 }
 
 export interface TenantKeysResp {

@@ -263,7 +263,9 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
 
     One agency = one key set: the owner of `account_id` (a `users` row) supplies
     the key for every creator it runs, so two agencies can never spend on one
-    credential. The house key — the process-wide credential this deployment booted
+    credential. An account with several owners bills the ONLY one of them that
+    holds a key for the provider, and is refused when more than one does. The
+    house key — the process-wide credential this deployment booted
     with (`llm_providers.house_key`) — is reachable only when the account has NO owner at all (an
     orphan, or the NULL house-account rollup): there is no tenant to leak
     across, and refusing those would take the deployment's own maintenance
@@ -292,20 +294,33 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
     """
     owners = await tenant_keys.owners_of(account_id)
     if len(owners) > 1:
-        # Two AGENCIES claim this creator (a master's oversight link is already
-        # dropped by owners_of). REACHABLE BY DESIGN, not a corruption alarm:
-        # two owners each completing a session capture for the same account, or
-        # `auth.admin_grant_user_account` adding a link without removing one.
-        # Neither row order nor link age says whose credential pays, so refuse —
-        # billing the wrong agency silently is the one outcome this path exists
-        # to prevent. The Setup card names the account and its owners; the fix
-        # is for one of them to transfer it to the other (DEPLOY.md → Per-agency
-        # AI keys). TRANSFER itself is safe: it deletes the old link in the same
-        # transaction as the insert, so it never creates this state.
-        raise LLMConfigError(
-            f"account {account_id!r} has more than one owner — cannot tell "
-            f"which agency's {prov.name!r} key to bill"
-        )
+        # Two AGENCIES are linked to this creator (a master's oversight link is
+        # already dropped by owners_of). REACHABLE BY DESIGN, not a corruption
+        # alarm: two owners each completing a session capture for the same
+        # account, or `auth.admin_grant_user_account` adding a link without
+        # removing one. Bill the ONE of them holding a key for this provider —
+        # when only one can pay there is nothing to guess, and refusing that
+        # kept a live model silent for weeks over a duplicate owner with no key
+        # at all. Refuse only when MORE than one holds a key: neither row order
+        # nor link age says whose credential pays, and billing the wrong agency
+        # silently is the one outcome this path exists to prevent. The Setup
+        # card names the account, its owners and who pays per provider; the
+        # fix for a real dispute is a transfer to whichever should keep it
+        # (DEPLOY.md → Per-agency AI keys). TRANSFER itself is safe: it deletes
+        # the old link in the same transaction as the insert.
+        keyed = await tenant_keys.keyed_providers(owners)
+        payer = tenant_keys.payer_for(owners, keyed, prov.name)
+        if payer:
+            log.info("shared_account_billed provider=%s account=%s owner=%s "
+                     "of=%s", prov.name, account_id, payer, ",".join(owners))
+            owners = [payer]
+        elif any(prov.name in keyed.get(o, ()) for o in owners):
+            raise LLMConfigError(
+                f"account {account_id!r} has more than one owner with a "
+                f"{prov.name!r} key — cannot tell which agency to bill"
+            )
+        # else: nobody has one — fall through so the missing-key path names
+        # every owner, any of whom can add it.
     if not owners:
         key = house_key(prov.name)
         if not key:
@@ -315,7 +330,7 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
             )
         return key
     owner = owners[0]
-    key = await tenant_keys.get_key(owner, prov.name)
+    key = await tenant_keys.get_key(owner, prov.name) if len(owners) == 1 else ""
     if not key:
         # The deployment's own credential for this purpose, if policy grants one
         # — "" for every purpose that does not, which is all of them but the
@@ -333,9 +348,11 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
         # calls has a key. This names the missing pair instead of leaving one
         # purpose mysteriously dead on one account.
         log.warning("tenant_key_missing provider=%s account=%s owner=%s",
-                    prov.name, account_id, owner)
+                    prov.name, account_id, ",".join(owners))
+        who = (f"agency {owner!r} has" if len(owners) == 1
+               else f"none of the owners {owners} has")
         raise LLMConfigError(
-            f"agency {owner!r} has no {prov.name!r} API key — add it in "
+            f"{who} no {prov.name!r} API key — add it in "
             f"Setup → Your AI keys (account {account_id!r})"
         )
     return key

@@ -157,8 +157,10 @@ to keep the stored key.
 **It fails closed.** With no key for the provider a model belongs to, the call is
 refused with "add it in Setup → Your AI keys" — there is no fallback house key.
 An agency holding only a DeepInfra key still has every chat reply fail. If two
-owners are linked to one model, AI stops on that model entirely and the card
-shows a red "AI is stopped on N models — two owners" panel.
+owners are linked to one model, the one holding a key for a provider pays for
+it; only when BOTH hold a key for the same provider does AI stop on that
+provider, and the card shows a red "AI is stopped … — two owners, two keys"
+panel naming the model and the provider.
 
 Setup is **desktop-only**: on a phone the key cards are hidden and the page says
 "Session capture, proxies and keys are desktop-only."

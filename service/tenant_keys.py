@@ -25,6 +25,15 @@ paid — an agency on its own key is still throttled by its accounts'
 Clearing a key empties its row rather than deleting it, so a cleared key and a
 never-set one read the same everywhere — both are "no key", both fail closed.
 
+An account with SEVERAL billable owners bills the ONE of them holding a key for
+the provider being called, when exactly one does. It used to be refused
+outright, and on this deployment that kept a live model silent for weeks over a
+duplicate link nobody had noticed: one owner had every key, the other had
+none, and the relay still would not pick. There is nothing to pick when only
+one owner CAN be billed — the invariant (never spend on the wrong agency's
+credential) is untouched. Two owners BOTH holding a key for the same provider is
+still refused: that is the case where a pick really would bill someone silently.
+
 NOTHING EVER COPIES THE HOUSE KEY INTO AN AGENCY ROW. An upgrade seeds nobody;
 each owner pastes their own key once (DEPLOY.md → "Per-agency AI keys"). A
 boot-time seeder that did it for them was written and deleted: every version of
@@ -62,7 +71,8 @@ def billable_owners(links: list[tuple[str, bool]]) -> list[str]:
     """THE rule for who could be billed for one account, from its
     `(identifier, is_master)` links. The list IS the answer and its length is
     the state: none (orphan — no tenant to leak across), one (bill them),
-    several (nobody can say whose money this is).
+    several (bill the one of them holding a key for the provider, if exactly
+    one does — see `llm_client._tenant_api_key`).
 
     One definition on purpose. It was written out three times — once on the
     money path, once for the "two owners" warning, once for the founder's
@@ -84,7 +94,7 @@ async def owners_of(account_id: str) -> list[str]:
     introduces no second notion of who owns an account. The LIST is the answer,
     and its length is the state the caller branches on: none (an orphan account
     — there is no tenant, so the house key is not a leak), exactly one (bill
-    them), or several (we cannot tell whose money this is).
+    them), or several (bill the only one of them with a key, else refuse).
 
     A MASTER (`users.is_admin`) is dropped whenever a non-master link exists.
     That is not a guess about intent, it is what this deployment's data says:
@@ -97,13 +107,16 @@ async def owners_of(account_id: str) -> list[str]:
     traffic, which is precisely the leak this module exists to stop. Refusing
     them instead would take live accounts dark for a conflict nobody has.
 
-    Two or more NON-master owners is the genuine conflict — two agencies both
-    claiming one creator — and it is REFUSED, not tie-broken. Neither row order
-    nor link age says whose credential should pay, and picking one bills the
-    wrong agency SILENTLY, which is the one outcome this module exists to
-    prevent. The caller errors, the Setup card names the account and its owners,
-    and the operator resolves it by transferring the account to whichever of
-    them should keep it.
+    Two or more NON-master owners — two agencies both linked to one creator —
+    is a conflict only when more than one of them holds a key for the provider
+    being called. Then it is REFUSED, not tie-broken: neither row order nor
+    link age says whose credential should pay, and picking one bills the wrong
+    agency SILENTLY, which is the one outcome this module exists to prevent.
+    When exactly ONE of them has a key there is nothing to pick and that owner
+    pays (`llm_client._tenant_api_key`); refusing that case took a live model
+    dark for weeks over a duplicate owner with no key at all. The Setup card
+    names the account, its owners and who pays per provider; a real conflict is
+    resolved by transferring the account to whichever of them should keep it.
 
     The shape this rule gets wrong: a founder granting a friend access to a
     model the FOUNDER runs would bill the friend. That does not occur here (the
@@ -122,51 +135,98 @@ async def owners_of(account_id: str) -> list[str]:
     return billable_owners(list(rows))
 
 
+def payer_for(owners: list[str], keyed: dict[str, set[str]],
+              provider: str) -> str | None:
+    """THE rule for which of several owners bills one provider: the ONLY one
+    holding a key for it. `None` when none does (nobody can pay — add a key)
+    and when more than one does (a genuine dispute — the relay refuses).
+
+    One definition, used by the money path and by both screens that predict
+    it, for the same reason `billable_owners` is one definition: a card that
+    explains a refusal must not be able to disagree about what gets refused.
+    """
+    holders = [o for o in owners if provider in keyed.get(o, ())]
+    return holders[0] if len(holders) == 1 else None
+
+
+async def keyed_providers(user_ids) -> dict[str, set[str]]:
+    """`{user_id: {provider, …}}` for the owners given — which providers each
+    has a NON-EMPTY key for. The money path asks this for one account's owners
+    on every shared-account call; the cards ask it for a whole roster."""
+    ids = [u for u in (user_ids or []) if u]
+    if not ids:
+        return {}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(UserLlmKey.user_id, UserLlmKey.provider)
+            .where(UserLlmKey.user_id.in_(ids),
+                   func.trim(UserLlmKey.api_key) != "")
+        )).all()
+    out: dict[str, set[str]] = {}
+    for uid, prov in rows:
+        out.setdefault(uid, set()).add(prov)
+    return out
+
+
 async def shared_accounts(account_ids) -> list[dict]:
-    """The accounts in `account_ids` whose LLM calls are blocked by a second
-    agency, with who the two are.
+    """The accounts in `account_ids` that more than one agency is linked to,
+    with who they are and, per provider, whose key pays.
 
-    Literally the same rule as `owners_of` — both call `billable_owners`, which
-    is the point: this card exists to explain a refusal the money path made, so
-    it must not be able to disagree about what gets refused. A master's
-    oversight link is dropped whenever an agency link exists and so is never
-    reported as a conflict, or the card cries wolf on every account the founder
-    can see. Two or more BILLABLE owners is the refusal — usually two agencies,
-    and also two masters with no agency between them, which the earlier
-    hand-written version of this rule silently passed.
+    Literally the same rule as `owners_of` and `payer_for` — this card exists
+    to explain what the money path will do, so it must not be able to disagree
+    with it. A master's oversight link is dropped whenever an agency link
+    exists and so is never reported as shared, or the card cries wolf on every
+    account the founder can see.
 
-    Both ways it happens are silent (a grant, or a second signed-in user
-    completing a session capture), so without this the operator's only signal is
-    a log line on a box they are not tailing. Surfaced in Setup → Your AI keys
-    next to the keys, because "my models stopped replying" is the symptom that
-    sends them there.
+    `pays` is `{provider: username}` for every provider EXACTLY ONE owner holds
+    a key for — what the relay bills. `contested` lists the providers MORE than
+    one owner has set: those calls are refused until a link is removed. A
+    provider in neither is one nobody has set, and a key from either owner
+    fixes it.
+
+    Both ways sharing happens are silent (a grant, or a second signed-in user
+    completing a session capture), so this is surfaced in Setup → Your AI keys
+    next to the keys: it is where someone looks when a silence surprises them.
     """
     ids = [a for a in (account_ids or []) if a]
     if not ids:
         return []
     async with get_session() as s:
         rows = (await s.execute(
-            select(UserAccount.account_id, User.username, User.is_admin,
-                   Account.nickname)
+            select(UserAccount.account_id, User.id, User.username,
+                   User.is_admin, Account.nickname)
             .join(User, User.id == UserAccount.user_id)
             .outerjoin(Account, Account.id == UserAccount.account_id)
             .where(UserAccount.account_id.in_(ids))
         )).all()
+    keyed = await keyed_providers({uid for _, uid, _, _, _ in rows})
+    name_of = {uid: username for _, uid, username, _, _ in rows}
+
     by_account: dict[str, dict] = {}
-    for account_id, username, is_admin, nickname in rows:
+    for account_id, uid, username, is_admin, nickname in rows:
         entry = by_account.setdefault(
             account_id,
             {"account_id": account_id, "nickname": nickname or account_id,
              "links": []},
         )
-        entry["links"].append((username, bool(is_admin)))
+        entry["links"].append((uid, bool(is_admin)))
+    out = []
     for e in by_account.values():
-        e["owners"] = billable_owners(e.pop("links"))
-    # More than one billable owner IS the refusal `llm_client` raises — same
-    # rule, same source, so this card can never disagree with the money path.
-    out = [e for e in by_account.values() if len(e["owners"]) > 1]
-    for e in out:
-        e["owners"].sort()
+        billable = billable_owners(e.pop("links"))
+        if len(billable) < 2:
+            continue
+        pays: dict[str, str] = {}
+        contested: list[str] = []
+        for prov in sorted(PROVIDERS):
+            payer = payer_for(billable, keyed, prov)
+            if payer:
+                pays[prov] = name_of[payer]
+            elif sum(prov in keyed.get(o, ()) for o in billable) > 1:
+                contested.append(prov)
+        e["owners"] = sorted(name_of[o] for o in billable)
+        e["pays"] = pays
+        e["contested"] = contested
+        out.append(e)
     out.sort(key=lambda e: e["nickname"].lower())
     return out
 
@@ -222,10 +282,13 @@ async def key_overview(registry: dict[str, bool],
     certificate, and that flag LAGS (a probe sets it, not the failure), so read
     a live count as "worth a key", never as health.
 
-    Counts are BILLED, not linked, through `billable_owners` — the same rule
-    the money path resolves with, because a screen that predicts what the relay
-    will do must not re-derive it. That leaves accounts two agencies both claim
-    billing nobody, which would vanish silently, so they come back as
+    Counts are BILLED, not linked, through `billable_owners` and `payer_for` —
+    the same rules the money path resolves with, because a screen that predicts
+    what the relay will do must not re-derive them. An account two agencies are
+    both linked to is counted ONCE, under the one of them that pays for a
+    required provider (or, when nobody has any key, under the first of them —
+    the row a missing-key badge should light up). One that two keyed owners
+    both claim bills nobody and would vanish silently, so it comes back as
     `blocked_accounts`: no key fixes those, the fix is a transfer or a revoke,
     and a keys screen is exactly where someone would otherwise paste one and
     wonder why nothing changed.
@@ -282,15 +345,33 @@ async def key_overview(registry: dict[str, bool],
         if (uid, bool(is_admin)) not in owners:
             owners.append((uid, bool(is_admin)))
 
+    keyed = {u: set(p) for u, p in providers.items()}
     for (uid, account_id), is_live in links.items():
         billable = billable_owners(owners_by_account.get(account_id, []))
-        if len(billable) > 1:
-            # Two agencies claim it, so it bills nobody. Reported, not counted,
-            # and only against the owners actually in the dispute.
-            if uid in billable and is_live:
-                out[uid]["blocked_accounts"] += 1
+        if not billable:
             continue
-        if not billable or billable[0] != uid:
+        payer = billable[0]
+        if len(billable) > 1:
+            # Shared. A required provider two keyed owners both hold is a
+            # dispute the relay refuses: reported against both, counted for
+            # neither. Otherwise the sole holder of the first required
+            # provider anyone has set pays (they may split providers between
+            # them; the headline count picks one row, `shared_accounts` shows
+            # the split), and with no key anywhere the first owner is who
+            # needs to add one.
+            contested = any(
+                sum(prov in keyed.get(o, ()) for o in billable) > 1
+                for prov in required_providers)
+            if contested:
+                if uid in billable and is_live:
+                    out[uid]["blocked_accounts"] += 1
+                continue
+            payer = next(
+                (payer_for(billable, keyed, prov)
+                 for prov in sorted(required_providers)
+                 if payer_for(billable, keyed, prov)),
+                billable[0])
+        if payer != uid:
             continue
         out[uid]["accounts"] += 1
         if is_live:

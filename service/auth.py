@@ -1061,8 +1061,9 @@ async def admin_transfer_user_account(body: TransferAccountBody = Body(...)) -> 
         # rather than caught after: the insert's IntegrityError used to trigger
         # a rollback that undid the DELETE TOO, so the whole transfer became a
         # no-op while still returning ok:true — a silent success that leaves the
-        # account with two owners, which now stops its AI entirely
-        # (tenant_keys.owners_of refuses rather than bill the wrong agency).
+        # account with two owners, which stops its AI on every provider both of
+        # them hold a key for (llm_client._tenant_api_key refuses rather than
+        # bill the wrong agency).
         dest_already_holds = (await s.execute(
             select(UserAccount.user_id).where(
                 UserAccount.user_id == body.to_user_id,

@@ -65,11 +65,13 @@ export function AgencyKeyBadges({ agency }: { agency: AgencyKeyFacts }) {
         )}
       </span>
       {agency.blocked_accounts > 0 && (
-        // No key fixes these — two agencies claim the model, so the relay
-        // refuses it outright. Said here because a keys screen is exactly where
-        // someone would otherwise paste a key and wonder why nothing changed.
+        // No key fixes these — two KEYED agencies claim the model, so the relay
+        // refuses rather than guess whose money it is. (A shared model where
+        // only one owner has a key bills that owner and is counted normally.)
+        // Said here because a keys screen is exactly where someone would
+        // otherwise paste a key and wonder why nothing changed.
         <Badge color="err">
-          {agency.blocked_accounts} blocked — two owners
+          {agency.blocked_accounts} blocked — two owners, two keys
         </Badge>
       )}
     </>
