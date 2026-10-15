@@ -9,9 +9,10 @@
 # Companion image: app/Dockerfile builds the Next.js /inbox UI.
 # Wired together in docker-compose.yml at the repo root.
 #
-# What is NOT included: anything that drives a real browser (Playwright,
-# capture scripts, dev `--reload` watcher). Auth state arrives via the
-# loginExtension paste-curl flow once the container is running.
+# Includes Playwright Chromium + Xvfb: the remote-browser login launches
+# Chromium headed (headless=False, fewer Cloudflare challenges), so CMD starts
+# an Xvfb virtual display (DISPLAY=:99) before uvicorn. NOT included: capture
+# scripts and the dev `--reload` watcher.
 
 FROM python:3.13-slim
 
@@ -35,6 +36,13 @@ WORKDIR /app
 # Install deps first so the layer caches across code edits.
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
+
+# Chromium for the remote-browser login (playwright comes in via
+# requirements.txt) plus Xvfb so the headed launch has a display.
+# tini is PID 1: it reaps Xvfb/Chromium children and forwards SIGTERM to uvicorn.
+RUN python -m playwright install --with-deps chromium \
+ && apt-get update && apt-get install -y --no-install-recommends xvfb tini \
+ && rm -rf /var/lib/apt/lists/*
 
 # Copy the whole service package in one shot. The synced tree is already
 # curated: dev/live-test drivers (_drive_*/_test_*/_send_*), capture scripts,
@@ -78,4 +86,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # Single worker on purpose — SQLite write lock + the WebSocket pump is a
 # module-level singleton. Production mode, no --reload.
-CMD ["uvicorn", "service.server:app", "--host", "0.0.0.0", "--port", "8787"]
+# Xvfb gives the headed Chromium a display; the stale lock is removed so a
+# `docker restart` (same /tmp) doesn't leave Xvfb refusing display :99.
+ENV DISPLAY=:99
+ENTRYPOINT ["tini", "--"]
+CMD ["sh", "-c", "rm -f /tmp/.X99-lock; Xvfb :99 -screen 0 1440x900x24 -nolisten tcp & exec uvicorn service.server:app --host 0.0.0.0 --port 8787"]
