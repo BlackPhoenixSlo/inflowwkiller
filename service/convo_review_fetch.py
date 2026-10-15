@@ -11,7 +11,7 @@ GETs.
 
 ── Why the media is BYTES and not urls ────────────────────────────────────────
 Every OF CDN url is signed with a policy that pins BOTH an expiry (~2 days) and
-a source IP (the account's proxy, e.g. 194.31.182.8/32). So the `thumb_url` we
+a source IP (the account's proxy, e.g. 203.0.113.8/32). So the `thumb_url` we
 stored in `message_media` months ago is dead twice over: expired, and unusable
 from a laptop even if it weren't. A viewer that renders stored urls renders
 nothing.
