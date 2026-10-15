@@ -75,14 +75,31 @@ const GROUPS: { title: string; blurb: string; names: string[] }[] = [
   {
     title: "Media and vault lanes",
     blurb:
-      "These guard file descriptors and CPU. img fetch is the one that stopped a vault pane from emptying the descriptor table; storyboard build is ffmpeg, so it scales with cores, not accounts.",
+      "These guard file descriptors, CPU and RSS. img fetch is the one that stopped a vault pane from emptying the descriptor table; storyboard build is ffmpeg, so it scales with cores, not accounts; upload part costs 5 MiB of memory per slot PER UPLOAD, so N accounts importing at once multiplies it.",
     names: [
       "IMG_FETCH_CONCURRENCY",
       "VIDEO_STREAM_CONCURRENCY",
       "STORYBOARD_BUILD_CONCURRENCY",
       "VAULT_MEDIA_CONCURRENCY",
       "VAULT_STILL_CONCURRENCY",
+      "VAULT_UPLOAD_PART_CONCURRENCY",
     ],
+  },
+  {
+    title: "Vision sweeps",
+    blurb:
+      "Describe and flags. The bound here is the provider's wall-clock (~14s per item, and it is output tokens that set that — not your cores), so raising these buys throughput only until the global gate binds. The global one caps every account's sweep together: without it, kicking Describe-all on 16 accounts fans out to 16 sweeps at once, which is what produced the ReadTimeouts a cost audit found. Raise it with numbers, not hope.",
+    names: [
+      "VISION_DESCRIBE_CONCURRENCY",
+      "VISION_FLAGS_CONCURRENCY",
+      "VISION_GLOBAL_CONCURRENCY",
+    ],
+  },
+  {
+    title: "Translate",
+    blurb:
+      "Concurrent Google translate batches behind an inbox that is showing a foreign-language thread. Cheap and network-bound; the cache above it means most messages never reach this lane at all.",
+    names: ["TRANSLATE_CONCURRENCY"],
   },
   {
     title: "Health probe",

@@ -226,15 +226,10 @@ TEMPLATE = r"""<!doctype html>
 </style></head>
 <body>
 <header>
-  <h1>Convo review</h1>
+  <h1 id="title">Convo review</h1>
   <span class="sub" id="stamp"></span>
   <input id="q" placeholder="search names + messages…" autocomplete="off">
-  <div class="tabs">
-    <div class="tab on" data-f="all">All</div>
-    <div class="tab" data-f="selling">💰 Selling</div>
-    <div class="tab" data-f="long">💬 Long</div>
-    <div class="tab" data-f="breaks">⚠️ Breaks</div>
-  </div>
+  <div class="tabs"></div>
 </header>
 <main>
   <div id="list"></div>
@@ -254,8 +249,23 @@ const MEDIA = JSON.parse(document.getElementById('mediamap').textContent);
 const $ = s => document.querySelector(s);
 let filter = 'all', query = '', cur = -1, shown = [];
 
+// The tab strip is payload-driven so a second producer can reuse this viewer
+// without forking 450 lines of it. convo_coach_fetch.py ships nowhere/solved;
+// the all-time reader ships nothing and gets the original three back.
+const TABS = DATA.tabs || [
+  {f:'all',     label:'All'},
+  {f:'selling', label:'💰 Selling', chip:'sell'},
+  {f:'long',    label:'💬 Long',    chip:'long'},
+  {f:'breaks',  label:'⚠️ Breaks',  chip:'brk'},
+];
+const TAB_BY_F = Object.fromEntries(TABS.map(t => [t.f, t]));
+document.querySelector('.tabs').innerHTML = TABS.map((t,i) =>
+  `<div class="tab${i===0?' on':''}" data-f="${t.f}">${t.label}</div>`).join('');
+if (DATA.title) document.getElementById('title').textContent = DATA.title;
+
 document.getElementById('stamp').textContent =
-  `${DATA.threads.length} conversations · pulled ${DATA.generated_at} UTC`;
+  `${DATA.threads.length} conversations · pulled ${DATA.generated_at} UTC`
+  + (DATA.window_hours ? ` · last ${DATA.window_hours}h` : '');
 
 const money = c => '$' + (c/100).toLocaleString(undefined,{maximumFractionDigits:0});
 const when  = ts => ts ? new Date(ts.replace(' ','T') + 'Z') : null;
@@ -273,16 +283,19 @@ function matches(t){
 // richest thread at the top of "breaks", which is not what that tab is for.
 const RANK = {selling: t => -t.revenue_cents,
               long:    t => -t.inbound,
-              breaks:  t => -(t.break_score||0)};
+              breaks:  t => -(t.break_score||0),
+              solved:  t => -t.revenue_cents,
+              nowhere: t => -(t.break_score||0)};
 
 function drawList(){
   shown = DATA.threads.filter(matches);
   if (RANK[filter]) shown.sort((a,b) => RANK[filter](a) - RANK[filter](b));
   const el = $('#list');
   el.innerHTML = shown.map((t,i) => {
-    const chips = (t.buckets||[]).map(b =>
-      `<span class="chip ${b==='selling'?'sell':b==='long'?'long':'brk'}">${
-        b==='selling'?'💰 selling':b==='long'?'💬 long':'⚠️ breaks'}</span>`).join('');
+    const chips = (t.buckets||[]).map(b => {
+      const tab = TAB_BY_F[b] || {};
+      return `<span class="chip ${tab.chip||'brk'}">${tab.label||b}</span>`;
+    }).join('');
     const why = (t.why||[]).map(w => /^\$/.test(w) ? `<b>${esc(w)}</b>` : esc(w)).join(' · ');
     return `<div class="card ${DATA.threads.indexOf(t)===cur?'on':''}" data-i="${i}">
       <div class="who"><span class="nm">${esc(t.fan_name)}</span>
@@ -404,8 +417,17 @@ def render(payload: dict, media: dict[str, str], out: Path) -> None:
                 .replace("<", "\\u003c").replace(">", "\\u003e")
                 .replace("&", "\\u0026"))
 
+    # `threads` is the bulk; the rest is the handful of keys the page reads off
+    # DATA directly. They are listed rather than passed wholesale because the
+    # payload also carries the base64 media blob, and embedding that twice
+    # doubles a 20 MB file. Dropping a key here is silent — the page falls back
+    # and looks merely wrong, which is how the coach's tab strip shipped as
+    # "Selling / Long / Breaks" the first time.
     slim = {"generated_at": payload.get("generated_at", ""),
             "threads": payload.get("threads", [])}
+    for k in ("tabs", "title", "window_hours"):
+        if payload.get(k) is not None:
+            slim[k] = payload[k]
     html = (TEMPLATE
             .replace("__GENERATED__", payload.get("generated_at", ""))
             .replace("__PAYLOAD__", embed(slim))

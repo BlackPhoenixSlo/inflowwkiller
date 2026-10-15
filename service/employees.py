@@ -772,6 +772,11 @@ _AUDIT_SKIP_PREFIXES = (
     "/ws/",
     "/admin/audit",     # don't audit reads of the audit log itself
     "/admin/rev/",       # drift probe — read-only
+    # The served remote-browser login (remote_login_api). Its start body
+    # carries the OF PASSWORD — auditing it would persist the plaintext
+    # credential to the actions table, which must NEVER happen. Covers
+    # /start, /{id}, /otp, /cancel, /input, /screen under this prefix.
+    "/admin/login/remote",
     "/docs",
     "/openapi.json",
     "/ui/", "/app/",     # static UI

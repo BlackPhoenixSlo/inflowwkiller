@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 from curl_cffi import requests  # Chrome TLS fingerprint via libcurl-impersonate
 
 import accounts as account_registry
+import lane_config
 import live_rev
 import proxies as proxy_registry
 from of_signer import sign
@@ -76,7 +77,13 @@ _S3_BASE = "https://of2transcoder.s3-accelerate.amazonaws.com/"
 # That 40 MB is PER UPLOAD, not per process. `vault_upload` takes its import
 # lock per ACCOUNT, so N accounts importing at once is N x 40 MB of relay RSS —
 # which is the number this comment exists to bound, so budget it that way.
-_PART_CONCURRENCY = int(os.environ.get("VAULT_UPLOAD_PART_CONCURRENCY") or 8)
+# Through `lane_config` rather than `os.environ` directly, so the Concurrency
+# panel can retune it and the number it displays is the number being enforced.
+# The env var keeps its name and still WINS (that is the precedence chain), so
+# no existing deploy changes behaviour; what is new is the stored tier, the
+# panel row, and a floor of 1 — the bare `int(... or 8)` accepted 0, which is a
+# semaphore nothing can ever acquire.
+_PART_CONCURRENCY = lane_config.resolve("VAULT_UPLOAD_PART_CONCURRENCY", 8)
 # OnlyFans throttles POST /posts to about one per ten seconds — measured live
 # when a batch of small files tripped `400 "Please allow 10 seconds"`. This is
 # the floor a bulk import paces itself against: 40 files cannot take less than
@@ -447,15 +454,18 @@ class OFClient:
         Also the single place we passively observe OF's current build hash:
         every response carries `x-of-rev` in the headers, which feeds the
         global live-rev cache for drift detection (see live_rev.py)."""
-        headers = self._signed_headers(url)
-        if json_body is not None:
-            headers["Content-Type"] = "application/json"
+        # The x-hash warmup runs its own _proxy_retry here, never nested in the one below.
+        self._ensure_x_hash()
         try:
             # Datacenter providers (e.g. IPRoyal DC) sporadically 403 on CONNECT
-            # under load; the same IP works again ~400ms later. _proxy_retry()
-            # retries a few times against the SAME self.http session (sticky IP,
+            # under load; the same IP works again moments later. _proxy_retry()
+            # retries with growing pauses against the SAME self.http session (sticky IP,
             # no rotation) — shared with every raw self.http call below.
             def _do() -> requests.Response:
+                # Signed per attempt: a retry can come seconds later, and Sign/Time must be fresh.
+                headers = self._signed_headers(url)
+                if json_body is not None:
+                    headers["Content-Type"] = "application/json"
                 if method == "GET":
                     return self.http.get(url, headers=headers, timeout=self.timeout_s)
                 return self.http.request(method, url, json=json_body,
@@ -509,14 +519,17 @@ class OFClient:
         except Exception:
             return "?"
 
-    def _proxy_retry(self, fn, *, tries: int = 3, pause_s: float = 0.4, what: str = ""):
+    def _proxy_retry(self, fn, *, tries: int = 5, pause_s: float = 0.4, what: str = ""):
         """Run a raw curl_cffi call `fn`, retrying the transient datacenter
-        CONNECT 403 (IPRoyal DC blips ~400ms under load). Retries run against
-        the SAME self.http session — no proxy lookup, no rebuild, no rotation —
-        so OF still sees one sticky IP. This is the single retry policy: both
-        _http_call AND the handful of raw self.http.get/post calls (CDN media
-        download, /users/list, convert upload) funnel through it, so one
-        half-second proxy blip can no longer hard-fail a request."""
+        CONNECT 403 (IPRoyal DC). These outages can outlast a few hundred ms
+        (several concurrent calls have burned 3 x 0.4 s and failed together),
+        so the pause doubles between attempts: 0.4, 0.8, 1.6, 3.2 s (~6 s over
+        5 tries). Retries run against the SAME self.http session — no proxy
+        lookup, no rebuild, no rotation — so OF still sees one sticky IP. This
+        is the single retry policy: both _http_call AND the handful of raw
+        self.http.get/post/put calls (CDN media download, convert
+        upload) funnel through it, so a proxy blip no longer hard-fails a
+        request."""
         for attempt in range(tries):
             try:
                 return fn()
@@ -527,7 +540,7 @@ class OFClient:
                         self.account_id, self.proxy_label or "—", self._proxy_ip(),
                         attempt + 1, tries, what, str(e)[:200],
                     )
-                    time.sleep(pause_s)
+                    time.sleep(pause_s * 2 ** attempt)
                     continue
                 raise
 
@@ -727,14 +740,7 @@ class OFClient:
             raise ValueError(f"view must be 'm' or 'x', got {view!r}")
         from urllib.parse import urlencode
         qs = urlencode([(f"{view}[]", str(uid)) for uid in user_ids])
-        url = f"{API_BASE}/users/list?{qs}"
-        r = self._proxy_retry(
-            lambda: self.http.get(url, headers=self._signed_headers(url), timeout=self.timeout_s),
-            what="GET /users/list",
-        )
-        if not r.ok:
-            raise OFAPIError(f"{r.status_code} for {r.url}\n{r.text[:500]}", response=r)
-        return r.json()
+        return self.get_json(f"{API_BASE}/users/list?{qs}")
 
     # ── Dashboard / init / notifications ───────────────────────
 
@@ -2807,7 +2813,7 @@ class OFClient:
                         fh.seek((n - 1) * _PART_SIZE)
                         chunk = fh.read(_PART_SIZE)
                     last: Exception | None = None
-                    for _ in range(3):      # same CONNECT-blip tolerance as _proxy_retry
+                    for _ in range(3):      # short CONNECT-blip tolerance (3 x 0.4 s); _proxy_retry rides longer outages
                         try:
                             r = sess.put(by_part[n], data=chunk,
                                          headers={"Content-Type": ct},

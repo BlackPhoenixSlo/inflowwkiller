@@ -86,6 +86,7 @@ from funnels_api import router as _funnels_router  # noqa: E402
 from funnel_stats_api import router as _funnel_stats_router  # noqa: E402
 from nudge_config_api import router as _nudge_config_router  # noqa: E402
 import lane_config_api  # noqa: E402  # Concurrency panel — UNAUTHENTICATED, see below
+from remote_login_api import router as _remote_login_router  # noqa: E402  # served browser login (Part C)
 from webhook_config_api import router as _webhook_config_router  # noqa: E402
 from autoreply_config_api import router as _autoreply_config_router  # noqa: E402
 from tip_reward_config_api import router as _tip_reward_config_router  # noqa: E402
@@ -227,6 +228,7 @@ app.include_router(_funnels_router)
 app.include_router(_funnel_stats_router)
 app.include_router(_nudge_config_router)
 app.include_router(lane_config_api.router)
+app.include_router(_remote_login_router)
 app.include_router(_webhook_config_router)
 app.include_router(_autoreply_config_router)
 app.include_router(_tip_reward_config_router)
@@ -1439,6 +1441,20 @@ def _sync_and_link_after_bootstrap(account_id: str) -> None:
         fut.result(timeout=10)
     except Exception:
         log.exception("bootstrap sync+link failed for account %s", account_id)
+
+
+def post_bootstrap_hooks(account_id: str) -> None:
+    """The four post-capture hooks every session-registration path runs, in
+    order: drop the pooled client, clear the dead-session pause, warm the
+    client so the new cookies load immediately, restart the WS pump, then
+    mirror into SQL + link ownership. Factored out of /admin/session/bootstrap
+    so the served remote-login path (remote_login.py) runs the IDENTICAL hooks
+    instead of forking them."""
+    _invalidate_client(account_id)
+    _kick_clear_session_dead(account_id)
+    _load_client(account_id)
+    _restart_account_pump(account_id)
+    _sync_and_link_after_bootstrap(account_id)
 
 
 # ── Per-account OF call priority lanes ────────────────────────────────
@@ -8276,6 +8292,10 @@ class _BootstrapBody(BaseModel):
     # playwright-proxy mode: which proxy (from the registry) to route the
     # capture browser through. The new account auto-inherits this binding.
     proxy_label: str | None = Field(None, description="Required for mode=playwright-proxy unless account_id already has a proxy bound")
+    # Inline convenience: paste a single proxy line (any parse_proxy_line
+    # format) instead of pre-registering it. It is upserted into the registry
+    # and then used/bound exactly as if its label had been passed.
+    proxy: str | None = Field(None, description="Inline proxy line to upsert + attach (alternative to proxy_label)")
 
 
 @app.post("/admin/session/bootstrap")
@@ -8294,6 +8314,18 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
     existing one (uses the stored Incogniton profile if you don't override).
     `nickname` is the friendly label shown in the UI switcher."""
     import session_bootstrap
+    # Inline proxy: upsert the pasted line, then treat it like a proxy_label.
+    inline_proxy_label: str | None = None
+    if body.proxy:
+        _u = _get_request_user()
+        try:
+            _entry = proxy_registry.upsert_from_line(
+                body.proxy, user_id=(_u.id if _u is not None else None),
+            )
+        except (ValueError, proxy_registry.ProxyPermissionError) as e:
+            raise HTTPException(status_code=400, detail=f"inline proxy: {e}")
+        inline_proxy_label = _entry["label"]
+        _kick_db_sync("proxy-inline-bootstrap")
     try:
         if body.mode == "incogniton-default":
             path = session_bootstrap.run_incogniton(
@@ -8317,14 +8349,15 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
                 make_active=body.make_active,
             )
         elif body.mode == "playwright-proxy":
-            if not body.proxy_label and not body.account_id:
+            _label = body.proxy_label or inline_proxy_label
+            if not _label and not body.account_id:
                 raise HTTPException(
                     status_code=400,
                     detail="playwright-proxy mode requires either proxy_label or an account_id "
                            "that already has a proxy assigned",
                 )
             path = session_bootstrap.run_playwright_proxy(
-                body.proxy_label,
+                _label,
                 account_id=body.account_id,
                 nickname=body.nickname,
                 make_active=body.make_active,
@@ -8341,18 +8374,20 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
 
     # Resolve which account dir we ended up in (path = .../accounts/<id>/session_*.json)
     actual_aid = path.parent.name
-    _invalidate_client(actual_aid)
-    _kick_clear_session_dead(actual_aid)
+    # Inline proxy on a paste-curl capture: bind it to the freshly-captured
+    # account so the relay egresses through it immediately. (playwright-proxy
+    # mode already auto-binds inside run_playwright_proxy.)
+    if inline_proxy_label and body.mode != "playwright-proxy":
+        try:
+            proxy_registry.assign_account(inline_proxy_label, actual_aid)
+            _kick_db_sync(f"proxy-inline-bind-{actual_aid}")
+        except KeyError:
+            log.warning("inline proxy %r vanished before binding", inline_proxy_label)
+    # Run the standard post-capture hooks (invalidate/clear-dead/warm/restart
+    # pump/sync+link). Factored into post_bootstrap_hooks so remote_login
+    # shares the exact same path.
+    post_bootstrap_hooks(actual_aid)
     c = _load_client(actual_aid)
-    # Kick the WS pump too so the new cookies are used immediately.
-    _restart_account_pump(actual_aid)
-    # Phase A: mirror the new on-disk state into SQL, then link it to the
-    # signed-in friend so it shows up in their ScopeSwitcher + passes the
-    # ownership gate. Ordered, not raced — see _sync_and_link_after_bootstrap.
-    # Unauthed callers (founder curl flows) still get the sync; the account
-    # stays visible there because _resolve_account_id skips the gate when
-    # there's no request user.
-    _sync_and_link_after_bootstrap(actual_aid)
     return {
         "ok": True,
         "session_file": path.name,
@@ -9006,6 +9041,54 @@ def admin_proxies_test(label: str) -> dict[str, Any]:
         label, ip=result.get("ip"), geo=result.get("geo"), ok=result.get("ok", False),
     )
     return result
+
+
+class _ProxyBulkBody(BaseModel):
+    text: str = Field(..., description="One proxy per line; blank lines and #comments skipped")
+    scheme: str | None = Field(None, description="Default scheme for lines without one (http)")
+
+
+@app.post("/admin/proxies/bulk")
+def admin_proxies_bulk(body: _ProxyBulkBody = Body(...)) -> dict[str, Any]:
+    """Paste many proxies at once — one per line, in any of the formats
+    `parse_proxy_line` accepts. Returns `{added:[...], errors:[{line,
+    text_redacted, reason}]}` with 1-based line numbers; blank lines and
+    lines starting with `#` are skipped. Each accepted line upserts the JSON
+    registry; a single `_kick_db_sync` mirrors the batch into SQL.
+
+    Ownership mirrors the single-upsert route: a signed-in user cannot
+    overwrite a shared-default proxy or another user's proxy (surfaced as a
+    per-line error, not a hard 403, so one bad line never drops the batch)."""
+    user = _get_request_user()
+    acting_uid = user.id if user is not None else None
+    default_scheme = (body.scheme or "http").strip() or "http"
+    added: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for i, raw in enumerate(body.text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            entry = proxy_registry.upsert_from_line(
+                line, default_scheme=default_scheme, user_id=acting_uid,
+            )
+            added.append({
+                "label": entry["label"], "scheme": entry["scheme"],
+                "host": entry["host"], "port": entry["port"],
+            })
+        except (ValueError, proxy_registry.ProxyPermissionError) as e:
+            errors.append({
+                "line": i,
+                "text_redacted": proxy_registry.redact_line(line),
+                "reason": str(e),
+            })
+    if added:
+        # An upsert can edit host/port/creds in place under a known label, so
+        # drop pooled clients + mirror the batch into SQL — same as the
+        # single-proxy routes.
+        _invalidate_client()
+        _kick_db_sync("proxy-bulk")
+    return {"added": added, "errors": errors}
 
 
 # ── Realtime: WS fan-out, stats, webhook config ────────────────

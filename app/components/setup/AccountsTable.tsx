@@ -18,6 +18,7 @@ import { useState } from "react";
 import { relay, type AccountMeta } from "@/lib/relay";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
 import { describeDeadSession, fmtRelTime } from "@/lib/utils";
+import RemoteChallengePopup, { type RemoteJobStatus } from "@/components/setup/RemoteChallengePopup";
 
 interface AccountsResp {
   accounts: AccountMeta[];
@@ -41,6 +42,8 @@ interface HealthAllResp {
 
 export default function AccountsTable() {
   const qc = useQueryClient();
+  const [refreshJobId, setRefreshJobId] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const accountsQ = useQuery<AccountsResp>({
     queryKey: ["accounts"],
@@ -96,6 +99,16 @@ export default function AccountsTable() {
     },
   });
 
+  // Re-harvest signing rules/cookies from the account's stored browser profile
+  // (no credentials). Returns a job; the challenge popup polls it and, if a
+  // mid-refresh verification appears, surfaces it to the operator.
+  const refreshM = useMutation({
+    mutationFn: (account_id: string) =>
+      relay.post<RemoteJobStatus>("/admin/session/refresh", { account_id }),
+    onSuccess: (job) => { setRefreshError(null); setRefreshJobId(job.id); },
+    onError: (e: Error) => setRefreshError(e.message),
+  });
+
   const healthByAid = new Map(
     (healthQ.data?.accounts || []).map((h) => [h.account_id, h]),
   );
@@ -135,6 +148,8 @@ export default function AccountsTable() {
                   isDefault={accountsQ.data.active_account_id === a.id}
                   onRename={(nickname) => renameM.mutate({ id: a.id, nickname })}
                   onActivate={() => activateM.mutate(a.id)}
+                  onRefresh={() => refreshM.mutate(a.id)}
+                  refreshing={refreshM.isPending && refreshM.variables === a.id}
                   onDelete={() => {
                     if (confirm(`Delete account ${a.nickname || a.id}? Sessions stay on disk.`)) {
                       deleteM.mutate(a.id);
@@ -146,6 +161,20 @@ export default function AccountsTable() {
           </table>
         </div>
       )}
+
+      {refreshError && <div className="text-err text-xs pt-2">{refreshError}</div>}
+
+      {refreshJobId && (
+        <RemoteChallengePopup
+          jobId={refreshJobId}
+          onClose={() => setRefreshJobId(null)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["accounts"] });
+            qc.invalidateQueries({ queryKey: ["health-all"] });
+            qc.invalidateQueries({ queryKey: ["drift"] });
+          }}
+        />
+      )}
     </Card>
   );
 }
@@ -156,6 +185,8 @@ function Row({
   isDefault,
   onRename,
   onActivate,
+  onRefresh,
+  refreshing,
   onDelete,
 }: {
   account: AccountMeta;
@@ -163,6 +194,8 @@ function Row({
   isDefault: boolean;
   onRename: (n: string) => void;
   onActivate: () => void;
+  onRefresh: () => void;
+  refreshing: boolean;
   onDelete: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -260,6 +293,15 @@ function Row({
               Make default
             </Button>
           )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onRefresh}
+            disabled={refreshing}
+            title="Re-harvest signing rules from this account's stored browser profile (no password needed)"
+          >
+            {refreshing ? "Refreshing…" : "Refresh session"}
+          </Button>
           <Button variant="danger" size="sm" onClick={onDelete}>
             Delete
           </Button>

@@ -160,6 +160,174 @@ def upsert(entry: dict[str, Any]) -> dict[str, Any]:
         return entry
 
 
+class ProxyPermissionError(PermissionError):
+    """Raised by `upsert_from_line` when the acting user may not mutate the
+    matched proxy (shared default, or another user's private proxy)."""
+
+
+def _looks_like_hostport(s: str) -> bool:
+    """True when `s` is `host:port` with a numeric, in-range port."""
+    bits = s.split(":")
+    return len(bits) == 2 and bits[1].isdigit() and 0 < int(bits[1]) <= 65535
+
+
+def parse_proxy_line(line: str, default_scheme: str = "http") -> dict[str, Any]:
+    """Parse ONE pasted proxy line into a registry entry dict.
+
+    Accepted formats (optional trailing whitespace-separated label on any):
+      * scheme://user:pass@host:port
+      * user:pass@host:port
+      * host:port:user:pass
+      * host:port@user:pass
+      * host:port
+
+    The label defaults to `host:port` when none is supplied. Raises
+    ValueError on anything it cannot parse (the bulk endpoint turns that into
+    a per-line error with the password redacted — see `redact_line`)."""
+    raw = line.strip()
+    if not raw:
+        raise ValueError("empty line")
+
+    # A proxy token never contains whitespace, so the first whitespace split
+    # cleanly separates the proxy from an optional human label.
+    bits = raw.split()
+    tok = bits[0]
+    label = " ".join(bits[1:]).strip() if len(bits) > 1 else None
+
+    scheme = default_scheme
+    if "://" in tok:
+        scheme, tok = tok.split("://", 1)
+        scheme = scheme.strip().lower() or default_scheme
+
+    username: str | None = None
+    password: str | None = None
+    host: str | None = None
+    port_s: str | None = None
+
+    if "@" in tok:
+        # rsplit so a ':' inside the password doesn't confuse the @ split.
+        left, right = tok.rsplit("@", 1)
+        if _looks_like_hostport(left) and not _looks_like_hostport(right):
+            hostport, cred = left, right              # host:port@user:pass
+        else:
+            cred, hostport = left, right              # user:pass@host:port (default)
+        if not _looks_like_hostport(hostport):
+            raise ValueError(f"could not find host:port in {tok!r}")
+        host, port_s = hostport.split(":")
+        if ":" in cred:
+            username, password = cred.split(":", 1)
+        else:
+            username = cred or None
+    else:
+        parts = tok.split(":")
+        if len(parts) == 2:
+            host, port_s = parts                       # host:port
+        elif len(parts) == 4:
+            host, port_s, username, password = parts   # host:port:user:pass
+        else:
+            raise ValueError(f"unrecognized proxy format: {tok!r}")
+
+    if not host:
+        raise ValueError("missing host")
+    try:
+        port = int(port_s)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"port is not a number: {port_s!r}")
+    if not (0 < port <= 65535):
+        raise ValueError(f"port out of range: {port}")
+
+    entry: dict[str, Any] = {
+        "label": label or f"{host}:{port}",
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+    }
+    if username:
+        entry["username"] = username
+    if password:
+        entry["password"] = password
+    return entry
+
+
+def _mask_secret_field(s: str, *, allow_port: bool = True) -> str:
+    """Mask the value after the first ':' so `redact_line` never prints a
+    password. With `allow_port` (the host:port side) an obvious port (short +
+    all digits) is left visible; on the credential side (`allow_port=False`)
+    the value is masked unconditionally — a password can be all digits too."""
+    if ":" not in s:
+        return s
+    a, b = s.split(":", 1)
+    if allow_port and b.isdigit() and len(b) <= 5:
+        return s
+    return f"{a}:***"
+
+
+def redact_line(line: str) -> str:
+    """Best-effort password mask for a line that FAILED to parse, so the
+    error we surface/log never echoes the credential back. Over-masks rather
+    than risk a leak."""
+    raw = line.strip()
+    bits = raw.split()
+    tok = bits[0] if bits else ""
+    suffix = (" " + " ".join(bits[1:])) if len(bits) > 1 else ""
+
+    prefix = ""
+    body = tok
+    if "://" in tok:
+        scheme, body = tok.split("://", 1)
+        prefix = f"{scheme}://"
+
+    if "@" in body:
+        # `user:pass@host:port` — the left side is always credentials, so mask
+        # its password even if it is all digits; keep host:port visible.
+        left, right = body.rsplit("@", 1)
+        body = f"{_mask_secret_field(left, allow_port=False)}@{_mask_secret_field(right)}"
+    else:
+        parts = body.split(":")
+        if len(parts) >= 4:
+            # host:port:user:pass[:...] — mask the secret field(s)
+            # unconditionally, keep host:port (and user) visible.
+            body = ":".join(parts[:3] + ["***"])
+    return prefix + body + suffix
+
+
+def upsert_from_line(line: str, *, default_scheme: str = "http",
+                     user_id: str | None = None) -> dict[str, Any]:
+    """Parse + upsert a single pasted line. Preserves an existing entry's
+    account bindings (`assigned_account_ids` / legacy `assigned_session`) and
+    its owner, and enforces the ownership rule:
+
+      * a signed-in user (`user_id` set) may NOT overwrite a shared-default
+        proxy (`user_id is None`) or another user's private proxy;
+      * an unauthed caller (`user_id is None` — founder curl / cron) bypasses,
+        matching every other proxy route's gate.
+
+    A brand-new proxy created by a signed-in user is tagged with their id."""
+    entry = parse_proxy_line(line, default_scheme=default_scheme)
+    label = entry["label"]
+    existing = get_by_label(label)
+    if existing is not None:
+        owner = existing.get("user_id")
+        if user_id is not None:
+            if owner is None:
+                raise ProxyPermissionError(
+                    f"proxy {label!r} is a shared default (read-only)")
+            if owner != user_id:
+                raise ProxyPermissionError(
+                    f"proxy {label!r} belongs to another user")
+        # Preserve owner + bindings so a re-paste never silently unbinds
+        # accounts or reassigns ownership.
+        entry["user_id"] = owner
+        entry["assigned_account_ids"] = list(existing.get("assigned_account_ids") or [])
+        entry["assigned_session"] = existing.get("assigned_session")
+        entry.setdefault("verified_ip", existing.get("verified_ip"))
+        entry.setdefault("verified_geo", existing.get("verified_geo"))
+        entry.setdefault("verified_at", existing.get("verified_at"))
+    else:
+        entry["user_id"] = user_id
+    return upsert(entry)
+
+
 def remove(label: str) -> bool:
     with _lock:
         data = load()

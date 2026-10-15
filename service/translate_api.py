@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import lane_config
 from db.engine import get_session
 from db.models import TranslationCache
 
@@ -58,7 +59,7 @@ class Translation(TypedDict):
 GOOGLE_URL = "https://translate.googleapis.com/translate_a/single"
 MAX_TEXTS = 100          # per request; the UI chunks well below this
 MAX_CHARS = 3000         # per text; chat messages are far shorter
-_CONCURRENCY = 8
+_CONCURRENCY = lane_config.resolve("TRANSLATE_CONCURRENCY", 8)
 _CACHE_CAP = 8000
 
 # Row ceiling for the durable tier. ~200 bytes/row (a 59-char mean body plus its

@@ -28,6 +28,7 @@ from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
+import lane_config  # the Concurrency panel's store — a LEAF, safe at import time
 # The permanent, signature-free picture stores (thumbs / full previews / DRM poster
 # frames), including the whole route body behind the three serve endpoints below.
 # This module keeps the SWEEP that fills them.
@@ -1720,7 +1721,7 @@ _flags_running: set[str] = set()
 _flags_progress: dict[str, dict[str, Any]] = {}
 # Same bound as describe. The pass is IO-bound on one small VLM call per item,
 # so 4 at a time turns ~18 minutes into ~5 without changing what is asked.
-_FLAGS_CONCURRENCY = 4
+_FLAGS_CONCURRENCY = lane_config.resolve("VISION_FLAGS_CONCURRENCY", 4)
 
 # What a vision model can be shown. An audio file has no frame, so sweeping it is
 # not thoroughness — it is a row of guaranteed failure per pass (591 of them on
@@ -2942,7 +2943,7 @@ _describe_progress: dict[str, dict[str, Any]] = {}
 # of a quarter of it. Two accounts sweeping at once still share 8 and each get
 # what they got before — the global gate is the knob for that, and it was set by
 # a cost-audit finding about ReadTimeouts, so raise it with numbers, not hope.
-_DESCRIBE_CONCURRENCY = 8
+_DESCRIBE_CONCURRENCY = lane_config.resolve("VISION_DESCRIBE_CONCURRENCY", 8)
 
 # Process-wide ceiling on concurrent vision work across ALL accounts and BOTH
 # sweeps (describe + flags). The per-sweep _DESCRIBE_CONCURRENCY/_FLAGS_CONCURRENCY
@@ -2951,7 +2952,11 @@ _DESCRIBE_CONCURRENCY = 8
 # fetches and starves the relay threadpool (cost-audit finding: ReadTimeouts +
 # 500s while sweeps run). Lazily created so it binds to the running event loop,
 # not import time.
-_VISION_GLOBAL_CONCURRENCY = 8
+# Panel-tunable, and still restart-scoped like every other ceiling: the
+# semaphore below is built once, on first use, so a value saved from the panel
+# is what the NEXT boot gates on. That is the `lane_config` contract, not a
+# limitation of the lazy build.
+_VISION_GLOBAL_CONCURRENCY = lane_config.resolve("VISION_GLOBAL_CONCURRENCY", 8)
 _vision_sema: "asyncio.Semaphore | None" = None
 
 

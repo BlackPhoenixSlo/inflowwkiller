@@ -41,7 +41,12 @@ interface BootstrapBody {
   nickname?: string;
   make_active?: boolean;
   static_param_override?: string;
+  /** Inline proxy line — upserted into the registry and bound to the new
+   *  account by the backend (alternative to picking a registered label). */
+  proxy?: string;
 }
+
+const PASTE_NEW_PROXY = "__paste_new__";
 
 export default function PasteCurlCard() {
   const qc = useQueryClient();
@@ -53,6 +58,7 @@ export default function PasteCurlCard() {
   // default — it spends LLM, so it's an opt-in on sign-up.
   const [onboardRecent, setOnboardRecent] = useState(false);
   const [proxyLabel, setProxyLabel] = useState("");
+  const [proxyLine, setProxyLine] = useState("");
   const [staticOverride, setStaticOverride] = useState("");
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   // null = checking, true = installed, false = not detected
@@ -108,9 +114,12 @@ export default function PasteCurlCard() {
       setResult({ ok: false, text: "Must start with `curl ...`" });
       return;
     }
-    if (proxyLabel) {
+    const usingInlineProxy = proxyLabel === PASTE_NEW_PROXY && proxyLine.trim() !== "";
+    const usingRegisteredProxy = proxyLabel !== "" && proxyLabel !== PASTE_NEW_PROXY;
+    if (usingInlineProxy || usingRegisteredProxy) {
+      const label = usingInlineProxy ? proxyLine.trim() : proxyLabel;
       const confirmed = window.confirm(
-        `Attach proxy "${proxyLabel}" to this account?\n\n` +
+        `Attach proxy "${label}" to this account?\n\n` +
         `OnlyFans will see every signed call egress from the proxy IP. The ` +
         `cookies you're pasting were minted from your own browsing IP, so ` +
         `OF effectively sees the account "teleport" to the proxy. Only safe ` +
@@ -127,11 +136,14 @@ export default function PasteCurlCard() {
     };
     if (nickname.trim()) body.nickname = nickname.trim();
     if (staticOverride.trim()) body.static_param_override = staticOverride.trim();
+    // Inline proxy: the backend upserts + binds it during bootstrap.
+    if (usingInlineProxy) body.proxy = proxyLine.trim();
 
     try {
       const data = await bootstrapM.mutateAsync(body);
-      // If a proxy was chosen, attach + reload after success.
-      if (proxyLabel && data.account_id) {
+      // A REGISTERED proxy label is attached after success (inline proxies are
+      // already bound by the bootstrap call above).
+      if (usingRegisteredProxy && data.account_id) {
         try {
           await attachProxyM.mutateAsync({ label: proxyLabel, account_id: data.account_id });
           await reloadM.mutateAsync(data.account_id);
@@ -248,7 +260,16 @@ export default function PasteCurlCard() {
                 {p.label} · {p.host}:{p.port}
               </option>
             ))}
+            <option value={PASTE_NEW_PROXY}>+ Paste a new proxy…</option>
           </select>
+          {proxyLabel === PASTE_NEW_PROXY && (
+            <Input
+              className="mt-2 font-mono"
+              placeholder="scheme://user:pass@host:port  (or host:port:user:pass)"
+              value={proxyLine}
+              onChange={(e) => setProxyLine(e.target.value)}
+            />
+          )}
         </div>
       </div>
 
@@ -273,7 +294,7 @@ export default function PasteCurlCard() {
         <span className="text-fg-dim/70">(profiles + writes nicknames/notes to OnlyFans, no messages — spends LLM)</span>
       </label>
 
-      {proxyLabel && (
+      {proxyLabel && !(proxyLabel === PASTE_NEW_PROXY && proxyLine.trim() === "") && (
         <div className="text-[11px] text-warn bg-warn/10 border border-warn/30 rounded-lg p-3 leading-relaxed">
           ⚠ <strong>Teleport warning:</strong> the curl&apos;s cookies were minted
           from <em>your</em> browsing IP. Attaching this proxy makes every signed

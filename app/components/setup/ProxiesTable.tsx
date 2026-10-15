@@ -15,7 +15,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { relay, type ProxyMeta, type AccountMeta } from "@/lib/relay";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+
+interface BulkResult {
+  added: Array<{ label: string; host: string; port: number; scheme: string }>;
+  errors: Array<{ line: number; text_redacted: string; reason: string }>;
+}
 
 interface ProxiesResp {
   proxies: Array<
@@ -48,6 +53,9 @@ export default function ProxiesTable() {
   const [addOpen, setAddOpen] = useState(false);
   const [draft, setDraft] = useState<ProxyDraft>(EMPTY_DRAFT);
   const [draftError, setDraftError] = useState<string | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
 
   const proxiesQ = useQuery<ProxiesResp>({
     queryKey: ["proxies"],
@@ -106,6 +114,19 @@ export default function ProxiesTable() {
     },
   });
 
+  const bulkM = useMutation({
+    mutationFn: (text: string) => relay.post<BulkResult>("/admin/proxies/bulk", { text }),
+    onSuccess: (res) => {
+      setBulkResult(res);
+      if (res.added.length > 0) {
+        qc.invalidateQueries({ queryKey: ["proxies"] });
+        // Clear the box only if every line parsed, so a partial failure keeps
+        // the bad lines around to fix.
+        if (res.errors.length === 0) setBulkText("");
+      }
+    },
+  });
+
   function submitDraft() {
     setDraftError(null);
     const label = draft.label.trim();
@@ -137,17 +158,67 @@ export default function ProxiesTable() {
           <h2 className="text-base font-semibold">Proxies</h2>
           <Badge color="muted">{proxiesQ.data?.proxies.length ?? "…"} configured</Badge>
         </div>
-        <Button
-          size="sm"
-          variant={addOpen ? "ghost" : "secondary"}
-          onClick={() => {
-            setAddOpen((v) => !v);
-            setDraftError(null);
-          }}
-        >
-          {addOpen ? "Cancel" : "+ Add proxy"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={bulkOpen ? "ghost" : "secondary"}
+            onClick={() => { setBulkOpen((v) => !v); setBulkResult(null); }}
+          >
+            {bulkOpen ? "Cancel" : "Paste proxies"}
+          </Button>
+          <Button
+            size="sm"
+            variant={addOpen ? "ghost" : "secondary"}
+            onClick={() => {
+              setAddOpen((v) => !v);
+              setDraftError(null);
+            }}
+          >
+            {addOpen ? "Cancel" : "+ Add proxy"}
+          </Button>
+        </div>
       </div>
+
+      {bulkOpen && (
+        <div className="mb-4 border border-border rounded-lg p-3 bg-bg-elev-1/40 space-y-2">
+          <div className="text-[11px] text-fg-dim">
+            One proxy per line. Accepts <code>scheme://user:pass@host:port</code>,{" "}
+            <code>user:pass@host:port</code>, <code>host:port:user:pass</code>,{" "}
+            <code>host:port@user:pass</code> or <code>host:port</code>, with an optional
+            trailing label. Blank lines and <code>#comments</code> are skipped.
+          </div>
+          <Textarea
+            rows={6}
+            className="font-mono text-xs"
+            placeholder={"http://user:pass@188.244.113.72:12323 hu-1\n194.31.0.5:8080:user:pass\n# comment\n10.0.0.1:3128"}
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" disabled={!bulkText.trim() || bulkM.isPending} onClick={() => bulkM.mutate(bulkText)}>
+              {bulkM.isPending ? "Adding…" : "Add proxies"}
+            </Button>
+          </div>
+          {bulkResult && (
+            <div className="text-xs space-y-1 pt-1">
+              {bulkResult.added.length > 0 && (
+                <div className="text-ok">
+                  Added {bulkResult.added.length}: {bulkResult.added.map((a) => a.label).join(", ")}
+                </div>
+              )}
+              {bulkResult.errors.length > 0 && (
+                <div className="text-err space-y-0.5">
+                  {bulkResult.errors.map((e) => (
+                    <div key={e.line}>
+                      line {e.line}: <span className="font-mono">{e.text_redacted}</span> — {e.reason}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {addOpen && (
         <div className="mb-4 border border-border rounded-lg p-3 bg-bg-elev-1/40 space-y-2">

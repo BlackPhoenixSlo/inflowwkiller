@@ -20,6 +20,7 @@ import DriftBanner from "@/components/setup/DriftBanner";
 import AccountsTable from "@/components/setup/AccountsTable";
 import ProxiesTable from "@/components/setup/ProxiesTable";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
+import RemoteLoginCard from "@/components/setup/RemoteLoginCard";
 import FanslyPasteSessionCard from "@/components/setup/FanslyPasteSessionCard";
 import KeysCard from "@/components/setup/KeysCard";
 import AgencyKeysCard from "@/components/setup/AgencyKeysCard";
@@ -43,6 +44,11 @@ export default function SetupPage() {
       {/* Desk-only cards. One wrapper PER card — a single shared wrapper would
           collapse the parent's space-y-6 gap on desktop. */}
       <div className="hidden md:block"><PasteCurlCard /></div>
+
+      {/* Served remote-browser login — real browser logs in through the proxy,
+          human solves any challenge/2FA in a popup. Additive alternative to
+          paste-curl. */}
+      <div className="hidden md:block"><RemoteLoginCard /></div>
 
       {/* Fansly analogue of PasteCurlCard. Additive: OnlyFans-only setups
           never see it change anything. */}
